@@ -67,9 +67,10 @@ Introduces Uma (placement bonus) settlement. First place receives a massive posi
 ## 5. Training Roadmap
 
 ### Phase 0: Local Architecture Verification & Decoupling (Completed)
-*   **Goal**: Ensure the RL loop can perform forward/backward passes sequentially without crashing, and securely decouple domain-specific rules (`src/tasks/mahjong`) from the RL engine (`src/core`).
-*   **Infrastructure**: Implemented `python-dotenv` for local token injection, LangGraph for state routing, and `matplotlib` for loss/reward trajectory monitoring. Upgraded to a full Python-based 136-tile deck Mahjong simulator featuring action masking (forced legal play). Upgraded LLM prompts to enforce Chain-of-Thought (CoT) reasoning via `<think>` tags and strict `<action>` XML outputs.
-*   **Hardware Constraint Uncovered**: A 16GB GPU cannot run the `peft` preparation pipeline for Gemma models (even the tiny 2B/E2B variants) because casting their massive 256k vocab embedding matrices to fp32 consumes over 10GB of VRAM alone. Phase 0 was verified using smaller vocabulary models (e.g., `Qwen2.5-0.5B-Instruct`).
+*   **Goal**: Ensure the RL loop can perform forward/backward passes sequentially without crashing, securely decouple domain-specific rules (`src/tasks/mahjong`) from the RL engine (`src/core`), and stabilize training against format hallucinations.
+*   **Infrastructure**: Implemented `python-dotenv` for local token injection and LangGraph for state routing. Upgraded to a full Python-based 136-tile deck Mahjong simulator. Upgraded LLM prompts to enforce Chain-of-Thought (CoT) reasoning via `<think>` tags and strict `<action>` XML outputs. Replaced `matplotlib` with **TensorBoard** for real-time monitoring of SFT loss, RL loss, and format compliance rates.
+*   **Curriculum Learning (SFT Warm-up)**: Solved the "cold-start deadlock" (where the model never produced a legal XML action in RL) by introducing an **SFT Warm-up Phase**. We generate a small dataset of optimal Ukeire trajectories and train the model via pure supervised fine-tuning (NLL) to establish formatting competence before triggering the RL strategy loop.
+*   **Hardware Constraints**: A 16GB GPU cannot run the `peft` preparation pipeline for Gemma models (even 2B variants) due to massive fp32 embedding casting. Phase 0 was verified using `Qwen2.5-0.5B-Instruct`. SFT phases utilize specific memory optimizations (`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`) and reduced batch sizes to prevent OOM.
 
 ### Phase 1: Heuristic Bootstrapping (GCP Cloud)
 *   **Goal**: Enable a single LLM to master basic rules and tile efficiency.

@@ -16,3 +16,4 @@ pydantic
 matplotlib
 python-dotenv
 mahjong
+tensorboard

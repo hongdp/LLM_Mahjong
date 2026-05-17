@@ -20,9 +20,7 @@ export PYTHONPATH=$(pwd)      # Ensure python can find the src module
 MODEL_NAME="Qwen/Qwen2.5-0.5B-Instruct"
 
 echo "Loading $MODEL_NAME with QLoRA (4-bit)..."
-# We pass arguments to core trainer to run a real end-to-end test.
-# We DO NOT use --debug here, so the actual Gemma model generates the rollouts.
-# This will be slow on a single local GPU, so we keep episodes and epochs low.
+# SFT warm-up from pre-generated data, then full strategy RL in one run.
 python -m src.core.trainer \
     --model_name $MODEL_NAME \
     --task mahjong \
@@ -30,12 +28,15 @@ python -m src.core.trainer \
     --batch_size 1 \
     --num_episodes 1 \
     --epochs 5 \
-    --learning_rate 2e-5
+    --learning_rate 1e-6 \
+    --training_phase 2 \
+    --sft_epochs 3 \
+    --sft_data data/sft_mahjong.jsonl
 
 TEST_EXIT_CODE=$?
 
 if [ $TEST_EXIT_CODE -eq 0 ]; then
-    echo "✅ Local test passed! Forward and backward passes succeeded without OOM."
+    echo "✅ Local test passed! SFT warm-up + strategy RL completed without OOM."
     echo "You are ready to scale up the batch size or deploy to GCP."
 else
     echo "❌ Local test failed with exit code $TEST_EXIT_CODE."
