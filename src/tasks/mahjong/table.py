@@ -1,6 +1,6 @@
 import re
 from typing import Dict, List
-from src.mahjong_env.wrapper import MahjongEngineAPI
+from src.tasks.mahjong.wrapper import MahjongEngineAPI
 
 class PyMahjongTable(MahjongEngineAPI):
     """

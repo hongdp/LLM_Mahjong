@@ -20,13 +20,14 @@ export PYTHONPATH=$(pwd)      # Ensure python can find the src module
 MODEL_NAME="google/gemma-2-2b-it"
 
 echo "Loading $MODEL_NAME with QLoRA (4-bit)..."
-# We pass arguments to train_rlhf.py to run in "debug" mode (e.g. fewer steps, tiny batch size)
+# We pass arguments to core trainer to run in "debug" mode (e.g. fewer steps, tiny batch size)
 # and importantly, we enable --use_qlora to save VRAM.
-python src/train_rlhf.py \
+python -m src.core.trainer \
     --model_name $MODEL_NAME \
+    --task mahjong \
     --use_qlora \
     --batch_size 1 \
-    --mini_batch_size 1 \
+    --num_generations 2 \
     --max_steps 5 \
     --debug
 

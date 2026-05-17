@@ -1,10 +1,8 @@
 import torch
 import re
 from typing import List
-from src.rewards.base import BaseRewardModel
-from src.rewards.registry import register_reward
+from src.core.base_reward import BaseRewardModel
 
-@register_reward("mahjong_step")
 class MahjongStepReward(BaseRewardModel):
     """
     Implements the Step-level rewards defined in the design doc:
