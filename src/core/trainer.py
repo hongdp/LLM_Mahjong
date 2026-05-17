@@ -277,6 +277,11 @@ def main():
         with open(sft_log_path, "a", encoding="utf-8") as sft_log:
             sft_log.write("\n=== SFT WARM-UP COMPLETE ===\n")
         print(f"  📄 SFT log saved to {sft_log_path}")
+        
+        sft_checkpoint_path = f"./checkpoints/sft_warmup_{args.task}"
+        print(f"  💾 Saving SFT checkpoint to {sft_checkpoint_path}")
+        model.save_pretrained(sft_checkpoint_path)
+        tokenizer.save_pretrained(sft_checkpoint_path)
     elif args.sft_epochs > 0:
         print(f"\n⚠️  sft_data not found at '{sft_data_path}', skipping SFT warm-up.")
 
