@@ -19,6 +19,7 @@ import src.tasks.mahjong.task
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Custom Multi-Turn RLHF Trainer")
+    parser.add_argument("--config", type=str, default=None, help="Path to JSON config file to load arguments from.")
     parser.add_argument("--model_name", type=str, default="gpt2")
     parser.add_argument("--task", type=str, default="mahjong")
     parser.add_argument("--learning_rate", type=float, default=1e-5)
@@ -55,7 +56,16 @@ def parse_args():
         "--exp_name", type=str, default=None,
         help="Experiment name (used for logging directory). Defaults to timestamp if not provided."
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    if args.config and os.path.exists(args.config):
+        with open(args.config, "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+            for k, v in config_data.items():
+                if hasattr(args, k) and k != "config":
+                    setattr(args, k, v)
+                    
+    return args
 
 def save_trajectory_log(buffer: ReplayBuffer, epoch: int, task_name: str, exp_dir: str):
     """Saves readable game rollouts to a log file."""
