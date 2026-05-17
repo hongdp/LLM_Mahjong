@@ -7,13 +7,18 @@ echo "🚀 Starting Phase 0: Local Sanity Check..."
 # Ensure we are in the root directory
 cd "$(dirname "$0")/../../"
 
+# Initialize conda and activate environment
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate rlhf_mahjong
+
 # Optional: set environment variables for local testing
 export CUDA_VISIBLE_DEVICES=0 # Use first local GPU if available, or fallback to CPU
 export WANDB_MODE=disabled    # Disable wandb sync during local tests
+export PYTHONPATH=$(pwd)      # Ensure python can find the src module
 
 echo "Loading tiny proxy dataset and model..."
 # We pass arguments to train_rlhf.py to run in "debug" mode (e.g. fewer steps, tiny batch size)
-python src/train_rlhf.py --debug --max_steps=5 --batch_size=1
+python src/train_rlhf.py --model_name gpt2 --reward_model mahjong_step --debug --max_steps=5 --batch_size=2 --num_generations=2
 
 TEST_EXIT_CODE=$?
 

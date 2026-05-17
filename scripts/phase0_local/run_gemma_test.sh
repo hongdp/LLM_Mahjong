@@ -7,9 +7,14 @@ echo "🚀 Starting Phase 0: Local Sanity Check with Gemma..."
 # Ensure we are in the root directory
 cd "$(dirname "$0")/../../"
 
+# Initialize conda and activate environment
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate rlhf_mahjong
+
 # Optional: set environment variables for local testing
 export CUDA_VISIBLE_DEVICES=0 # Use first local GPU if available, or fallback to CPU
 export WANDB_MODE=disabled    # Disable wandb sync during local tests
+export PYTHONPATH=$(pwd)      # Ensure python can find the src module
 
 # Set the model name (Change this to your specific Gemma 4 variant)
 MODEL_NAME="google/gemma-2-2b-it"

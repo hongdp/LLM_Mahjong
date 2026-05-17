@@ -1,66 +1,62 @@
 import argparse
-import os
 import torch
-from transformers import AutoTokenizer, pipeline, BitsAndBytesConfig
-from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from trl import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
+from datasets import Dataset
 
 # Import our modular reward system
 from src.rewards.registry import get_reward_model
-# Ensure dummy rewards are imported so they register themselves
-import src.rewards.dummy_rewards
+import src.rewards.mahjong_rewards  # Ensures it's registered
+from src.mahjong_env.table import PyMahjongTable
 
 def parse_args():
-    parser = argparse.add_argument_group("Training Arguments")
+    parser = argparse.ArgumentParser(description="Training Arguments")
     parser.add_argument("--model_name", type=str, default="gpt2", help="HuggingFace model name or path")
-    parser.add_argument("--reward_model", type=str, default="length_penalty", help="Name of the registered reward model")
+    parser.add_argument("--reward_model", type=str, default="mahjong_step", help="Name of the registered reward model")
     parser.add_argument("--learning_rate", type=float, default=1.41e-5)
-    parser.add_argument("--max_steps", type=int, default=100)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--mini_batch_size", type=int, default=4)
-    parser.add_argument("--use_qlora", action="store_true", help="Use 4-bit QLoRA (required for 4B+ models on 16GB VRAM)")
+    parser.add_argument("--max_steps", type=int, default=10)
+    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--num_generations", type=int, default=4, help="G value for GRPO: number of sampled trajectories per prompt")
+    parser.add_argument("--use_qlora", action="store_true", help="Use 4-bit QLoRA")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode (Phase 0)")
-    return argparse.ArgumentParser(parents=[parser]).parse_args()
+    return parser.parse_args()
 
-def build_dataset(tokenizer, debug=False):
+def build_mahjong_dataset(num_samples=100):
     """
-    Placeholder: returns a simple list of dummy prompts.
-    In a real scenario, this would load from datasets library.
+    Bootstrapping dataset generator:
+    Uses the mock table engine to generate initial starting states.
     """
-    prompts = [
-        "Explain the theory of relativity.",
-        "How do I bake a chocolate cake?",
-        "Write a python script to reverse a string.",
-        "What is the capital of France?"
-    ]
-    # Replicate to make a dataset
-    prompts = prompts * (2 if debug else 100)
+    table = PyMahjongTable()
+    prompts = []
     
-    dataset = []
-    for p in prompts:
-        dataset.append({
-            "query": p,
-            "input_ids": tokenizer.encode(p, return_tensors="pt")[0]
-        })
-    return dataset
+    for _ in range(num_samples):
+        obs = table.reset()
+        # We take player 0's perspective for bootstrapping
+        prompt = obs[0] + "\nAction: "
+        prompts.append({"prompt": prompt})
+        
+    return Dataset.from_list(prompts)
 
 def main():
     args = parse_args()
-    print("🚀 Starting RLHF PPO Training...")
+    print("🚀 Starting Mahjong GRPO Training...")
     print(f"Configuration: {args}")
 
-    # 1. Initialize Configuration
-    config = PPOConfig(
-        model_name=args.model_name,
+    # 1. Initialize GRPO Configuration
+    training_args = GRPOConfig(
+        output_dir="./checkpoints/grpo_mahjong",
         learning_rate=args.learning_rate,
-        batch_size=args.batch_size,
-        mini_batch_size=args.mini_batch_size,
-        steps=args.max_steps,
-        optimize_cuda_cache=True,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=1,
+        max_steps=args.max_steps,
+        num_generations=args.num_generations, # 'G' value in GRPO
+        logging_steps=1,
+        use_cpu=not torch.cuda.is_available(),
     )
 
     # 2. Load Model and Tokenizer
-    print(f"Loading model: {config.model_name} (QLoRA: {args.use_qlora})")
+    print(f"Loading model: {args.model_name} (QLoRA: {args.use_qlora})")
     
     quantization_config = None
     peft_config = None
@@ -80,88 +76,48 @@ def main():
             task_type="CAUSAL_LM",
         )
 
-    # Using trl's wrapper for PPO. If using PEFT, it automatically manages the reference model!
-    model = AutoModelForCausalLMWithValueHead.from_pretrained(
-        config.model_name,
+    # Note: GRPOTrainer takes the standard CausalLM model, not the WithValueHead wrapper!
+    # Because GRPO eliminates the Critic/Value model entirely.
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name,
         quantization_config=quantization_config,
-        peft_config=peft_config,
         device_map="auto" if args.use_qlora else None
     )
-    
-    if not args.use_qlora:
-        # If not using PEFT, we need a separate reference model
-        ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(config.model_name)
-    else:
-        # PEFT automatically handles the reference model natively in TRL
-        ref_model = None
 
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-    
-    # Ensure pad token is set (gpt2 doesn't have one by default)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         
     # 3. Load modular reward model
-    print(f"Loading reward model environment: {args.reward_model}")
+    print(f"Loading reward environment: {args.reward_model}")
     reward_model_env = get_reward_model(args.reward_model)
 
-    # 4. Prepare dataset
-    dataset = build_dataset(tokenizer, debug=args.debug)
-    
-    def collator(data):
-        return dict((key, [d[key] for d in data]) for key in data[0])
+    # GRPOTrainer expects a function signature: (prompts: List[str], completions: List[str]) -> List[float]
+    def trl_reward_wrapper(prompts: list[str], completions: list[str], **kwargs) -> list[float]:
+        # Extract the prompt text if passed as a list of dicts (datasets format)
+        prompt_texts = [p if isinstance(p, str) else p[-1]["content"] if isinstance(p, list) else str(p) for p in prompts]
+        # Our BaseRewardModel returns torch.Tensors, we convert them to floats for TRL
+        rewards_tensors = reward_model_env.compute_reward(prompts=prompt_texts, responses=completions)
+        return [r.item() for r in rewards_tensors]
 
-    # 5. Initialize PPOTrainer
-    ppo_trainer = PPOTrainer(
-        config=config,
+    # 4. Prepare dataset
+    dataset = build_mahjong_dataset(num_samples=10 if args.debug else 100)
+    
+    # 5. Initialize GRPOTrainer
+    trainer = GRPOTrainer(
         model=model,
-        ref_model=ref_model,
-        tokenizer=tokenizer,
-        dataset=dataset,
-        data_collator=collator
+        reward_funcs=[trl_reward_wrapper],
+        args=training_args,
+        train_dataset=dataset,
+        peft_config=peft_config
     )
 
-    # Generation kwargs for the LLM rollout
-    generation_kwargs = {
-        "min_length": -1,
-        "top_k": 0.0,
-        "top_p": 1.0,
-        "do_sample": True,
-        "pad_token_id": tokenizer.pad_token_id,
-        "max_new_tokens": 32,
-    }
-
     # 6. RLHF Training Loop
-    print("Starting Training Loop...")
-    for epoch, batch in enumerate(ppo_trainer.dataloader):
-        if epoch >= config.steps:
-            break
-            
-        query_tensors = batch["input_ids"]
-        
-        # Phase 1: Generate rollouts (responses)
-        response_tensors = []
-        for query in query_tensors:
-            # Generate response from the active model
-            response = ppo_trainer.generate(query, **generation_kwargs)
-            # Remove the prompt part from the generated response
-            response_tensors.append(response.squeeze()[-generation_kwargs["max_new_tokens"]:])
-            
-        batch["response"] = [tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in response_tensors]
-        
-        # Phase 2: Compute Modular Rewards
-        # Pass queries and responses to our modular reward system
-        rewards = reward_model_env.compute_reward(prompts=batch["query"], responses=batch["response"])
-        
-        # Phase 3: Run PPO Step (Update Policy)
-        stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
-        
-        # Logging
-        mean_reward = torch.stack(rewards).mean().item()
-        print(f"Step {epoch}/{config.steps} - Mean Reward: {mean_reward:.4f} - Loss: {stats['ppo/loss/total']}")
+    print("Starting GRPO Training Loop...")
+    trainer.train()
 
     print("✅ Training complete. Saving model...")
-    ppo_trainer.save_pretrained("./checkpoints/final_model")
+    trainer.save_model(training_args.output_dir)
 
 if __name__ == "__main__":
     main()
