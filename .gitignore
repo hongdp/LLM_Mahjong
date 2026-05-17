@@ -51,6 +51,7 @@ data/
 
 # Weights & Biases
 wandb/
+logs/
 
 # IDEs and Editors
 .idea/

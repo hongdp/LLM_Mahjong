@@ -13,3 +13,4 @@ pymahjong
 langgraph
 langchain
 pydantic
+matplotlib

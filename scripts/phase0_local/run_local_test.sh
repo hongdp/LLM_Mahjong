@@ -18,7 +18,7 @@ export PYTHONPATH=$(pwd)      # Ensure python can find the src module
 
 echo "Loading tiny proxy dataset and model..."
 # We pass arguments to core trainer to run in "debug" mode
-python -m src.core.trainer --task mahjong --model_name gpt2 --debug --epochs 1 --batch_size 2 --num_episodes 2
+python -m src.core.trainer --task mahjong --model_name gpt2 --debug --epochs 3 --batch_size 2 --num_episodes 2
 
 TEST_EXIT_CODE=$?
 
