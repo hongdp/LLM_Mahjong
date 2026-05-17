@@ -48,6 +48,10 @@ def parse_args():
         help="Max number of JSONL samples to use per SFT run (subset for speed)."
     )
     parser.add_argument(
+        "--sft_learning_rate", type=float, default=1e-4,
+        help="Learning rate for SFT warm-up (typically much higher than RL, e.g. 1e-4 for QLoRA)."
+    )
+    parser.add_argument(
         "--log_dir", type=str, default="./logs/tensorboard",
         help="TensorBoard log directory."
     )
@@ -129,8 +133,6 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-    
     task = get_task(args.task, device=device)
 
     # TensorBoard writer
@@ -179,6 +181,7 @@ def main():
             print(f"  Using first {args.sft_max_samples} samples (sft_max_samples cap)")
 
         sft_bs = args.sft_batch_size
+        sft_optimizer = torch.optim.AdamW(model.parameters(), lr=args.sft_learning_rate)
 
         os.makedirs("./logs", exist_ok=True)
         sft_log_path = "./logs/sft_warmup.txt"
@@ -259,10 +262,10 @@ def main():
                 sft_loss = (nll * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp(min=1)
                 sft_loss = sft_loss.mean()
 
-                optimizer.zero_grad()
+                sft_optimizer.zero_grad()
                 sft_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
+                sft_optimizer.step()
                 sft_losses.append(sft_loss.item())
 
                 # TensorBoard: per-step SFT loss
@@ -288,6 +291,9 @@ def main():
     # =========================================================
     # MAIN RL LOOP
     # =========================================================
+
+    # Re-initialize optimizer for RL with the lower RL learning rate
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
 
     # 2. Main RL Loop (Rollout -> Train)
     for epoch in range(args.epochs):
