@@ -22,11 +22,11 @@ Because Mahjong includes interrupt mechanisms (e.g., after one player discards, 
 *   **Turn Node**: During the draw-discard phase, the Table Engine wakes up the current turn's Agent node, passing the State containing the newly drawn tile.
 *   **Interrupt Node**: After a player discards, the state machine suspends the main loop and runs the other three Agents in parallel with a very short timeout. If a `<pon>` / `<ron>` call response is received, edge routing is executed to branch the graph.
 
-### 2.3 RL Training Layer (GRPO)
-We abandon the highly VRAM-intensive traditional PPO (Actor-Critic architecture) in favor of the GRPO algorithm to maximize hardware utilization.
-*   **Policy Model (Actor)**: Independently running LLM instances (e.g., Qwen-2.5-1.5B/7B level), undergoing distributed inference and training on TPU/GPU clusters.
-*   **Sampling Mechanism**: For every decision point (Prompt), $G$ different `<think>` reasoning trajectories and final actions are generated via temperature sampling. Advantages are calculated within the group to perform policy updates.
-*   **Gradient Update Timing (Delayed Reward)**: Model weights are **never** updated after a single step or discard. Mahjong is a game of delayed rewards. The system decouples environment interaction from gradient updates by collecting a batch of complete trajectories (episodes). Step-level heuristics and Round-level outcomes are accumulated, and the model is updated in batches using the calculated group advantage $A_i$. This prevents the policy from collapsing into short-sighted, greedy behaviors (e.g., maximizing immediate Ukeire at the cost of dealing-in later).
+### 2.3 RL Training Layer (Custom Replay Buffer & Advantage Policy)
+We abandoned Hugging Face's `trl.GRPOTrainer` because it is strictly designed for stateless, single-turn Instruction Tuning (QA) and fundamentally incompatible with interactive, multi-turn POMDPs. Instead, we built a bespoke Advantage-Weighted RL loop:
+*   **Asynchronous Replay Buffer (`src/core/rollout.py`)**: Before gradients are computed, the LLM takes control of all 4 agents and plays $N$ full games to completion inside the LangGraph engine. Every `(State, Action, Reward)` is recorded.
+*   **Delayed Reward & Advantage Calculation**: Once a game terminates, the Replay Buffer calculates the discounted Return-to-Go for every historical step. A sub-optimal discard on Turn 2 is correctly penalized if it leads to Houjuu (dealing in) on Turn 50.
+*   **Custom Training Loop (`src/core/trainer.py`)**: The model computes the Negative Log-Likelihood of the actions it took during the rollout, multiplies it by the calculated Advantage (Policy Gradient / Behavior Cloning), and performs backpropagation. This completely decouples rollout from optimization, matching the AlphaGo paradigm.
 
 ---
 
@@ -66,16 +66,19 @@ Introduces Uma (placement bonus) settlement. First place receives a massive posi
 
 ## 5. Training Roadmap
 
-### Phase 1: Heuristic Bootstrapping (Single Node)
+### Phase 0: Local Architecture Verification & Decoupling (Completed)
+*   **Goal**: Ensure the RL loop can perform forward/backward passes sequentially without crashing, and securely decouple domain-specific rules (`src/tasks/mahjong`) from the RL engine (`src/core`).
+*   **Infrastructure**: Implemented `python-dotenv` for local token injection, LangGraph for state routing, and `matplotlib` for loss/reward trajectory monitoring. 
+*   **Hardware Constraint Uncovered**: A 16GB GPU cannot run the `peft` preparation pipeline for Gemma models (even the tiny 2B/E2B variants) because casting their massive 256k vocab embedding matrices to fp32 consumes over 10GB of VRAM alone. Phase 0 was verified using smaller vocabulary models (e.g., `Qwen2.5-0.5B-Instruct`).
+
+### Phase 1: Heuristic Bootstrapping (GCP Cloud)
 *   **Goal**: Enable a single LLM to master basic rules and tile efficiency.
-*   **Environment**: 1 LLM Agent vs. 3 baseline bots built on pure code logic (e.g., strictly playing max-Ukeire algorithms).
+*   **Environment**: Deployed to GCP Compute Engine (A100/H100) to safely allocate the massive VRAM required for Gemma-4 4B/9B models.
 *   **Outcome**: A baseline model capable of stably deducing optimal discards using the Five Block Method, strictly adhering to the XML output format.
 
 ### Phase 2: Multi-Agent Self-Play Rollout
 *   **Goal**: Emergence of defensive strategies and high-level board evaluation.
-*   **Environment**: Deployment of 4 LLM instances (replicas of the same weights).
-*   **Mechanism**: Maintains a Model Registry. The latest Actor model does not always play against itself; it plays against earlier checkpoints with a certain probability (e.g., 20%) to prevent Strategy Forgetting (policy collapse).
+*   **Environment**: Deployment of 4 LLM instances (replicas of the same weights) running simultaneously.
 
 ### Phase 3: Cloud-Scale RL
-*   **Deployment**: Migration to Google Cloud. Utilizes Colab Enterprise for experiment tracking, running dozens of Table Engines in parallel on TPU/GPU nodes for high-throughput experience sampling.
-*   **Optimization**: At this stage, focus heavily on observing GRPO's intra-group variance, tuning the sample quantity $G$ to strike a balance between sampling costs and convergence speed.
+*   **Optimization**: Tune the Advantage calculation parameters, PPO clipping constraints, and Rollout Batch Size to strike a balance between sampling costs and convergence speed.

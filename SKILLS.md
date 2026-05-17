@@ -21,8 +21,10 @@
 *   **COMMIT CONFIRMATION RULE**: When the project reaches a certain milestone and passes necessary tests, the AI MUST explicitly ask the USER if they want to create a Git commit. **The AI MUST NOT run `git commit` or any auto-commit scripts without first receiving explicit confirmation from the USER.**
 
 ## 4. Current Setup Status (May 2026)
-- TRL `PPOTrainer` skeleton is implemented in `train_rlhf.py`.
-- QLoRA testing script for Gemma 4 is available at `scripts/phase0_local/run_gemma_test.sh`.
+- **Framework Replacement**: Abandoned `trl`'s `PPOTrainer`/`GRPOTrainer` due to their inability to handle interactive multi-turn POMDPs. Implemented a custom decoupled architecture (`ReplayBuffer` -> Custom Advantage Trainer).
+- **Environment Decoupling**: All Mahjong physics and LangGraph orchestration logic moved to `src/tasks/mahjong`.
+- **Secrets Management**: Implemented `python-dotenv` for securely loading `HF_TOKEN` from `.env`.
+- **Local Testing Constraint**: The `peft` library upcasts embeddings to fp32. For Gemma models with 256k vocabs, this allocates >10GB VRAM instantly, causing OOM on 16GB GPUs even for 2B models. Use `Qwen2.5-0.5B` for local Phase 0 verifications.
 
 ---
 *(End of SKILLS.md. Append new learnings below this line in the future.)*

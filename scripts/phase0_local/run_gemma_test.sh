@@ -16,20 +16,21 @@ export CUDA_VISIBLE_DEVICES=0 # Use first local GPU if available, or fallback to
 export WANDB_MODE=disabled    # Disable wandb sync during local tests
 export PYTHONPATH=$(pwd)      # Ensure python can find the src module
 
-# Set the model name (Change this to your specific Gemma 4 variant)
-MODEL_NAME="google/gemma-2-2b-it"
+# Set the model name (Using Qwen 0.5B locally to fit in 16GB VRAM, will use Gemma on GCP)
+MODEL_NAME="Qwen/Qwen2.5-0.5B-Instruct"
 
 echo "Loading $MODEL_NAME with QLoRA (4-bit)..."
-# We pass arguments to core trainer to run in "debug" mode (e.g. fewer steps, tiny batch size)
-# and importantly, we enable --use_qlora to save VRAM.
+# We pass arguments to core trainer to run a real end-to-end test.
+# We DO NOT use --debug here, so the actual Gemma model generates the rollouts.
+# This will be slow on a single local GPU, so we keep episodes and epochs low.
 python -m src.core.trainer \
     --model_name $MODEL_NAME \
     --task mahjong \
     --use_qlora \
     --batch_size 1 \
-    --num_generations 2 \
-    --max_steps 5 \
-    --debug
+    --num_episodes 1 \
+    --epochs 5 \
+    --learning_rate 2e-5
 
 TEST_EXIT_CODE=$?
 

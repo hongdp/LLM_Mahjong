@@ -82,7 +82,7 @@ def build_mahjong_graph():
     builder.add_node("interrupt", interrupt_node)
     
     builder.set_entry_point("turn")
-    builder.add_conditional_edges("turn", should_continue, {"interrupt": "interrupt", END: END})
+    builder.add_conditional_edges("turn", should_continue, {"interrupt": "interrupt", "turn": "turn", END: END})
     builder.add_edge("interrupt", "turn")
     
     return builder.compile()
