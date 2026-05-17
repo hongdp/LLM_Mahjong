@@ -34,8 +34,9 @@ def turn_node(state: MahjongState):
         "- 场况 (Global)：包含场风、局数和宝牌指示牌。\n"
         "- 私有 (Private)：包含你的自风、点数和手牌。\n"
         "- 公共 (Public)：包含其他所有玩家的牌河和副露。\n"
+        "- 合法动作 (Legal Actions)：包含当前你可以执行的合法动作列表。\n"
         "### 输出格式要求：\n"
-        "从【合法动作列表】中选择一个动作。\n"
+        "你必须且只能从当前状态的【合法动作】列表中选择一个动作输出。\n"
         "所有的思考必须写在 <think> 和 </think> 标签内。\n"
         "最后在标签外部输出唯一的单行XML动作（如 <action type=\"discard\" tile=\"1m\" />）。\n"
     )
@@ -43,7 +44,7 @@ def turn_node(state: MahjongState):
     legal_actions_list = table.get_legal_actions(player_id)
     legal_actions_str = "\n".join([f"  - {act}" for act in legal_actions_list]) if legal_actions_list else "  - <action type=\"skip\" />"
     
-    user_content = f"### 当前状态：\nState:\n{obs}\n\n### 当前合法动作列表：\n{legal_actions_str}\n\n请输出你的动作："
+    user_content = f"### 当前状态：\nState:\n{obs}合法动作 (Legal Actions)：\n{legal_actions_str}\n\n请输出你的动作："
     
     if model and tokenizer:
         messages = [
