@@ -52,15 +52,15 @@ def parse_args():
         help="Learning rate for SFT warm-up (typically much higher than RL, e.g. 1e-4 for QLoRA)."
     )
     parser.add_argument(
-        "--log_dir", type=str, default="./logs/tensorboard",
-        help="TensorBoard log directory."
+        "--exp_name", type=str, default=None,
+        help="Experiment name (used for logging directory). Defaults to timestamp if not provided."
     )
     return parser.parse_args()
 
-def save_trajectory_log(buffer: ReplayBuffer, epoch: int, task_name: str):
+def save_trajectory_log(buffer: ReplayBuffer, epoch: int, task_name: str, exp_dir: str):
     """Saves readable game rollouts to a log file."""
-    os.makedirs("./logs", exist_ok=True)
-    log_path = f"./logs/{task_name}_epoch_{epoch}_rollouts.txt"
+    os.makedirs(exp_dir, exist_ok=True)
+    log_path = os.path.join(exp_dir, f"{task_name}_epoch_{epoch}_rollouts.txt")
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"=== EPOCH {epoch} ROLLOUT LOGS ===\n\n")
         for ep_idx, episode in enumerate(buffer.episodes):
@@ -73,9 +73,9 @@ def save_trajectory_log(buffer: ReplayBuffer, epoch: int, task_name: str):
             f.write("\n\n")
     print(f"📄 Saved rollout log to {log_path}")
 
-def plot_metrics(metrics: dict, task_name: str):
+def plot_metrics(metrics: dict, task_name: str, exp_dir: str):
     """Generates a visualization of training metrics."""
-    os.makedirs("./logs", exist_ok=True)
+    os.makedirs(exp_dir, exist_ok=True)
     epochs = range(len(metrics["loss"]))
     
     fig, axs = plt.subplots(1, 2, figsize=(12, 5))
@@ -95,13 +95,27 @@ def plot_metrics(metrics: dict, task_name: str):
     axs[1].legend()
     axs[1].grid(True)
     
-    plot_path = f"./logs/{task_name}_training_metrics.png"
+    plot_path = os.path.join(exp_dir, f"{task_name}_training_metrics.png")
     plt.tight_layout()
     plt.savefig(plot_path)
     print(f"📊 Saved metrics visualization to {plot_path}")
 
 def main():
+    import datetime
     args = parse_args()
+    
+    if args.exp_name is None:
+        args.exp_name = f"exp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    exp_dir = os.path.join("experiments", args.exp_name)
+    os.makedirs(exp_dir, exist_ok=True)
+    
+    # Save config
+    config_path = os.path.join(exp_dir, "config.json")
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(vars(args), f, indent=4)
+    print(f"📁 Experiment Directory: {exp_dir}")
+    print(f"📝 Saved config to {config_path}")
+
     print(f"🚀 Starting Custom RLHF Training for Task: {args.task}...")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -136,10 +150,11 @@ def main():
     task = get_task(args.task, device=device)
 
     # TensorBoard writer
-    os.makedirs(args.log_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir=args.log_dir)
-    print(f"📈 TensorBoard logging to: {args.log_dir}")
-    print(f"   Run: tensorboard --logdir {args.log_dir}")
+    tb_log_dir = os.path.join(exp_dir, "tensorboard")
+    os.makedirs(tb_log_dir, exist_ok=True)
+    writer = SummaryWriter(log_dir=tb_log_dir)
+    print(f"📈 TensorBoard logging to: {tb_log_dir}")
+    print(f"   Run: tensorboard --logdir {tb_log_dir}")
 
     # --- Phase 1 format reward helper ---
     _action_re = re.compile(r'<action\s+type="discard"\s+tile="([^"]+)"\s*/>')
@@ -183,8 +198,7 @@ def main():
         sft_bs = args.sft_batch_size
         sft_optimizer = torch.optim.AdamW(model.parameters(), lr=args.sft_learning_rate)
 
-        os.makedirs("./logs", exist_ok=True)
-        sft_log_path = "./logs/sft_warmup.txt"
+        sft_log_path = os.path.join(exp_dir, "sft_warmup.txt")
         model.train()
         with open(sft_log_path, "w", encoding="utf-8") as sft_log:
             sft_log.write(f"=== SFT WARM-UP LOG ===\n")
@@ -281,7 +295,7 @@ def main():
             sft_log.write("\n=== SFT WARM-UP COMPLETE ===\n")
         print(f"  📄 SFT log saved to {sft_log_path}")
         
-        sft_checkpoint_path = f"./checkpoints/sft_warmup_{args.task}"
+        sft_checkpoint_path = os.path.join(exp_dir, f"checkpoints_sft_warmup_{args.task}")
         print(f"  💾 Saving SFT checkpoint to {sft_checkpoint_path}")
         model.save_pretrained(sft_checkpoint_path)
         tokenizer.save_pretrained(sft_checkpoint_path)
@@ -303,10 +317,10 @@ def main():
         rollout_model = None if args.debug else model
         rollout_tok = None if args.debug else tokenizer
         
-        buffer = task.collect_rollouts(num_episodes=args.num_episodes, model=rollout_model, tokenizer=rollout_tok)
+        buffer = task.collect_rollouts(num_episodes=args.num_episodes, model=rollout_model, tokenizer=rollout_tok, exp_dir=exp_dir)
         
         # Log the raw text trajectories for inspection
-        save_trajectory_log(buffer, epoch+1, args.task)
+        save_trajectory_log(buffer, epoch+1, args.task, exp_dir)
         
         # --- Phase 1: Override rewards with format-only signal ---
         if args.training_phase == 1:
@@ -405,11 +419,12 @@ def main():
 
     # --- PHASE C: VISUALIZATION ---
     if len(history["loss"]) > 0:
-        plot_metrics(history, args.task)
+        plot_metrics(history, args.task, exp_dir)
 
     print("✅ Custom Multi-Turn Training complete.")
-    model.save_pretrained("./checkpoints/custom_rl_mahjong")
-    tokenizer.save_pretrained("./checkpoints/custom_rl_mahjong")
+    final_checkpoint_path = os.path.join(exp_dir, "checkpoints_final_mahjong")
+    model.save_pretrained(final_checkpoint_path)
+    tokenizer.save_pretrained(final_checkpoint_path)
 
 if __name__ == "__main__":
     main()

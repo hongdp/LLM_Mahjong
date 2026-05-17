@@ -8,7 +8,7 @@ class BaseTask(ABC):
     """
 
     @abstractmethod
-    def collect_rollouts(self, num_episodes: int, model=None, tokenizer=None) -> ReplayBuffer:
+    def collect_rollouts(self, num_episodes: int, model=None, tokenizer=None, exp_dir: str=None) -> ReplayBuffer:
         """
         Runs the environment interactively using the model and returns a populated ReplayBuffer.
         """

@@ -15,11 +15,11 @@ class MahjongTask(BaseTask):
         self.device = kwargs.get('device', 'cpu')
         self.step_reward_model = MahjongStepReward(device=self.device)
 
-    def collect_rollouts(self, num_episodes: int, model=None, tokenizer=None) -> ReplayBuffer:
+    def collect_rollouts(self, num_episodes: int, model=None, tokenizer=None, exp_dir: str=None) -> ReplayBuffer:
         print(f"🎲 Rolling out {num_episodes} Mahjong games...")
         
         # Run the interactive graph
-        episodes = run_rollout(num_episodes, model, tokenizer)
+        episodes = run_rollout(num_episodes, model, tokenizer, exp_dir)
         
         buffer = ReplayBuffer(gamma=0.99)
         

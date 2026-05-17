@@ -15,6 +15,7 @@ class MahjongState(TypedDict):
     done: bool
     last_action: str
     last_player: int
+    exp_dir: str
 
 def turn_node(state: MahjongState):
     """
@@ -87,7 +88,11 @@ def turn_node(state: MahjongState):
     state['last_player'] = player_id
     
     # --- LIVE LOGGING ---
-    with open("./logs/live_rollout.txt", "a", encoding="utf-8") as f:
+    exp_dir = state.get('exp_dir') or "./logs"
+    import os
+    os.makedirs(exp_dir, exist_ok=True)
+    live_log_path = os.path.join(exp_dir, "live_rollout.txt")
+    with open(live_log_path, "a", encoding="utf-8") as f:
         # If we have raw_output from LLM, log it completely (including <think>)
         if model and tokenizer:
             f.write(f"=== [Player {player_id}] ===\n[INPUT PROMPT]:\n{prompt}\n[MODEL OUTPUT]:\n{raw_output}\n[PARSED ACTION]: {action_xml}\n{'-'*60}\n")
@@ -137,7 +142,7 @@ def build_mahjong_graph():
     
     return builder.compile()
 
-def run_rollout(num_games: int, model=None, tokenizer=None) -> List[List[TrajectoryStep]]:
+def run_rollout(num_games: int, model=None, tokenizer=None, exp_dir: str=None) -> List[List[TrajectoryStep]]:
     """
     Runs self-play games and returns a list of episodes.
     Each episode is a list of TrajectorySteps.
@@ -153,7 +158,11 @@ def run_rollout(num_games: int, model=None, tokenizer=None) -> List[List[Traject
         trajectories = {i: [] for i in range(4)}
         
         # Clear live log and write header
-        with open("./logs/live_rollout.txt", "w", encoding="utf-8") as f:
+        import os
+        live_log_dir = exp_dir or "./logs"
+        os.makedirs(live_log_dir, exist_ok=True)
+        live_log_path = os.path.join(live_log_dir, "live_rollout.txt")
+        with open(live_log_path, "w", encoding="utf-8") as f:
             f.write("=== NEW MAHJONG GAME ROLLOUT ===\n")
             
         initial_state = MahjongState({
@@ -163,7 +172,8 @@ def run_rollout(num_games: int, model=None, tokenizer=None) -> List[List[Traject
             "tokenizer": tokenizer,
             "done": False,
             "last_action": "",
-            "last_player": -1
+            "last_player": -1,
+            "exp_dir": exp_dir
         })
         
         # Run graph until END
