@@ -8,6 +8,10 @@ class PyMahjongTable(MahjongEngineAPI):
     A fully functional Python Mahjong Table for Phase 0 Testing.
     Handles real 136-tile deck, dealing, and drawing.
     """
+    def _sort_key(self, tile: str):
+        suit_order = {'p': 0, 's': 1, 'm': 2, 'z': 3}
+        return (suit_order.get(tile[-1], 4), int(tile[:-1]))
+
     def __init__(self):
         self.turn = 0
         self.round_num = 1
@@ -36,11 +40,11 @@ class PyMahjongTable(MahjongEngineAPI):
         for player_id in range(4):
             for _ in range(13):
                 self.hands[player_id].append(self.wall.pop())
-            self.hands[player_id].sort()
+            self.hands[player_id].sort(key=self._sort_key)
             
         # East draws their first tile
         self.hands[0].append(self.wall.pop())
-        self.hands[0].sort()
+        self.hands[0].sort(key=self._sort_key)
         
         return {i: self._format_state(i) for i in range(4)}
 
@@ -94,7 +98,7 @@ class PyMahjongTable(MahjongEngineAPI):
                 self.last_discard = tile
                 self.last_discarder = player_id
                 
-        self.hands[player_id].sort()
+        self.hands[player_id].sort(key=self._sort_key)
         
         # We do not draw here anymore. We wait for interrupt phase.
         done = len(self.wall) <= 14
@@ -108,7 +112,7 @@ class PyMahjongTable(MahjongEngineAPI):
             done = True
         else:
             self.hands[self.turn].append(self.wall.pop())
-            self.hands[self.turn].sort()
+            self.hands[self.turn].sort(key=self._sort_key)
         return {i: self._format_state(i) for i in range(4)}, done
 
     def step_interrupt(self, player_id: int, action_xml: str) -> tuple[Dict[int, str], Dict[int, float], bool, Dict]:
@@ -158,7 +162,7 @@ class PyMahjongTable(MahjongEngineAPI):
                     removed += 1
             rewards[player_id] = 3.0
             
-        self.hands[player_id].sort()
+        self.hands[player_id].sort(key=self._sort_key)
         return {i: self._format_state(i) for i in range(4)}, rewards, False, {}
 
     def get_interrupt_actions(self, player_id: int) -> List[str]:
