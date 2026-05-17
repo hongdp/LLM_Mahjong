@@ -17,8 +17,8 @@ export WANDB_MODE=disabled    # Disable wandb sync during local tests
 export PYTHONPATH=$(pwd)      # Ensure python can find the src module
 
 echo "Loading tiny proxy dataset and model..."
-# We pass arguments to core trainer to run in "debug" mode (e.g. fewer steps, tiny batch size)
-python -m src.core.trainer --task mahjong --model_name gpt2 --debug --max_steps=5 --batch_size=2 --num_generations=2
+# We pass arguments to core trainer to run in "debug" mode
+python -m src.core.trainer --task mahjong --model_name gpt2 --debug --epochs 1 --batch_size 2 --num_episodes 2
 
 TEST_EXIT_CODE=$?
 
