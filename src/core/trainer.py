@@ -434,6 +434,31 @@ def main():
         history["avg_advantage"].append(avg_adv)
         history["avg_reward"].append(avg_raw_reward)
 
+        # Checkpoint management: Keep top 3 and latest
+        epoch_checkpoint_path = os.path.join(exp_dir, f"checkpoint_epoch_{epoch+1}")
+        model.save_pretrained(epoch_checkpoint_path)
+        tokenizer.save_pretrained(epoch_checkpoint_path)
+        
+        if "checkpoints" not in history:
+            history["checkpoints"] = []
+        history["checkpoints"].append({
+            "epoch": epoch + 1,
+            "reward": avg_raw_reward,
+            "path": epoch_checkpoint_path
+        })
+        
+        # Delete checkpoints that are neither latest nor top 3
+        sorted_ckpts = sorted(history["checkpoints"], key=lambda x: x["reward"], reverse=True)
+        top_3_paths = [c["path"] for c in sorted_ckpts[:3]]
+        latest_path = history["checkpoints"][-1]["path"]
+        
+        import shutil
+        for c in list(history["checkpoints"]):
+            if c["path"] not in top_3_paths and c["path"] != latest_path:
+                if os.path.exists(c["path"]):
+                    shutil.rmtree(c["path"])
+                history["checkpoints"].remove(c)
+
     writer.flush()
     writer.close()
 
