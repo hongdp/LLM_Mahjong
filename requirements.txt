@@ -14,3 +14,4 @@ langgraph
 langchain
 pydantic
 matplotlib
+python-dotenv
