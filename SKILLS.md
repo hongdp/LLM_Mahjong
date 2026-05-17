@@ -26,5 +26,7 @@
 - **Secrets Management**: Implemented `python-dotenv` for securely loading `HF_TOKEN` from `.env`.
 - **Local Testing Constraint**: The `peft` library upcasts embeddings to fp32. For Gemma models with 256k vocabs, this allocates >10GB VRAM instantly, causing OOM on 16GB GPUs even for 2B models. Use `Qwen2.5-0.5B` for local Phase 0 verifications.
 
+- **RL Environment Stability**: For small LLMs, strict output formatting is achieved by combining Chain-of-Thought (`<think>`) prompts with Regex action parsing. Hallucinations (e.g. discarding unowned tiles) are managed via Action Masking (Forced legal rollout) to prevent infinite loops while preserving the negative gradient.
+
 ---
 *(End of SKILLS.md. Append new learnings below this line in the future.)*

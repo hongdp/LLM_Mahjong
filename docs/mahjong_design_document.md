@@ -68,7 +68,7 @@ Introduces Uma (placement bonus) settlement. First place receives a massive posi
 
 ### Phase 0: Local Architecture Verification & Decoupling (Completed)
 *   **Goal**: Ensure the RL loop can perform forward/backward passes sequentially without crashing, and securely decouple domain-specific rules (`src/tasks/mahjong`) from the RL engine (`src/core`).
-*   **Infrastructure**: Implemented `python-dotenv` for local token injection, LangGraph for state routing, and `matplotlib` for loss/reward trajectory monitoring. 
+*   **Infrastructure**: Implemented `python-dotenv` for local token injection, LangGraph for state routing, and `matplotlib` for loss/reward trajectory monitoring. Upgraded to a full Python-based 136-tile deck Mahjong simulator featuring action masking (forced legal play). Upgraded LLM prompts to enforce Chain-of-Thought (CoT) reasoning via `<think>` tags and strict `<action>` XML outputs.
 *   **Hardware Constraint Uncovered**: A 16GB GPU cannot run the `peft` preparation pipeline for Gemma models (even the tiny 2B/E2B variants) because casting their massive 256k vocab embedding matrices to fp32 consumes over 10GB of VRAM alone. Phase 0 was verified using smaller vocabulary models (e.g., `Qwen2.5-0.5B-Instruct`).
 
 ### Phase 1: Heuristic Bootstrapping (GCP Cloud)

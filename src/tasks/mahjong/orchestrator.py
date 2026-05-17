@@ -27,16 +27,34 @@ def turn_node(state: MahjongState):
     player_id = table.turn
     obs = table._format_state(player_id)
     
-    prompt = obs + "\nAction: "
+    prompt = (
+        "System: You are a professional Riichi Mahjong AI. Your goal is to maximize tile efficiency and win the game.\n"
+        "### State Explanation:\n"
+        "- Global: Contains the round wind, round number, and dora indicator.\n"
+        "- Private: Contains your seat wind, your points, and your hand (手牌). Tiles are in Tenhou notation: m=manzu, p=pinzu, s=souzu, z=jihai (1z-4z are winds, 5z-7z are dragons).\n"
+        "- Public: Contains the discard piles (牌河) and melds of all other players.\n"
+        "### Rules:\n"
+        "1. CRITICAL: You can ONLY discard a tile that currently exists in your Private Hand (手牌). Hallucinating tiles will result in a severe penalty.\n"
+        "2. To discard, use the exact format: <action type=\"discard\" tile=\"1m\" />\n"
+        "### Instruction:\n"
+        "First, analyze your hand and the table state inside <think>...</think> tags to determine the tile that maximizes your Ukeire (tile acceptance).\n"
+        "Then, output ONLY the single XML action tag.\n\n"
+        f"State:\n{obs}\n\nAction:"
+    )
     
     if model and tokenizer:
         # Actually use the LLM to generate the action
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
         with torch.no_grad():
-            outputs = model.generate(**inputs, max_new_tokens=32, pad_token_id=tokenizer.eos_token_id)
+            outputs = model.generate(**inputs, max_new_tokens=256, pad_token_id=tokenizer.eos_token_id)
         # Decode only the newly generated text
         generated_ids = outputs[0][inputs.input_ids.shape[-1]:]
-        action_xml = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+        raw_output = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+        
+        # Extract the action XML, ignoring the <think> part
+        import re
+        action_match = re.search(r'<action\s+.*?/>', raw_output)
+        action_xml = action_match.group(0) if action_match else '<action type="skip" />'
     else:
         # Fallback to random legal action (for testing pipeline quickly)
         legal_actions = table.get_legal_actions(player_id)
@@ -44,6 +62,15 @@ def turn_node(state: MahjongState):
         
     state['last_action'] = action_xml
     state['last_player'] = player_id
+    
+    # --- LIVE LOGGING ---
+    with open("./logs/live_rollout.txt", "a", encoding="utf-8") as f:
+        # If we have raw_output from LLM, log it completely (including <think>)
+        if model and tokenizer:
+            f.write(f"[Player {player_id}] Model Output:\n{raw_output}\nParsed Action: {action_xml}\n{'-'*40}\n")
+        else:
+            f.write(f"[Player {player_id}] Action: {action_xml}\n")
+    # --------------------
     
     # Apply step to environment
     obs_dict, rewards, done, _ = table.step(player_id, action_xml)
@@ -102,6 +129,10 @@ def run_rollout(num_games: int, model=None, tokenizer=None) -> List[List[Traject
         # 4 independent trajectory tracks for the 4 players
         trajectories = {i: [] for i in range(4)}
         
+        # Clear live log and write header
+        with open("./logs/live_rollout.txt", "w", encoding="utf-8") as f:
+            f.write("=== NEW MAHJONG GAME ROLLOUT ===\n")
+            
         initial_state = MahjongState({
             "table": table,
             "trajectories": trajectories,
