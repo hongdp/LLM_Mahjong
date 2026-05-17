@@ -56,6 +56,10 @@ def parse_args():
         "--exp_name", type=str, default=None,
         help="Experiment name (used for logging directory). Defaults to timestamp if not provided."
     )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="If set, resumes the experiment in the same directory (no new timestamp appended)."
+    )
     args = parser.parse_args()
     
     if args.config and os.path.exists(args.config):
@@ -116,6 +120,10 @@ def main():
     
     if args.exp_name is None:
         args.exp_name = f"exp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    elif not args.resume:
+        # Append timestamp to the specified exp_name to ensure a fresh directory
+        args.exp_name = f"{args.exp_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
     exp_dir = os.path.join("experiments", args.exp_name)
     os.makedirs(exp_dir, exist_ok=True)
     
@@ -276,7 +284,7 @@ def main():
 
                 # Mask out the prompt tokens — only compute loss on assistant response
                 prompt_lengths = prompt_inputs.attention_mask.sum(dim=1)
-                loss_mask = torch.ones_like(shift_labels, dtype=torch.bool)
+                loss_mask = inputs.attention_mask[..., 1:].contiguous().bool()
                 for b_idx, p_len in enumerate(prompt_lengths):
                     loss_mask[b_idx, : p_len - 1] = False
 
@@ -324,6 +332,8 @@ def main():
         print(f"\n=== Epoch {epoch+1}/{args.epochs} ===")
         
         # --- PHASE A: ROLLOUT ---
+        if not args.debug:
+            model.eval()
         rollout_model = None if args.debug else model
         rollout_tok = None if args.debug else tokenizer
         
@@ -379,7 +389,7 @@ def main():
             shift_labels = inputs.input_ids[..., 1:].contiguous()
             
             prompt_lengths = prompt_inputs.attention_mask.sum(dim=1)
-            loss_mask = torch.ones_like(shift_labels, dtype=torch.bool)
+            loss_mask = inputs.attention_mask[..., 1:].contiguous().bool()
             for b_idx, p_len in enumerate(prompt_lengths):
                 loss_mask[b_idx, :p_len-1] = False 
             
