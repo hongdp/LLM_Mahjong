@@ -192,8 +192,8 @@ class PyMahjongTable(MahjongEngineAPI):
         return list(set(actions))
 
     def get_legal_actions(self, player_id: int) -> List[str]:
-        actions = [f'<action type="discard" tile="{t}" />' for t in set(self.hands[player_id])]
+        actions = [f'<action type="discard" tile="{t}" />' for t in sorted(set(self.hands[player_id]), key=self._sort_key)]
         if len(self.hands[player_id]) == 14:
-            actions.extend([f'<action type="riichi" tile="{t}" />' for t in set(self.hands[player_id])])
+            actions.extend([f'<action type="riichi" tile="{t}" />' for t in sorted(set(self.hands[player_id]), key=self._sort_key)])
             actions.append('<action type="tsumo" />')
         return actions
