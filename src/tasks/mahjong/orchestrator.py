@@ -27,38 +27,61 @@ def turn_node(state: MahjongState):
     player_id = table.turn
     obs = table._format_state(player_id)
     
-    prompt = (
-        "System: You are a professional Riichi Mahjong AI. Your goal is to maximize tile efficiency and win the game.\n"
-        "### State Explanation:\n"
-        "- Global: Contains the round wind, round number, and dora indicator.\n"
-        "- Private: Contains your seat wind, your points, and your hand (手牌). Tiles are in Tenhou notation: m=manzu, p=pinzu, s=souzu, z=jihai (1z-4z are winds, 5z-7z are dragons).\n"
-        "- Public: Contains the discard piles (牌河) and melds of all other players.\n"
-        "### Rules:\n"
-        "1. CRITICAL: You can ONLY discard a tile that currently exists in your Private Hand (手牌). Hallucinating tiles will result in a severe penalty.\n"
-        "2. To discard, use the exact format: <action type=\"discard\" tile=\"1m\" />\n"
-        "### Instruction:\n"
-        "First, analyze your hand and the table state inside <think>...</think> tags to determine the tile that maximizes your Ukeire (tile acceptance).\n"
-        "Then, output ONLY the single XML action tag.\n\n"
-        f"State:\n{obs}\n\nAction:"
+    system_content = (
+        "你是一个专业的日本麻将AI。你的最终目标是胡牌。\n"
+        "### 麻将基础知识：\n"
+        "- 胡牌：当你的手牌加上摸到的一张牌，刚好凑成4个面子（顺子/刻子）加1个雀头（对子），总计14张牌时，即为胡牌，这是游戏的最终获胜目标。\n"
+        "- 顺子：同花色相连的3张牌（例如 1m 2m 3m）。\n"
+        "- 刻子：相同的3张牌（例如 5p 5p 5p）。\n"
+        "- 对子：相同的2张牌（例如 7z 7z）。\n"
+        "### 状态说明：\n"
+        "- 场况 (Global)：包含场风、局数和宝牌指示牌。\n"
+        "- 私有 (Private)：包含你的自风、点数和手牌。注：【点数】是你的游戏得分/筹码（初始25000），与凑齐胡牌牌型无关。牌名使用天凤拼音：m=万，p=筒，s=索，z=字牌（1z-4z为东南西北，5z-7z为白发中）。\n"
+        "- 公共 (Public)：包含其他所有玩家的牌河和副露。\n"
+        "### 规则与输出格式要求：\n"
+        "1. 每轮只打一张牌：你每次行动只能从手牌中选择【一张】牌打出，而不是多张。\n"
+        "2. 必须合法：你【只能】打出目前存在于你【手牌】中的牌。打出没有的牌将受到严厉惩罚。\n"
+        "3. 思考过程：所有的思考分析必须全部写在 <think> 和 </think> 标签内部。禁止使用 Thought:、### 解答、discard X Y Z 等无关格式。\n"
+        "4. 动作格式：思考结束后，在 </think> 标签外部只输出唯一的单行XML动作。\n"
+        "   - type 属性必须且只能填写 discard，严禁使用 cut/play/hit。\n"
+        "   - tile 属性只能填写【一个】牌名（如 1m），不能填多个。\n"
+        "### 输出示例（必须严格遵循，思考过程必须简短）：\n"
+        "<think>\n"
+        "手牌中1m是多余的孤张，且无法凑成顺子或刻子，打出1m。\n"
+        "</think>\n"
+        "<action type=\"discard\" tile=\"1m\" />\n"
     )
     
+    user_content = f"### 当前状态：\nState:\n{obs}\n\n请输出你的动作："
+    
     if model and tokenizer:
-        # Actually use the LLM to generate the action
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content}
+        ]
+        chat_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        prompt = chat_prompt
+        
+        inputs = tokenizer(chat_prompt, return_tensors="pt").to(model.device)
         with torch.no_grad():
             outputs = model.generate(**inputs, max_new_tokens=256, pad_token_id=tokenizer.eos_token_id)
         # Decode only the newly generated text
         generated_ids = outputs[0][inputs.input_ids.shape[-1]:]
         raw_output = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
         
+        action_text_for_training = raw_output
+        
         # Extract the action XML, ignoring the <think> part
         import re
         action_match = re.search(r'<action\s+.*?/>', raw_output)
         action_xml = action_match.group(0) if action_match else '<action type="skip" />'
     else:
+        prompt = f"System: {system_content}\nUser: {user_content}"
         # Fallback to random legal action (for testing pipeline quickly)
         legal_actions = table.get_legal_actions(player_id)
         action_xml = random.choice(legal_actions) if legal_actions else '<action type="skip" />'
+        raw_output = action_xml
+        action_text_for_training = action_xml
         
     state['last_action'] = action_xml
     state['last_player'] = player_id
@@ -67,9 +90,9 @@ def turn_node(state: MahjongState):
     with open("./logs/live_rollout.txt", "a", encoding="utf-8") as f:
         # If we have raw_output from LLM, log it completely (including <think>)
         if model and tokenizer:
-            f.write(f"[Player {player_id}] Model Output:\n{raw_output}\nParsed Action: {action_xml}\n{'-'*40}\n")
+            f.write(f"=== [Player {player_id}] ===\n[INPUT PROMPT]:\n{prompt}\n[MODEL OUTPUT]:\n{raw_output}\n[PARSED ACTION]: {action_xml}\n{'-'*60}\n")
         else:
-            f.write(f"[Player {player_id}] Action: {action_xml}\n")
+            f.write(f"=== [Player {player_id}] ===\n[ACTION]: {action_xml}\n{'-'*60}\n")
     # --------------------
     
     # Apply step to environment
@@ -79,7 +102,7 @@ def turn_node(state: MahjongState):
     # Record trajectory
     step = TrajectoryStep(
         prompt_text=prompt,
-        action_text=action_xml,
+        action_text=action_text_for_training,
         reward=rewards[player_id], # Local step reward (e.g. Ukeire)
         is_terminal=done
     )
