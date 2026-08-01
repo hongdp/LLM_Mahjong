@@ -2,7 +2,7 @@
 
 用 4 个共享权重的 LLM 实例进行四人立直麻将自对弈（POMDP），通过自定义的 Advantage-Weighted RL 循环（Replay Buffer + 策略梯度）训练模型，从基础牌效率逐步进化到防守与全局判断。
 
-详细设计见 [docs/mahjong_design_document.md](docs/mahjong_design_document.md)，GCP 三阶段部署方案见 [docs/implementation_plan.md](docs/implementation_plan.md)。项目经验与硬件约束记录在 [SKILLS.md](SKILLS.md)（每次开发前先读）。
+详细设计见 [docs/mahjong_design_document.md](docs/mahjong_design_document.md)，GCP 三阶段部署方案见 [docs/implementation_plan.md](docs/implementation_plan.md)。项目经验与硬件约束记录在 [SKILLS.md](SKILLS.md)（每次开发前先读）。麻将引擎的已知问题与修复优先级见 [docs/engine_known_issues.md](docs/engine_known_issues.md)（**跑正式 RL 实验前先看 P0 部分**）。
 
 ## 架构总览
 

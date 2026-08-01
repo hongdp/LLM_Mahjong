@@ -31,6 +31,7 @@
 ---
 ### RLHF Experiment Execution
 - **Fresh Environments:** Every time a new training run is triggered, a new timestamped experiment directory must be created (e.g. `exp_name_YYYYMMDD_HHMMSS`) to avoid overwriting previous data. The only exception is when explicitly resuming a run (using the `--resume` flag).
+- **Experiment Records (Aug 2026):** All experiments MUST follow the shared `ml-experiment-tracking` skill (`~/Workspace/SKILLS/ml-experiment-tracking/SKILL.md`, linked into `~/.claude/skills/`): write `EXPERIMENT.md` (purpose / method / success criteria) BEFORE launching, append progress during the run, record results / conclusion / artifact manifest after, and keep `experiments/INDEX.md` up to date. The May 2026 baseline run left no record of its intent or outcome — that must not happen again.
 
 ---
 ### Status Snapshot (Aug 2026)
@@ -38,5 +39,6 @@
 - **Blocking issue found in last run** (`experiments/baseline_local_run_20260517_034738`): during RL rollout, ~122/134 model outputs contained NO `<action>` tag (model emitted bare tile lists like `3s 4s 6s 9s ...`), all falling back to `<action type="skip" />`. Root-cause hypothesis: `baseline.json` points `peft_model_path` at the **config_test_run** adapter, which only had **1 SFT epoch on 500 samples** — insufficient format grounding. The `full_run_20260517_035217` checkpoint had 3 SFT epochs (final loss 0.0725) and is the better candidate.
 - **Metric caveat**: the loosened `_action_re` in `trainer.py` now matches ANY `type="..."` value, so hallucinated types (`reveal`, `hold`, `add_to_pool` were observed) count as "format compliant" and earn +5.0 in phase-1 reward. Needs a whitelist of legal action types.
 - **Repo layout**: `experiments/` and `.antigravitycli/` added to `.gitignore` (Aug 2026). Top-level `checkpoints/` (2.4G) and `logs/` are legacy pre-experiment-system outputs — superseded by per-experiment dirs; safe to archive/delete manually. `src/data_loader.py` and `src/models/` are unused skeleton stubs from the original template.
+- **Engine audit (Aug 2026)**: full issue list with severity ranking lives in `docs/engine_known_issues.md`. **Do NOT launch a long RL run until the P0 items there are fixed** — as of the audit, reward exploits (unconditional riichi bonus, meld instant rewards on hands that can never win, model-supplied ron tile) and the missing loser-reward plumbing mean RL would optimize score hacks, not mahjong. Keep that file's checkboxes updated as fixes land.
 
 *(End of SKILLS.md. Append new learnings below this line in the future.)*
