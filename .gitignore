@@ -53,6 +53,12 @@ data/
 wandb/
 logs/
 
+# Experiment outputs (checkpoints, tensorboard, rollout logs)
+experiments/
+
+# IDE agent caches
+.antigravitycli/
+
 # IDEs and Editors
 .idea/
 .vscode/
