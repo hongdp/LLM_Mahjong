@@ -21,6 +21,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Custom Multi-Turn RLHF Trainer")
     parser.add_argument("--config", type=str, default=None, help="Path to JSON config file to load arguments from.")
     parser.add_argument("--model_name", type=str, default="gpt2")
+    parser.add_argument("--peft_model_path", type=str, default=None, help="Path to a pre-trained PEFT adapter to load.")
     parser.add_argument("--task", type=str, default="mahjong")
     parser.add_argument("--learning_rate", type=float, default=1e-5)
     parser.add_argument("--num_episodes", type=int, default=2, help="Number of games to rollout per epoch")
@@ -156,8 +157,13 @@ def main():
 
     if args.use_qlora:
         model = prepare_model_for_kbit_training(model)
-        peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM")
-        model = get_peft_model(model, peft_config)
+        if args.peft_model_path and os.path.exists(args.peft_model_path):
+            from peft import PeftModel
+            print(f"Loading PEFT adapter from {args.peft_model_path}...")
+            model = PeftModel.from_pretrained(model, args.peft_model_path, is_trainable=True)
+        else:
+            peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM")
+            model = get_peft_model(model, peft_config)
     else:
         model.to(device)
 
@@ -175,7 +181,9 @@ def main():
     print(f"   Run: tensorboard --logdir {tb_log_dir}")
 
     # --- Phase 1 format reward helper ---
-    _action_re = re.compile(r'<action\s+type="discard"\s+tile="([^"]+)"\s*/>')
+    # Regex for matching strictly formatted action tags
+    # Allows type="discard|chi|pon|kan|riichi|ron|tsumo|skip" and optional tile attribute
+    _action_re = re.compile(r'<action\s+type="([^"]+)"(?:\s+tile="([^"]+)")?\s*/>')
     _hand_re = re.compile(r'手牌: ((?:[1-9][mpsz] )*[1-9][mpsz])')
 
     def phase1_format_reward(prompt: str, action: str) -> float:
