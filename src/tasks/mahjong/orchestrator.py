@@ -15,6 +15,7 @@ class MahjongState(TypedDict):
     done: bool
     last_action: str
     last_player: int
+    needs_interrupt: bool
     exp_dir: str
 
 def turn_node(state: MahjongState):
@@ -92,8 +93,11 @@ def turn_node(state: MahjongState):
     # --------------------
     
     # Apply step to environment
-    obs_dict, rewards, done, _ = table.step(player_id, action_xml)
+    obs_dict, rewards, done, info = table.step(player_id, action_xml)
     state['done'] = done
+    # Route to the interrupt phase whenever a tile actually hit the river
+    # (covers riichi and engine-forced discards, not just literal "discard").
+    state['needs_interrupt'] = info.get('discarded', False)
     
     # Record trajectory
     step = TrajectoryStep(
@@ -174,8 +178,8 @@ def interrupt_node(state: MahjongState):
                 f.write(f"=== [Player {player_id} (Interrupt)] ===\n[ACTION]: {action_xml}\n{'-'*60}\n")
                 
         # Apply step
-        obs_dict, rewards, done, _ = table.step_interrupt(player_id, action_xml)
-        
+        obs_dict, rewards, done, info = table.step_interrupt(player_id, action_xml)
+
         # Record trajectory
         step = TrajectoryStep(
             prompt_text=chat_prompt,
@@ -185,7 +189,9 @@ def interrupt_node(state: MahjongState):
         )
         state['trajectories'][player_id].append(step)
         
-        if 'skip' not in action_xml:
+        # Only a call the engine actually accepted interrupts the flow —
+        # penalized illegal attempts (false ron, bad meld) behave as skip.
+        if info.get("interrupt", False):
             state['done'] = done
             state['last_action'] = action_xml
             state['last_player'] = player_id
@@ -196,15 +202,15 @@ def interrupt_node(state: MahjongState):
         _, done = table.advance_turn()
         state['done'] = done
         state['last_action'] = '<action type="skip" />'
-        
+
+    state['needs_interrupt'] = False
     return state
 
 def should_continue(state: MahjongState) -> str:
     if state.get('done', False):
         return END
-    
-    action = state.get('last_action', '')
-    if 'discard' in action:
+
+    if state.get('needs_interrupt', False):
         return "interrupt"
     return "turn"
 
@@ -212,11 +218,12 @@ def build_mahjong_graph():
     builder = StateGraph(MahjongState)
     builder.add_node("turn", turn_node)
     builder.add_node("interrupt", interrupt_node)
-    
+
     builder.set_entry_point("turn")
     builder.add_conditional_edges("turn", should_continue, {"interrupt": "interrupt", "turn": "turn", END: END})
-    builder.add_edge("interrupt", "turn")
-    
+    # interrupt must also respect `done` (a ron ends the game immediately)
+    builder.add_conditional_edges("interrupt", should_continue, {"interrupt": "interrupt", "turn": "turn", END: END})
+
     return builder.compile()
 
 def run_rollout(num_games: int, model=None, tokenizer=None, exp_dir: str=None) -> List[List[TrajectoryStep]]:
@@ -250,6 +257,7 @@ def run_rollout(num_games: int, model=None, tokenizer=None, exp_dir: str=None) -
             "done": False,
             "last_action": "",
             "last_player": -1,
+            "needs_interrupt": False,
             "exp_dir": exp_dir
         })
         
