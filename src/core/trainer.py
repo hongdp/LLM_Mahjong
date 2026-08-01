@@ -21,6 +21,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Custom Multi-Turn RLHF Trainer")
     parser.add_argument("--config", type=str, default=None, help="Path to JSON config file to load arguments from.")
     parser.add_argument("--model_name", type=str, default="gpt2")
+    parser.add_argument("--peft_model_path", type=str, default=None, help="Path to a pre-trained PEFT adapter to load.")
     parser.add_argument("--task", type=str, default="mahjong")
     parser.add_argument("--learning_rate", type=float, default=1e-5)
     parser.add_argument("--num_episodes", type=int, default=2, help="Number of games to rollout per epoch")
@@ -59,6 +60,10 @@ def parse_args():
     parser.add_argument(
         "--resume", action="store_true",
         help="If set, resumes the experiment in the same directory (no new timestamp appended)."
+    )
+    parser.add_argument(
+        "--min_format_rate", type=float, default=0.3,
+        help="Phase 2 only: abort if rollout format compliance stays below this for 3 consecutive epochs."
     )
     args = parser.parse_args()
     
@@ -156,8 +161,13 @@ def main():
 
     if args.use_qlora:
         model = prepare_model_for_kbit_training(model)
-        peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM")
-        model = get_peft_model(model, peft_config)
+        if args.peft_model_path and os.path.exists(args.peft_model_path):
+            from peft import PeftModel
+            print(f"Loading PEFT adapter from {args.peft_model_path}...")
+            model = PeftModel.from_pretrained(model, args.peft_model_path, is_trainable=True)
+        else:
+            peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM")
+            model = get_peft_model(model, peft_config)
     else:
         model.to(device)
 
@@ -175,19 +185,24 @@ def main():
     print(f"   Run: tensorboard --logdir {tb_log_dir}")
 
     # --- Phase 1 format reward helper ---
-    _action_re = re.compile(r'<action\s+type="discard"\s+tile="([^"]+)"\s*/>')
+    # Whitelist of action types the table engine actually emits — hallucinated
+    # types (e.g. "reveal", "hold") must NOT count as format-compliant.
+    _action_re = re.compile(
+        r'<action\s+type="(discard|chi|pon|kan|riichi|ron|tsumo|skip)"(?:\s+tile="([^"]+)")?\s*/>'
+    )
     _hand_re = re.compile(r'手牌: ((?:[1-9][mpsz] )*[1-9][mpsz])')
 
     def phase1_format_reward(prompt: str, action: str) -> float:
-        """Phase 1: reward only valid <action type="discard" tile="X"/> with X in hand."""
-        hand_match = _hand_re.search(prompt)
-        if not hand_match:
-            return -5.0
-        hand = hand_match.group(1).split()
+        """Phase 1: reward a well-formed action tag; discard/riichi tiles must be in hand."""
         m = _action_re.search(action)
-        if m and m.group(1) in hand:
-            return 5.0   # Correct format + legal tile
-        return -5.0      # Wrong format or illegal tile
+        if not m:
+            return -5.0      # No valid action tag
+        action_type, tile = m.group(1), m.group(2)
+        if action_type in ("discard", "riichi"):
+            hand_match = _hand_re.search(prompt)
+            if not hand_match or tile not in hand_match.group(1).split():
+                return -5.0  # Discarding a tile not in hand
+        return 5.0
 
     # Metrics storage
     history = {"loss": [], "avg_reward": [], "avg_advantage": []}
@@ -328,6 +343,7 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
 
     # 2. Main RL Loop (Rollout -> Train)
+    low_format_streak = 0
     for epoch in range(args.epochs):
         print(f"\n=== Epoch {epoch+1}/{args.epochs} ===")
         
@@ -341,7 +357,27 @@ def main():
         
         # Log the raw text trajectories for inspection
         save_trajectory_log(buffer, epoch+1, args.task, exp_dir)
-        
+
+        # Format compliance BEFORE the update: fraction of steps with a valid action tag.
+        # Checked early so a format collapse aborts instead of burning epochs on garbage.
+        valid_steps = sum(
+            1 for ep in buffer.episodes for step in ep
+            if _action_re.search(step.action_text)
+        )
+        total_steps = sum(len(ep) for ep in buffer.episodes)
+        format_rate = valid_steps / max(total_steps, 1)
+        writer.add_scalar("rl/format_compliance", format_rate, epoch)
+        print(f"Format compliance: {format_rate:.1%} ({valid_steps}/{total_steps})")
+
+        if args.training_phase == 2 and format_rate < args.min_format_rate:
+            low_format_streak += 1
+            print(f"⚠️  Format rate below {args.min_format_rate:.0%} ({low_format_streak}/3 consecutive) — Phase 2 would train on mostly unparseable outputs.")
+            if low_format_streak >= 3:
+                print("🛑 Aborting: format collapsed for 3 consecutive epochs. Strengthen SFT warm-up (or lower --min_format_rate).")
+                break
+        else:
+            low_format_streak = 0
+
         # --- Phase 1: Override rewards with format-only signal ---
         if args.training_phase == 1:
             for episode in buffer.episodes:
@@ -414,21 +450,12 @@ def main():
         avg_loss = sum(epoch_losses) / len(epoch_losses)
         avg_adv = sum(epoch_advs) / len(epoch_advs)
 
-        # Format compliance: fraction of steps with a valid discard action
-        valid_steps = sum(
-            1 for ep in buffer.episodes for step in ep
-            if _action_re.search(step.action_text)
-        )
-        total_steps = sum(len(ep) for ep in buffer.episodes)
-        format_rate = valid_steps / max(total_steps, 1)
-
         print(f"Batch completed {phase_label} - Loss: {avg_loss:.4f} | Adv: {avg_adv:.4f} | Reward: {avg_raw_reward:.4f} | Format: {format_rate:.1%}")
 
         # TensorBoard: RL metrics
         writer.add_scalar("rl/loss", avg_loss, epoch)
         writer.add_scalar("rl/avg_advantage", avg_adv, epoch)
         writer.add_scalar("rl/avg_episode_reward", avg_raw_reward, epoch)
-        writer.add_scalar("rl/format_compliance", format_rate, epoch)
 
         history["loss"].append(avg_loss)
         history["avg_advantage"].append(avg_adv)

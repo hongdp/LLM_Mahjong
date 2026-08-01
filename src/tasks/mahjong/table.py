@@ -2,12 +2,23 @@ import re
 import random
 from typing import Dict, List
 from src.tasks.mahjong.wrapper import MahjongEngineAPI
+from src.tasks.mahjong.shanten import TileEfficiency
 
 class PyMahjongTable(MahjongEngineAPI):
     """
     A fully functional Python Mahjong Table for Phase 0 Testing.
     Handles real 136-tile deck, dealing, and drawing.
     """
+    _efficiency = TileEfficiency()
+
+    def _is_winning_hand(self, tiles: List[str]) -> bool:
+        # Win check via shanten == -1. Only valid for meld-free 14-tile hands;
+        # melded hands (concealed < 13) can never reach -1 with this engine's
+        # tile accounting, so they simply won't be offered ron/tsumo.
+        if len(tiles) != 14:
+            return False
+        return self._efficiency.calculate_shanten(tiles) == -1
+
     def _sort_key(self, tile: str):
         suit_order = {'p': 0, 's': 1, 'm': 2, 'z': 3}
         return (suit_order.get(tile[-1], 4), int(tile[:-1]))
@@ -64,46 +75,59 @@ class PyMahjongTable(MahjongEngineAPI):
         match = re.search(r'<action\s+type="([^"]+)"(?:\s+tile="([^"]+)")?.*?/>', action_xml)
         rewards = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0}
         
-        if not match:
-            # Hallucination / Bad Format
-            rewards[player_id] = -10.0
-            # Auto-correct
+        discarded = False
+
+        def _forced_discard():
+            # Auto-correct an illegal/unparseable action with a random discard
+            # so the game always progresses (a "skip" here would loop forever).
+            nonlocal discarded
+            if not self.hands[player_id]:
+                return
             tile = random.choice(self.hands[player_id])
             self.hands[player_id].remove(tile)
             self.discards[player_id].append(tile)
+            self.last_discard = tile
+            self.last_discarder = player_id
+            discarded = True
+
+        if not match:
+            # Hallucination / Bad Format
+            rewards[player_id] = -10.0
+            _forced_discard()
         else:
             action_type = match.group(1)
             tile = match.group(2)
-            
+
             if action_type == "discard" and tile in self.hands[player_id]:
                 self.hands[player_id].remove(tile)
                 self.discards[player_id].append(tile)
                 self.last_discard = tile
                 self.last_discarder = player_id
+                discarded = True
             elif action_type == "riichi" and tile in self.hands[player_id]:
                 self.hands[player_id].remove(tile)
                 self.discards[player_id].append(tile + "*")
                 self.last_discard = tile
                 self.last_discarder = player_id
                 rewards[player_id] = 1.0
-            elif action_type == "tsumo":
+                discarded = True
+            elif action_type == "tsumo" and self._is_winning_hand(self.hands[player_id]):
                 return {i: self._format_state(i) for i in range(4)}, {player_id: 50.0, **{i: -10.0 for i in range(4) if i != player_id}}, True, {}
-            elif action_type == "skip":
-                pass
             else:
+                # Includes false tsumo and "skip" during one's own turn —
+                # neither is ever legal in the discard phase.
                 rewards[player_id] = -5.0
-                tile = random.choice(self.hands[player_id])
-                self.hands[player_id].remove(tile)
-                self.discards[player_id].append(tile)
-                self.last_discard = tile
-                self.last_discarder = player_id
+                _forced_discard()
                 
         self.hands[player_id].sort(key=self._sort_key)
-        
+
         # We do not draw here anymore. We wait for interrupt phase.
         done = len(self.wall) <= 14
         obs = {i: self._format_state(i) for i in range(4)}
-        return obs, rewards, done, {}
+        # "discarded" tells the orchestrator to run the interrupt phase —
+        # string-matching on the model's action text misses riichi and
+        # engine-forced discards.
+        return obs, rewards, done, {"discarded": discarded}
 
     def advance_turn(self) -> tuple[Dict[int, str], bool]:
         self.turn = (self.turn + 1) % 4
@@ -119,19 +143,26 @@ class PyMahjongTable(MahjongEngineAPI):
         match = re.search(r'<action\s+type="([^"]+)"(?:\s+tile="([^"]+)")?.*?/>', action_xml)
         rewards = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0}
         
-        if not match: return {i: self._format_state(i) for i in range(4)}, rewards, False, {}
-        
+        # info["interrupt"] tells the orchestrator whether this call actually
+        # took effect (meld/ron) — a penalized illegal attempt behaves as skip.
+        if not match: return {i: self._format_state(i) for i in range(4)}, rewards, False, {"interrupt": False}
+
         action_type = match.group(1)
         tile = match.group(2) or (self.last_discard.replace("*", "") if self.last_discard else "")
-        
+
         if action_type == "skip":
-            return {i: self._format_state(i) for i in range(4)}, rewards, False, {}
-            
+            return {i: self._format_state(i) for i in range(4)}, rewards, False, {"interrupt": False}
+
         if action_type == "ron":
-            return {i: self._format_state(i) for i in range(4)}, {player_id: 50.0, **{i: -10.0 for i in range(4) if i != player_id}}, True, {}
-            
+            if self._is_winning_hand(self.hands[player_id] + [tile]):
+                return {i: self._format_state(i) for i in range(4)}, {player_id: 50.0, **{i: -10.0 for i in range(4) if i != player_id}}, True, {"interrupt": True}
+            # False ron: penalize and treat as skip
+            rewards[player_id] = -5.0
+            return {i: self._format_state(i) for i in range(4)}, rewards, False, {"interrupt": False}
+
         if not hasattr(self, 'fulus'): self.fulus = {0:[], 1:[], 2:[], 3:[]}
-        
+
+        interrupted = True
         if action_type == "pon" and self.hands[player_id].count(tile) >= 2:
             self.hands[player_id].remove(tile)
             self.hands[player_id].remove(tile)
@@ -150,50 +181,57 @@ class PyMahjongTable(MahjongEngineAPI):
             self.hands[player_id].append(self.wall.pop())
             rewards[player_id] = 8.0
             
-        elif action_type == "chi":
+        elif action_type == "chi" and tile and tile[-1] != 'z' and self._chi_pair(player_id, tile):
             self.turn = player_id
             self.fulus[player_id].append(f"chi({tile})")
             if self.discards[self.last_discarder]: self.discards[self.last_discarder].pop()
-            val, suit = int(tile[0]), tile[1]
-            removed = 0
-            for v in [val-2, val-1, val+1, val+2]:
-                if removed < 2 and f"{v}{suit}" in self.hands[player_id]:
-                    self.hands[player_id].remove(f"{v}{suit}")
-                    removed += 1
+            for t in self._chi_pair(player_id, tile):
+                self.hands[player_id].remove(t)
             rewards[player_id] = 3.0
-            
+
+        else:
+            # Illegal meld attempt (e.g. chi without the sequence pair,
+            # pon without duplicates): penalize and treat as skip.
+            rewards[player_id] = -5.0
+            interrupted = False
+
         self.hands[player_id].sort(key=self._sort_key)
-        return {i: self._format_state(i) for i in range(4)}, rewards, False, {}
+        return {i: self._format_state(i) for i in range(4)}, rewards, False, {"interrupt": interrupted}
+
+    def _chi_pair(self, player_id: int, tile: str) -> List[str]:
+        """Returns the two hand tiles forming a sequence with `tile`, or []."""
+        val, suit = int(tile[0]), tile[1]
+        hand = self.hands[player_id]
+        for a, b in [(val-2, val-1), (val-1, val+1), (val+1, val+2)]:
+            if 1 <= a <= 9 and 1 <= b <= 9 and f"{a}{suit}" in hand and f"{b}{suit}" in hand:
+                return [f"{a}{suit}", f"{b}{suit}"]
+        return []
 
     def get_interrupt_actions(self, player_id: int) -> List[str]:
         if not getattr(self, 'last_discard', None):
             return ['<action type="skip" />']
-            
+
         actions = ['<action type="skip" />']
         tile = self.last_discard.replace("*", "")
-        
-        actions.append('<action type="ron" />')
-        
+
+        if self._is_winning_hand(self.hands[player_id] + [tile]):
+            actions.append('<action type="ron" />')
+
         if self.hands[player_id].count(tile) >= 2:
             actions.append(f'<action type="pon" tile="{tile}" />')
         if self.hands[player_id].count(tile) >= 3:
             actions.append(f'<action type="kan" tile="{tile}" />')
             
         if (self.last_discarder + 1) % 4 == player_id and tile[-1] != 'z':
-            val, suit = int(tile[0]), tile[1]
-            has_m1 = f"{val-1}{suit}" in self.hands[player_id]
-            has_m2 = f"{val-2}{suit}" in self.hands[player_id]
-            has_p1 = f"{val+1}{suit}" in self.hands[player_id]
-            has_p2 = f"{val+2}{suit}" in self.hands[player_id]
-            
-            if (has_m2 and has_m1) or (has_m1 and has_p1) or (has_p1 and has_p2):
+            if self._chi_pair(player_id, tile):
                 actions.append(f'<action type="chi" tile="{tile}" />')
-                
+
         return list(set(actions))
 
     def get_legal_actions(self, player_id: int) -> List[str]:
         actions = [f'<action type="discard" tile="{t}" />' for t in sorted(set(self.hands[player_id]), key=self._sort_key)]
         if len(self.hands[player_id]) == 14:
             actions.extend([f'<action type="riichi" tile="{t}" />' for t in sorted(set(self.hands[player_id]), key=self._sort_key)])
-            actions.append('<action type="tsumo" />')
+            if self._is_winning_hand(self.hands[player_id]):
+                actions.append('<action type="tsumo" />')
         return actions

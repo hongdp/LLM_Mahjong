@@ -3,8 +3,8 @@
     "task": "mahjong",
     "use_qlora": true,
     "batch_size": 4,
-    "num_episodes": 5,
-    "epochs": 100,
+    "num_episodes": 2,
+    "epochs": 1,
     "learning_rate": 1e-06,
     "training_phase": 2,
     "sft_epochs": 0,
@@ -12,5 +12,5 @@
     "sft_batch_size": 2,
     "sft_data": "data/sft_mahjong.jsonl",
     "sft_learning_rate": 0.0001,
-    "exp_name": "baseline_local_run"
+    "exp_name": "format_check"
 }
