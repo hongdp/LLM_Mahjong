@@ -3,9 +3,11 @@
 # Machine: a2-highgpu-1g = 1x A100 40GB, 12 vCPU, 85GB RAM (fits A2_CPUS=12 quota).
 set -euo pipefail
 
+# Overridable for multi-VM experiments: VM_NAME=mahjong-a100-e ZONE=us-east1-b bash start_vm.sh
+# NOTE: A100 quota is 1 GPU per REGION — concurrent runs need different regions.
 PROJECT_ID="workstation-185016"
-ZONE="us-central1-b"            # -a was STOCKOUT on 2026-08-01; capacity reported in -b, -f
-VM_NAME="mahjong-a100"
+ZONE="${ZONE:-us-central1-b}"   # -a was STOCKOUT on 2026-08-01; capacity reported in -b, -f
+VM_NAME="${VM_NAME:-mahjong-a100}"
 MACHINE_TYPE="a2-highgpu-1g"
 IMAGE_FAMILY="common-cu129-ubuntu-2204-nvidia-580"  # driver 580 -> supports cu130 torch wheels
 IMAGE_PROJECT="deeplearning-platform-release"

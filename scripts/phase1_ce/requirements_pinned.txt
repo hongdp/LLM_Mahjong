@@ -1,8 +1,16 @@
-# Exact versions mirrored from the local rlhf_mahjong conda env (2026-08-01)
-# so the GCP Phase 1 run reproduces the environment the smoke tests passed on.
-# torch cu130 wheel needs NVIDIA driver >= 580 (DLVM image family *-nvidia-580).
---extra-index-url https://download.pytorch.org/whl/cu130
-torch==2.12.0
+# GCP Phase 1 VM environment (2026-08-01, rev2).
+# torch pinned to cu129 to MATCH the DLVM image's CUDA 12.9 toolkit — required
+# to compile causal-conv1d, which (with flash-linear-attention) enables the
+# Qwen3.5 fast path. causal-conv1d itself is built from source on the VM:
+#   CUDA_HOME=/usr/local/cuda-12.9 CAUSAL_CONV1D_FORCE_BUILD=TRUE \
+#   pip install causal-conv1d --no-build-isolation   (needs wheel ninja packaging)
+# (local dev env stays on cu130; the 2.12.0 vs 2.12.1 patch delta is accepted.)
+--extra-index-url https://download.pytorch.org/whl/cu129
+torch==2.12.1
+flash-linear-attention==0.5.2
+wheel
+ninja
+packaging
 transformers==5.8.1
 peft==0.19.1
 bitsandbytes==0.49.2

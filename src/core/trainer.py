@@ -16,6 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 from src.core.registry import get_task
 from src.core.rollout import ReplayBuffer
 from src.core.chat_format import visible_text, render_sft_texts
+from src.core.ppo import ppo_clip_loss
 import src.tasks.mahjong.task
 
 def parse_args():
@@ -65,6 +66,42 @@ def parse_args():
     parser.add_argument(
         "--min_format_rate", type=float, default=0.3,
         help="Phase 2 only: abort if rollout format compliance stays below this for 3 consecutive epochs."
+    )
+    parser.add_argument(
+        "--reward_model", type=str, default="step",
+        choices=["step", "potential", "potential_value"],
+        help="Step shaping model: 'step' = legacy absolute scores; "
+             "'potential' = energy-consistent PBRS (telescopes to a deal "
+             "constant, cannot be farmed); 'potential_value' = PBRS with a "
+             "dora term in the energy."
+    )
+    parser.add_argument(
+        "--rl_algo", type=str, default="reinforce", choices=["reinforce", "ppo"],
+        help="RL update rule: 'reinforce' = advantage-weighted NLL, one pass "
+             "per rollout batch; 'ppo' = clipped surrogate with sample reuse."
+    )
+    parser.add_argument(
+        "--clip_eps", type=float, default=0.2,
+        help="PPO clip range epsilon."
+    )
+    parser.add_argument(
+        "--ppo_epochs", type=int, default=3,
+        help="PPO inner passes over each rollout batch."
+    )
+    parser.add_argument(
+        "--target_kl", type=float, default=0.03,
+        help="PPO early-stop threshold on approx KL between behavior and "
+             "current policy."
+    )
+    parser.add_argument(
+        "--value_facts", action="store_true",
+        help="Render computed value facts (自家宝牌 line) in the private "
+             "state. MUST match the template the SFT adapter/data used."
+    )
+    parser.add_argument(
+        "--parallel_games", type=int, default=1,
+        help="Concurrent games per rollout with batched generation "
+             "(1 = legacy sequential path)."
     )
     parser.add_argument(
         "--seed", type=int, default=42,
@@ -123,6 +160,109 @@ def plot_metrics(metrics: dict, task_name: str, exp_dir: str):
     plt.tight_layout()
     plt.savefig(plot_path)
     print(f"📊 Saved metrics visualization to {plot_path}")
+
+def ppo_update(model, tokenizer, samples, optimizer, device, args):
+    """PPO clipped-surrogate update with sample reuse.
+
+    Builds sequences from stored token ids (prompt re-tokenized + generated
+    ids recorded at rollout), so old/new logprobs align token-for-token —
+    no retokenization drift. Inner passes stop early once approx KL exceeds
+    args.target_kl.
+
+    Returns (avg_loss, avg_advantage, stats) where stats carries the last
+    measured approx_kl, overall clip_frac and the number of passes run.
+    """
+    usable = [s for s in samples
+              if s.get("gen_token_ids") and s.get("old_logprobs")]
+    dropped = len(samples) - len(usable)
+    if dropped:
+        print(f"  [PPO] {dropped} samples lack logprobs (fallback steps) — skipped.")
+    if not usable:
+        return 0.0, 0.0, {"approx_kl": 0.0, "clip_frac": 0.0, "passes": 0}
+
+    pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
+    # Pre-tokenize prompts once; sequences are prompt_ids + gen_ids.
+    encoded = []
+    for s in usable:
+        # Same encoding call as rollout used, so prompt ids match exactly.
+        p_ids = tokenizer(s["prompt"])["input_ids"]
+        encoded.append({
+            "ids": p_ids + list(s["gen_token_ids"]),
+            "p_len": len(p_ids),
+            "g_len": len(s["gen_token_ids"]),
+            "old_lp": s["old_logprobs"],
+            "adv": max(-5.0, min(5.0, s["advantage"])),
+        })
+
+    losses, advs, clip_fracs = [], [], []
+    last_kl, passes = 0.0, 0
+    order = list(range(len(encoded)))
+    stop = False
+    for _pass in range(args.ppo_epochs):
+        random.shuffle(order)
+        pass_kls = []
+        for i in range(0, len(order), args.batch_size):
+            batch = [encoded[j] for j in order[i:i + args.batch_size]]
+            max_len = max(len(b["ids"]) for b in batch)
+
+            input_ids = torch.full((len(batch), max_len), pad_id,
+                                   dtype=torch.long)
+            attn = torch.zeros((len(batch), max_len), dtype=torch.long)
+            # Shifted-space mask/old-lp: gen token k of sample b lives at
+            # shifted index p_len+k-1 (logits at t predict token t+1).
+            mask = torch.zeros((len(batch), max_len - 1))
+            old_lp = torch.zeros((len(batch), max_len - 1))
+            for b_idx, b in enumerate(batch):
+                L = len(b["ids"])
+                input_ids[b_idx, :L] = torch.tensor(b["ids"])
+                attn[b_idx, :L] = 1
+                lo = b["p_len"] - 1
+                mask[b_idx, lo:lo + b["g_len"]] = 1.0
+                old_lp[b_idx, lo:lo + b["g_len"]] = torch.tensor(b["old_lp"])
+            advantages = torch.tensor([b["adv"] for b in batch],
+                                      dtype=torch.float32, device=device)
+            input_ids, attn = input_ids.to(device), attn.to(device)
+            mask, old_lp = mask.to(device), old_lp.to(device)
+
+            logits = model(input_ids=input_ids, attention_mask=attn).logits
+            shift_logits = logits[:, :-1, :]
+            labels = input_ids[:, 1:]
+            # Fused CE = -logprob of the label token; avoids materializing a
+            # full fp32 [B,T,V] log-softmax over the 248k vocab.
+            ce = torch.nn.functional.cross_entropy(
+                shift_logits.reshape(-1, shift_logits.size(-1)),
+                labels.reshape(-1), reduction="none")
+            new_lp = -ce.view(labels.shape).float()
+
+            loss, stats = ppo_clip_loss(new_lp, old_lp, advantages, mask,
+                                        clip_eps=args.clip_eps)
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            losses.append(loss.item())
+            advs.append(advantages.mean().item())
+            clip_fracs.append(stats["clip_frac"])
+            pass_kls.append(stats["approx_kl"])
+
+        passes += 1
+        last_kl = sum(pass_kls) / max(len(pass_kls), 1)
+        if last_kl > args.target_kl:
+            print(f"  [PPO] early stop after pass {passes}: "
+                  f"approx_kl {last_kl:.4f} > target {args.target_kl}")
+            stop = True
+        if stop:
+            break
+
+    avg_loss = sum(losses) / max(len(losses), 1)
+    avg_adv = sum(advs) / max(len(advs), 1)
+    return avg_loss, avg_adv, {
+        "approx_kl": last_kl,
+        "clip_frac": sum(clip_fracs) / max(len(clip_fracs), 1),
+        "passes": passes,
+    }
+
 
 def main():
     import datetime
@@ -192,7 +332,9 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    task = get_task(args.task, device=device)
+    task = get_task(args.task, device=device, reward_model=args.reward_model,
+                    value_facts=args.value_facts,
+                    parallel_games=args.parallel_games)
 
     # TensorBoard writer
     tb_log_dir = os.path.join(exp_dir, "tensorboard")
@@ -373,7 +515,10 @@ def main():
         rollout_model = None if args.debug else model
         rollout_tok = None if args.debug else tokenizer
         
-        buffer = task.collect_rollouts(num_episodes=args.num_episodes, model=rollout_model, tokenizer=rollout_tok, exp_dir=exp_dir)
+        buffer = task.collect_rollouts(
+            num_episodes=args.num_episodes, model=rollout_model,
+            tokenizer=rollout_tok, exp_dir=exp_dir,
+            capture_logprobs=(args.rl_algo == "ppo"))
         
         # Log the raw text trajectories for inspection
         save_trajectory_log(buffer, epoch+1, args.task, exp_dir)
@@ -423,48 +568,58 @@ def main():
         model.train()
         epoch_losses = []
         epoch_advs = []
-        
-        for i in range(0, len(samples), args.batch_size):
-            batch = samples[i:i+args.batch_size]
-            
-            prompts = [s["prompt"] for s in batch]
-            actions = [s["action"] for s in batch]
-            raw_advantages = torch.tensor([s["advantage"] for s in batch], dtype=torch.float32)
-            # Clip advantages to prevent runaway gradients from catastrophically bad episodes
-            advantages = raw_advantages.clamp(-5.0, 5.0).to(device)
 
-            texts = [p + a for p, a in zip(prompts, actions)]
-            
-            inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
-            prompt_inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
+        if args.rl_algo == "ppo":
+            avg_loss, avg_adv, ppo_stats = ppo_update(
+                model, tokenizer, samples, optimizer, device, args)
+            writer.add_scalar("rl/approx_kl", ppo_stats["approx_kl"], epoch)
+            writer.add_scalar("rl/clip_frac", ppo_stats["clip_frac"], epoch)
+            writer.add_scalar("rl/ppo_passes", ppo_stats["passes"], epoch)
+            epoch_losses.append(avg_loss)
+            epoch_advs.append(avg_adv)
 
-            outputs = model(**inputs)
-            logits = outputs.logits 
-            
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = inputs.input_ids[..., 1:].contiguous()
-            
-            prompt_lengths = prompt_inputs.attention_mask.sum(dim=1)
-            loss_mask = inputs.attention_mask[..., 1:].contiguous().bool()
-            for b_idx, p_len in enumerate(prompt_lengths):
-                loss_mask[b_idx, :p_len-1] = False 
-            
-            loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
-            nll = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-            nll = nll.view(shift_labels.size())
-            
-            action_nll = (nll * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp(min=1)
-            
-            pg_loss = (action_nll * advantages).mean()
-            
-            optimizer.zero_grad()
-            pg_loss.backward()
-            # Gradient clipping as a last-resort safeguard against weight explosion
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            
-            epoch_losses.append(pg_loss.item())
-            epoch_advs.append(advantages.mean().item())
+        else:
+            for i in range(0, len(samples), args.batch_size):
+                batch = samples[i:i+args.batch_size]
+
+                prompts = [s["prompt"] for s in batch]
+                actions = [s["action"] for s in batch]
+                raw_advantages = torch.tensor([s["advantage"] for s in batch], dtype=torch.float32)
+                # Clip advantages to prevent runaway gradients from catastrophically bad episodes
+                advantages = raw_advantages.clamp(-5.0, 5.0).to(device)
+
+                texts = [p + a for p, a in zip(prompts, actions)]
+
+                inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
+                prompt_inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
+
+                outputs = model(**inputs)
+                logits = outputs.logits
+
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = inputs.input_ids[..., 1:].contiguous()
+
+                prompt_lengths = prompt_inputs.attention_mask.sum(dim=1)
+                loss_mask = inputs.attention_mask[..., 1:].contiguous().bool()
+                for b_idx, p_len in enumerate(prompt_lengths):
+                    loss_mask[b_idx, :p_len-1] = False
+
+                loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
+                nll = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                nll = nll.view(shift_labels.size())
+
+                action_nll = (nll * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp(min=1)
+
+                pg_loss = (action_nll * advantages).mean()
+
+                optimizer.zero_grad()
+                pg_loss.backward()
+                # Gradient clipping as a last-resort safeguard against weight explosion
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+                epoch_losses.append(pg_loss.item())
+                epoch_advs.append(advantages.mean().item())
 
         # Record metrics for the epoch
         avg_loss = sum(epoch_losses) / len(epoch_losses)

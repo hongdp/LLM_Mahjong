@@ -1,6 +1,6 @@
 # v2_engine_full_run_20260802_005918
 
-- **Date**: 2026-08-01 17:59 (00:59 UTC 08-02, VM clock)  **Status**: running
+- **Date**: 2026-08-01 17:59 (00:59 UTC 08-02, VM clock)  **Status**: stopped by user at SFT-complete / RL-not-started (~19:00 local) — superseded by the PBRS-reward run, which loads this run's SFT adapter verbatim (single-variable reward-model comparison was judged more valuable than finishing 50 RL epochs on the farmable step reward; user decision mid-flight)
 - **Inherits**: full experiment design + all four pre-registered success criteria from `v2_engine_full_run_20260801_165312` (aborted mid-SFT locally, no checkpoints — this is the same experiment migrated to GCP, per docs/handoff_gcp_phase1.md). Hyperparameters byte-identical (`configs/v2_full_run.json`), seed 42.
 - **Git**: `14aa98e` (code identical to `f132ba1` engine-v2 tree; 14aa98e only adds docs + gitignore rules)
 - **Env (GCP Phase 1)**: VM `mahjong-a100` (a2-highgpu-1g: 1×A100-SXM4-40GB, 12 vCPU, 85GB RAM), zone us-central1-b, image family common-cu129-ubuntu-2204-nvidia-580 (driver 580.173.02), Python 3.10.12 venv, pinned packages mirrored from local rlhf_mahjong env (torch 2.12.0+cu130, transformers 5.8.1, peft 0.19.1, bitsandbytes 0.49.2 — full list in `pip_freeze.txt`)
@@ -39,14 +39,19 @@ guard, top-3+latest checkpoint retention by avg episode reward.
 
 ## Progress
 - [2026-08-01 17:59 (00:59 UTC 08-02, VM clock)] Launched on GCP VM. Pre-flight: dataset sha256 verified on VM; torch sees A100; pinned env installed clean.
+- [2026-08-01 ~18:30] SFT healthy: ~35 steps/min, epoch-2 avg loss 0.105 (smoke baseline was 0.46 at 1×200).
+- [2026-08-01 ~19:00] SFT 3/3 complete, adapter saved. User decision: stop before RL and switch the RL phase to the energy-consistent PBRS reward (docs/reward_energy_pbrs.md) as a new experiment reusing this SFT adapter. This run therefore contributes the SFT artifact; no RL epochs were trained under the step reward.
 
 ## Results
-| Metric | This run | Baseline | Success criterion |
-|---|---|---|---|
-| (pending) | | | |
+SFT only: 3 epochs × 2000 samples completed on A100, final epoch avg loss ≈0.105.
+Deliverable artifact: `checkpoints_sft_warmup_mahjong` (LoRA adapter), consumed by
+the successor PBRS run. No RL metrics exist for this run.
 
 ## Conclusion
-(pending)
+Partially superseded rather than failed: hypotheses moved unchanged to the PBRS
+successor; the step-reward RL arm was retired before start because its shaping
+is farmable and inconsistent with settlement (the PBRS analysis, triggered by
+user review, showed +2/step accumulates ~10× the settlement scale).
 
 ## Next Steps (queued before launch, inherited)
 - Defense probes: measure fold-rate and deal-in-rate after opponent riichi from per-epoch rollout logs (`mahjong_epoch_N_rollouts.txt`).

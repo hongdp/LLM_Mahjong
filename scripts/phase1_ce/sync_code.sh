@@ -4,9 +4,10 @@
 # Relies on the ssh Host alias written by start_vm.sh (gcloud compute config-ssh).
 set -euo pipefail
 
+# Overridable for multi-VM experiments: VM_NAME=... ZONE=... bash sync_code.sh
 PROJECT_ID="workstation-185016"
-ZONE="us-central1-b"
-VM_NAME="mahjong-a100"
+ZONE="${ZONE:-us-central1-b}"
+VM_NAME="${VM_NAME:-mahjong-a100}"
 SSH_HOST="$VM_NAME.$ZONE.$PROJECT_ID"
 REMOTE_DIR="LLM_Mahjong"
 SFT_SHA256="b3eefd6d144e662b6ed4239cfbdb62197a2c4a941264ae360ab5a250615becf6"

@@ -4,11 +4,19 @@ import torch
 
 @dataclass
 class TrajectoryStep:
-    """Represents a single state-action-reward transition."""
+    """Represents a single state-action-reward transition.
+
+    gen_token_ids / old_logprobs are populated only when the rollout runs
+    with capture_logprobs=True (PPO): the exact sampled token ids and the
+    behavior policy's raw-logit logprobs for them. Storing ids (not text)
+    sidesteps retokenization drift between rollout and update time.
+    """
     prompt_text: str
     action_text: str
     reward: float
     is_terminal: bool
+    gen_token_ids: list = None
+    old_logprobs: list = None
 
 class ReplayBuffer:
     """
@@ -46,7 +54,9 @@ class ReplayBuffer:
                 all_samples.append({
                     "prompt": step.prompt_text,
                     "action": step.action_text,
-                    "return": R
+                    "return": R,
+                    "gen_token_ids": step.gen_token_ids,
+                    "old_logprobs": step.old_logprobs,
                 })
 
         if not all_returns:

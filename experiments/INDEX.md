@@ -4,7 +4,11 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
-| 2026-08-01 | `v2_engine_full_run_20260802_005918` | 同 `v2_engine_full_run_20260801_165312` 的原样迁移（GCP A100 40GB，超参/数据/seed 全同），四条预注册成功标准继承 | 🏃 运行中（预计 ~13h，结果自动传 gs://llm-mahjong-experiments 后 VM 自动关机） | (pending) |
+| 2026-08-01 | `v2_engine_pbrs_run_20260802_041048` | PBRS+REINFORCE 基线（022840 的 infra rev2 重启，设计不变，central A100） | 🏃 运行中 | (pending) |
+| 2026-08-01 | `v2_engine_ppo_run_20260802_041049` | Arm A：PPO 消融——对 041048 仅换更新算法（同 adapter/奖励/seed，east A100） | 🏃 运行中 | (pending) |
+| 2026-08-01 | `v2_engine_ppo_value_run_20260802_041051` | Arm B：PPO+价值 bundle（Φ宝牌项 + prompt 价值事实 + 价值教师新 SFT，europe A100） | 🏃 运行中（先 SFT 3×2000 再 RL） | (pending) |
+| 2026-08-01 | `v2_engine_pbrs_run_20260802_022840` | PBRS 奖励 RL run（复用 005918 SFT adapter） | ⏹ epoch 1 中止（无产出）：诊断出 rollout host-launch-bound（A100 11 tok/s，GPU 18%），预计 50h/$180 | 设计原样迁移到 infra rev2 重启（fast-path 内核 + 4 局并发批量 rollout）；教训见 SKILLS.md 性能诊断节 |
+| 2026-08-01 | `v2_engine_full_run_20260802_005918` | 原实验设计迁移 GCP A100；实际只完成 SFT 阶段 | SFT 3×2000 完成，final epoch loss ≈0.105，adapter 产出 | ⏹ RL 开跑前用户叫停：step 奖励可刷分且与结算不自洽，RL 阶段改用 PBRS 奖励另起新实验（复用本次 SFT adapter，单变量对照） |
 | 2026-08-01 | `v2_engine_full_run_20260801_165312` | v2 引擎首次完整训练：忠实 CoT SFT (3ep×2000) + 50 epoch RL，Qwen3.5-2B | ⏸ 用户在 SFT 阶段主动暂停（无 checkpoint） | 实验设计迁移至 GCP VM 继续（见 docs/handoff_gcp_phase1.md），成功标准原样继承 |
 | 2026-08-01 | `v2_smoke_20260801_164239` | 冒烟：模板对齐修复后验证 SFT+RL 管线 | 格式合规 100% (86/86)，SFT loss 0.46，无 OOM | ✅ 管线就绪；Qwen3.5 需 enable_thinking 模板对齐 |
 | 2026-08-01 | `v2_smoke_20260801_162930` | 冒烟：Qwen3.5-2B + 新引擎 + 忠实 CoT 数据首测 | 格式合规仅 69.5%，失败全为裸推理文本 | ❌ 暴露 chat template think 块错位 → 促成 chat_format.py 统一渲染 |

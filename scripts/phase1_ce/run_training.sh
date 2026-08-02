@@ -12,7 +12,8 @@ set -uo pipefail
 trap 'echo "[shutdown] EXIT trap — powering off"; sudo shutdown -h now' EXIT
 
 REPO="$HOME/LLM_Mahjong"
-CONFIG="configs/v2_full_run.json"
+CONFIG="${1:-configs/v2_full_run.json}"   # pass a config path as $1 to override
+export PYTHONUNBUFFERED=1   # stream prints to the nohup log in real time
 VENV="$HOME/venvs/rlhf"
 GCS_BUCKET="gs://llm-mahjong-experiments"
 
