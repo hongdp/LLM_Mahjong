@@ -285,12 +285,28 @@ function tileRow(codes, opts={}){
   });
   return row;
 }
-function meldBoxes(melds, size){
+function meldBoxes(melds, size, sources){
+  /* sources[i] (optional): {rot, tile} — display the claimed tile sideways at
+     position rot, mahjong-style: left = from 上家, middle = 对面, right = 下家 */
   const frag = document.createDocumentFragment();
-  (melds||[]).forEach(m=>{
+  (melds||[]).forEach((m,mi)=>{
     const box = el("span","meldbox");
-    box.title = m.type;
-    m.tiles.forEach(t=>box.append(tileEl(t, size||"mini")));
+    const src = sources?.[mi];
+    let tiles = m.tiles;
+    if (src){
+      const k = tiles.indexOf(src.tile);
+      if (k >= 0){
+        tiles = [...tiles];
+        tiles.splice(k, 1);
+        tiles.splice(Math.min(src.rot, tiles.length), 0, src.tile);
+      }
+    }
+    box.title = m.type + (src ? `（来自${["","下家","对面","上家"][src.rel]||"?"}）` : "");
+    tiles.forEach((t,ti)=>{
+      const e = tileEl(t, size||"mini");
+      if (src && ti === src.rot) e.classList.add("sideways");
+      box.append(e);
+    });
     frag.append(box);
   });
   return frag;
@@ -620,7 +636,7 @@ function riverGrid(river){
   });
   return rv;
 }
-function seatBlock(name, pts, riichi, melds, river, isMe){
+function seatBlock(name, pts, riichi, melds, river, isMe, meldSrc){
   const b=el("div","seat");
   const chip=el("div","schip"+(isMe?" me-chip":""));
   chip.append(el("span","sname",name));
@@ -628,7 +644,7 @@ function seatBlock(name, pts, riichi, melds, river, isMe){
   if (riichi) chip.append(el("span","sriichi","立直"));
   b.append(chip);
   if (melds?.length){
-    const m=el("div","smelds"); m.append(meldBoxes(melds,"tiny")); b.append(m);
+    const m=el("div","smelds"); m.append(meldBoxes(melds,"tiny",meldSrc)); b.append(m);
   }
   b.append(riverGrid(river));
   return b;
@@ -721,6 +737,9 @@ function renderStepView(){
   const mb=el("div","mboard");
 
   /* one row per seat, ordered 对面 → 上家 → 下家, then center strip, then 自家 */
+  const game=CUR.games[CUR.game]||[];
+  const tl=timelineFor(game);
+  const claims=claimSources(tl);
   const RELNAME={1:"下家",2:"对面",3:"上家"};
   const opps=(st.opponents||[]).map(op=>({
     ...op, rel:((W2I[op.seat]??0)-selfW+4)%4}));
@@ -728,7 +747,8 @@ function renderStepView(){
     const op=opps.find(o=>o.rel===rel);
     if (!op) return;
     mb.append(seatBlock(`${RELNAME[rel]}·${op.seat}`,op.points,
-      op.riichi||(op.river||[]).some(t=>t.riichi), op.melds, op.river, false));
+      op.riichi||(op.river||[]).some(t=>t.riichi), op.melds, op.river, false,
+      meldSources(op.melds, claims[op.idx])));
   });
 
   /* center info strip */
@@ -748,14 +768,18 @@ function renderStepView(){
   if (st.terminal) c.append(el("div","crow","终局步"));
   mb.append(c);
 
-  /* self row: reconstructed river (prompt only lists opponents' rivers,
-     so rebuild ours from earlier discard/riichi actions), hand below. */
-  const ownRiver=steps.slice(0,CUR.step)
-    .map(s=>s.action)
-    .filter(a=>a&&(a.type==="discard"||a.type==="riichi")&&a.tile)
-    .map(a=>({t:a.tile,riichi:a.type==="riichi"}));
+  /* self row: the prompt only lists opponents' rivers, so derive ours via
+     the game timeline (engine snapshots — keeps claimed tiles out). */
+  const ti=tl.findIndex(x=>x.pi===CUR.player && x.si===CUR.step);
+  const ownRiver = ti>=0
+    ? actorRiver(tl, ti, tl[ti], game)
+    : steps.slice(0,CUR.step)
+        .map(s=>s.action)
+        .filter(a=>a&&(a.type==="discard"||a.type==="riichi")&&a.tile)
+        .map(a=>({t:a.tile,riichi:a.type==="riichi"}));
   const selfBlock=seatBlock(`自家·${me.seat||"?"}`,me.points??"?",
-    !!me.riichi, me.melds, ownRiver, true);
+    !!me.riichi, me.melds, ownRiver, true,
+    meldSources(me.melds, claims[CUR.player]));
   mb.append(selfBlock);
   const hand=el("div","shand");
   const hl=(st.action?.type==="discard"||st.action?.type==="riichi")?st.action.tile:null;
@@ -863,21 +887,63 @@ function handAfter(st){
   return h;
 }
 
+/* timeline for the current game, cached (playback reuses its own copy) */
+function timelineFor(game){
+  if (PLAY.game===game && PLAY.tl.length) return PLAY.tl;
+  if (CUR._tlGame!==game){ CUR._tlGame=game; CUR._tl=buildTimeline(game); }
+  return CUR._tl;
+}
+
+/* who fed each call: scan the timeline pairing every successful pon/chi/kan
+   with the discard it claimed; rel = (discarder-caller)%4: 1下家 2对面 3上家 */
+function claimSources(tl){
+  const out={0:[],1:[],2:[],3:[]};
+  let last=null;                       // most recent unclaimed discard
+  (tl||[]).forEach(e=>{
+    const a=e.st.action||{};
+    if ((a.type==="discard"||a.type==="riichi") && a.tile)
+      last={pi:e.pi, tile:a.tile};
+    else if (["pon","chi","kan"].includes(a.type) && a.tile && last &&
+             last.tile===a.tile && last.pi!==e.pi){
+      out[e.pi].push({type:a.type, tile:a.tile,
+                      rel:((last.pi-e.pi)+4)%4});
+      last=null;
+    }
+  });
+  return out;
+}
+
+/* align a player's meld list (prompt order == claim order) with its claim
+   records; returns per-meld {rot, tile, rel} or null (e.g. closed kan) */
+function meldSources(melds, claims){
+  let ci=0;
+  return (melds||[]).map(m=>{
+    const rec=(claims||[])[ci];
+    if (rec && rec.type===m.type && m.tiles.includes(rec.tile)){
+      ci++;
+      const n=m.tiles.length;
+      return {tile:rec.tile, rel:rec.rel,
+              rot:rec.rel===3?0:rec.rel===2?Math.min(1,n-1):n-1};
+    }
+    return null;
+  });
+}
+
 /* The actor's own river isn't in its prompt. Rebuilding it from past discard
    actions alone would resurrect tiles that were claimed away (the engine
    removes a pon/chi'd tile from the discarder's river) — so prefer the most
    recent OTHER player's prompt, which carries the engine's authoritative view
    of the actor's river, then append the actor's discards made since that
    snapshot (dropping one again if a later claim took it). */
-function actorRiver(i, e, game){
+function actorRiver(tl, i, e, game){
   for (let k=i-1;k>=0;k--){
-    const o=PLAY.tl[k];
+    const o=tl[k];
     if (o.pi===e.pi) continue;
     const op=(o.st.opponents||[]).find(x=>x.idx===e.pi);
     if (!op) continue;
     const base=(op.river||[]).map(t=>({...t}));
     for (let j=k+1;j<i;j++){
-      const t=PLAY.tl[j], a=t.st.action||{};
+      const t=tl[j], a=t.st.action||{};
       if (t.pi===e.pi && (a.type==="discard"||a.type==="riichi") && a.tile)
         base.push({t:a.tile, riichi:a.type==="riichi", mine:true});
       else if (t.pi!==e.pi && ["pon","chi","kan"].includes(a.type) &&
@@ -906,7 +972,7 @@ function renderPlayback(i){
   const info={};
   info[e.pi]={seat:st.self?.seat, points:st.self?.points, riichi:!!st.self?.riichi,
     melds:st.self?.melds||[],
-    river:actorRiver(i, e, game)};
+    river:actorRiver(PLAY.tl, i, e, game)};
   (st.opponents||[]).forEach(op=>{
     info[op.idx]={seat:op.seat, points:op.points,
       riichi:op.riichi||(op.river||[]).some(t=>t.riichi),
@@ -948,13 +1014,14 @@ function renderPlayback(i){
   /* seat rows top→bottom in turn order 东→南→西→北 (dealer first), so the
      acting highlight sweeps straight down each 巡; viewer's hand sits
      directly under their own row */
+  const claims=claimSources(PLAY.tl.slice(0, i+1));
   ["东","南","西","北"].forEach(w=>{
     const p=Object.keys(info).map(Number).find(q=>info[q]?.seat===w);
     if (p===undefined) return;
     const d=info[p];
     const isV=p===V;
     const blk=seatBlock(`${w}家·P${p}${isV?"·自家":""}`,d.points,d.riichi,
-      d.melds,d.river,isV);
+      d.melds,d.river,isV,meldSources(d.melds, claims[p]));
     if (p===e.pi) blk.querySelector(".schip").classList.add("acting");
     mb.append(blk);
     if (isV) mb.append(hand);
