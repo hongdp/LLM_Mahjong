@@ -438,6 +438,16 @@ async function loadMetrics(){
   lineChart(mk(), fc, {title:"格式合规率", sub:"rl/format_compliance · 成功标准 ≥0.95，熔断 <0.30",
     xLabel:"epoch", includeY:[0,1], yFmt:v=>(v*100).toFixed(0)+"%",
     refLines:[{y:0.95,label:"标准 95%"},{y:0.30,label:"熔断 30%"}]});
+
+  /* PPO health charts — only when the run logged them (no-critic PPO:
+     these replace what a critic-loss panel would tell you) */
+  const kl=m["rl/approx_kl"]||[], cf=m["rl/clip_frac"]||[], pp=m["rl/ppo_passes"]||[];
+  if (kl.length) lineChart(mk(), kl, {title:"PPO approx KL", sub:"rl/approx_kl · 超 0.03 提前停内循环",
+    xLabel:"epoch", includeY:[0], refLines:[{y:0.03,label:"target_kl"}], yFmt:v=>fmt(v,4)});
+  if (cf.length) lineChart(mk(), cf, {title:"PPO 截断触发率", sub:"rl/clip_frac · ratio 越界被 clip 的 token 占比",
+    xLabel:"epoch", includeY:[0], yFmt:v=>(v*100).toFixed(1)+"%"});
+  if (pp.length) lineChart(mk(), pp, {title:"PPO 实际遍数", sub:"rl/ppo_passes · 每个 rollout 批被复用的次数（≤3）",
+    xLabel:"epoch", includeY:[0,3]});
 }
 
 /* ------------------------------------------------ rollouts */
