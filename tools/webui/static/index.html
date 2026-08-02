@@ -863,6 +863,36 @@ function handAfter(st){
   return h;
 }
 
+/* The actor's own river isn't in its prompt. Rebuilding it from past discard
+   actions alone would resurrect tiles that were claimed away (the engine
+   removes a pon/chi'd tile from the discarder's river) — so prefer the most
+   recent OTHER player's prompt, which carries the engine's authoritative view
+   of the actor's river, then append the actor's discards made since that
+   snapshot (dropping one again if a later claim took it). */
+function actorRiver(i, e, game){
+  for (let k=i-1;k>=0;k--){
+    const o=PLAY.tl[k];
+    if (o.pi===e.pi) continue;
+    const op=(o.st.opponents||[]).find(x=>x.idx===e.pi);
+    if (!op) continue;
+    const base=(op.river||[]).map(t=>({...t}));
+    for (let j=k+1;j<i;j++){
+      const t=PLAY.tl[j], a=t.st.action||{};
+      if (t.pi===e.pi && (a.type==="discard"||a.type==="riichi") && a.tile)
+        base.push({t:a.tile, riichi:a.type==="riichi", mine:true});
+      else if (t.pi!==e.pi && ["pon","chi","kan"].includes(a.type) &&
+               base.length && base[base.length-1].mine &&
+               base[base.length-1].t===a.tile)
+        base.pop();
+    }
+    return base;
+  }
+  return (game[e.pi]?.steps||[]).slice(0,e.si)
+    .map(s=>s.action)
+    .filter(a=>a&&(a.type==="discard"||a.type==="riichi")&&a.tile)
+    .map(a=>({t:a.tile,riichi:a.type==="riichi"}));
+}
+
 function renderPlayback(i){
   const host=document.getElementById("stepHost");
   const game=CUR.games[CUR.game]||[];
@@ -872,14 +902,11 @@ function renderPlayback(i){
   const st=e.st, g=st.global||{};
 
   /* player idx -> seat data at this moment (actor's prompt covers the
-     other three; the actor's own river is rebuilt from its past actions) */
+     other three; the actor's own river comes from the latest snapshot) */
   const info={};
   info[e.pi]={seat:st.self?.seat, points:st.self?.points, riichi:!!st.self?.riichi,
     melds:st.self?.melds||[],
-    river:(game[e.pi]?.steps||[]).slice(0,e.si)
-      .map(s=>s.action)
-      .filter(a=>a&&(a.type==="discard"||a.type==="riichi")&&a.tile)
-      .map(a=>({t:a.tile,riichi:a.type==="riichi"}))};
+    river:actorRiver(i, e, game)};
   (st.opponents||[]).forEach(op=>{
     info[op.idx]={seat:op.seat, points:op.points,
       riichi:op.riichi||(op.river||[]).some(t=>t.riichi),
