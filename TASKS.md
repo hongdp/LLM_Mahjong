@@ -1,0 +1,42 @@
+# 任务看板
+
+> 由 Claude 在每个里程碑同步。会话内的实时状态在 Claude Code 任务面板；本文件是持久快照。
+> 最后更新：2026-08-02 00:20（本地）
+
+## 🏃 进行中（自动执行，无需人工）
+
+| 任务 | 状态 | 触发/预计 |
+|---|---|---|
+| 三臂 rev3 训练：基线 PBRS+REINFORCE（central）/ Arm A PPO（east）/ Arm B PPO+价值（europe） | Epoch 2+/50，全绿（格式 ≥99.9%） | 完赛 ~2026-08-02 晚；各 VM 自动传 GCS + 关机 |
+| 舰队监控（20 分钟轮询 ×3 VM） | 在岗 | epoch/格式/KL/崩溃/关机事件 |
+
+## ⏳ 待命（条件触发，已获授权自主执行）
+
+| 任务 | 触发条件 |
+|---|---|
+| 逐臂收尾：拉 GCS 结果 → 补全 EXPERIMENT.md Results/Conclusion → INDEX | 每个 VM TERMINATED |
+| 三臂对比：成功标准判定 ×3、防守探针（对手立直后弃和率/放铳率）、B 臂价值探针（留宝率/和牌打点）、回报方差分解（critic vs 重放决策依据） | 三臂全部落地 |
+| 完赛通知（PushNotification）+ VM 全部关机兜底核查 | 分析完成后；**不等答复** |
+
+## ✅ 近期完成（2026-08-01 会话）
+
+- PPO（无 critic，clipped surrogate + KL 早停）；势函数奖励 PBRS + 宝牌价值项；价值感知 SFT 语料（16992 样本）
+- Rollout 性能：根因诊断（host-launch-bound）→ fast-path 内核 + bf16_lora + 12-24 局并发批量 = 单局 5.2× 提速
+- 三台 A100 基建（GCS 共享、自动关机、git-pull 同步、监控）；WebUI（曲线 + 雀魂式复盘 + 实时视图 + 结算明细 + 巡数精确计数）
+- 协变量基线（起手运气控制变量，--covariate_baseline，默认关）；v3 串联上下文设计文档（docs/v3_threaded_context_design.md）
+- 47 项单元测试全绿
+
+## 📥 背景队列（记录未立项，按预期收益排序）
+
+1. **v3 串联上下文架构**（设计已评审级；4 天排期；解决意图持久化 + 自家牌河观测缺口）
+2. **Critic value head**（同状态基线的摊销版；等方差分解数据定夺）
+3. 场景课程 + 稀有事件矿工（防守/高番的事件密度工程）
+4. 专家迭代棘轮（高分对局 → 下轮 SFT 语料）
+5. Vine 定点探针（立直宣言/攻防抉择的逐动作 Q 值）
+6. 模板迭代：自家牌河进 prompt（与 v3 或价值事实合并做）
+7. duplicate-deal 复式赛制 → checkpoint 评测工具（非训练用）
+
+## 💰 资源状态
+
+- VM：3× A100 训练中（~$11/h 合计），完赛自动关机；GCS bucket `llm-mahjong-experiments`
+- Git：master 领先 origin 6 个 commit（push 需用户确认）
