@@ -515,7 +515,7 @@ async function loadRollouts(){
 }
 $("#gameSel").onchange = e=>{ CUR.game=+e.target.value; fillPlayers(); };
 function fillPlayers(){
-  stopPlay();
+  resetPlay();
   const ps=$("#playerSel"); ps.innerHTML="";
   const g=CUR.games[CUR.game]||[];
   g.forEach((ep,i)=>{
@@ -696,6 +696,7 @@ function syncStep(){
   const steps=CUR._steps||[];
   if (!steps.length) return;
   CUR.step=Math.max(0, Math.min(CUR.step, steps.length-1));
+  PLAY.anchor={pi:CUR.player, si:CUR.step};   // next ▶ plays from here
   CUR._bars?.forEach((b,i)=>b.classList.toggle("cur", i===CUR.step));
   if (CUR._slider) CUR._slider.value=CUR.step;
   if (CUR._lbl) CUR._lbl.textContent=stepLabel(steps, CUR.step);
@@ -825,7 +826,7 @@ function renderStepView(){
    live data carries an exact per-game sequence (`seq`, file order); epoch
    logs don't, so fall back to wall-count ordering (draws consume the wall
    monotonically; interrupt offers sort after the draw they react to). */
-const PLAY={timer:null, idx:0, tl:[]};
+const PLAY={timer:null, idx:0, tl:[], game:null, anchor:null};
 
 function buildTimeline(game){
   const entries=[];
@@ -968,14 +969,23 @@ function stopPlay(){
   if (PLAY.timer){ clearInterval(PLAY.timer); PLAY.timer=null; }
   const b=$("#playBtn"); if (b) b.textContent="▶ 播放";
 }
+function resetPlay(){        // game/viewpoint changed: forget any resume state
+  stopPlay();
+  PLAY.game=null; PLAY.tl=[]; PLAY.idx=0; PLAY.anchor=null;
+}
 function startPlay(){
   const game=CUR.games[CUR.game];
   if (!game) return;
-  PLAY.tl=buildTimeline(game);
-  if (!PLAY.tl.length) return;
-  /* resume from the viewer's current step when it's on the timeline */
-  const k=PLAY.tl.findIndex(x=>x.pi===CUR.player && x.si===CUR.step);
-  PLAY.idx=(k>=0 && k<PLAY.tl.length-1) ? k : 0;
+  if (PLAY.game!==game){     // fresh game: always start from the beginning
+    PLAY.game=game; PLAY.tl=buildTimeline(game); PLAY.idx=0;
+  }
+  if (!PLAY.tl.length){ PLAY.game=null; return; }
+  if (PLAY.anchor){          // user scrubbed to a step: play from there
+    const k=PLAY.tl.findIndex(x=>x.pi===PLAY.anchor.pi && x.si===PLAY.anchor.si);
+    if (k>=0) PLAY.idx=k;
+    PLAY.anchor=null;
+  }
+  if (PLAY.idx>=PLAY.tl.length-1) PLAY.idx=0;   // finished: replay from start
   $("#playBtn").textContent="⏸ 暂停";
   renderPlayback(PLAY.idx);
   PLAY.timer=setInterval(playTick, playSeconds()*1000);
