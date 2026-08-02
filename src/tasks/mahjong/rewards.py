@@ -1,56 +1,73 @@
-import torch
 import re
 from typing import List
+
+import torch
+
 from src.core.base_reward import BaseRewardModel
-from src.tasks.mahjong.shanten import TileEfficiency
+from src.core.chat_format import visible_text
+from src.tasks.mahjong.shanten import TileEfficiency, pad_for_melds
+from src.tasks.mahjong.table import ACTION_RE
+
 
 class MahjongStepReward(BaseRewardModel):
     """
-    Implements the Step-level rewards defined in the design doc using real Tile Efficiency math.
+    Step-level tile-efficiency shaping.
+
+    Only discard-quality shaping and format penalties live here — game
+    actions (riichi/melds/wins) carry NO prior bonuses; their value must
+    come from the end-of-game settlement distributed by the engine.
     """
+
+    HAND_RE = re.compile(r'手牌: ((?:[1-9][mpsz] )*[1-9][mpsz])')
+    FULU_RE = re.compile(r'私有[^\n]*?副露: ([^\n]*)')
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.action_pattern = re.compile(r'<action\s+type="([^"]+)"(?:\s+tile="([^"]+)")?.*?/>')
-        self.hand_pattern = re.compile(r'手牌: ([1-9][mpsz] )*[1-9][mpsz]')
         self.te = TileEfficiency()
 
-    def compute_reward(self, prompts: List[str], responses: List[str], **kwargs) -> List[torch.Tensor]:
+    def compute_reward(self, prompts: List[str], responses: List[str],
+                       **kwargs) -> List[torch.Tensor]:
         rewards = []
         for prompt, response in zip(prompts, responses):
             score = 0.0
-            
-            # Extract current hand from prompt
-            hand_match = self.hand_pattern.search(prompt)
-            current_hand = []
-            if hand_match:
-                current_hand = hand_match.group(0).replace('手牌: ', '').split(' ')
+            match = ACTION_RE.search(visible_text(response))
 
-            match = self.action_pattern.search(response)
             if not match:
-                score -= 10.0 # Severe hallucination / XML break
+                score -= 10.0  # No action tag outside <think>
             else:
-                action_type = match.group(1)
-                tile = match.group(2)
-                
-                if action_type == "discard" and tile and current_hand:
-                    if tile not in current_hand:
-                        score -= 5.0 # Illegal discard hallucination
-                    else:
-                        # Evaluate real Ukeire
-                        candidates = self.te.evaluate_discards(current_hand)
-                        if candidates:
-                            # Calculate the max ukeire length among all discards
-                            max_ukeire = max([len(u) for u in candidates.values()])
-                            chosen_ukeire = len(candidates.get(tile, []))
-                            
-                            if chosen_ukeire == max_ukeire:
-                                score += 2.0 # Perfect efficiency
-                            else:
-                                # Proportional penalty based on how many tiles of efficiency were lost
-                                score -= (max_ukeire - chosen_ukeire) * 0.5
-                elif action_type in ["pon", "ron", "riichi"]:
-                    score += 1.0 # Base reward for valid game actions
-                    
-            rewards.append(torch.tensor(score, device=self.device, dtype=torch.float32))
-            
+                action_type, tile, _with = match.groups()
+                if action_type in ("discard", "riichi") and tile:
+                    hand_match = self.HAND_RE.search(prompt)
+                    hand = hand_match.group(1).split() if hand_match else []
+                    if hand and tile not in hand:
+                        score -= 5.0  # Discarding a tile not in hand
+                    elif hand:
+                        fulu_match = self.FULU_RE.search(prompt)
+                        n_melds = fulu_match.group(1).count('(') if fulu_match else 0
+                        try:
+                            padded = pad_for_melds(hand, n_melds)
+                            ranked = {
+                                t: v for t, v in
+                                self.te.evaluate_discards_ranked(padded).items()
+                                if t in hand
+                            }
+                            if ranked and tile in ranked:
+                                # Shanten first, ukeire second — rewarding
+                                # raw ukeire alone favours hand regression.
+                                min_sh = min(sh for sh, _ in ranked.values())
+                                max_uk = max(len(uk) for sh, uk in ranked.values()
+                                             if sh == min_sh)
+                                ch_sh, ch_uk = (ranked[tile][0],
+                                                len(ranked[tile][1]))
+                                if ch_sh > min_sh:
+                                    score -= 2.0 * (ch_sh - min_sh)
+                                elif ch_uk == max_uk:
+                                    score += 2.0
+                                else:
+                                    score -= (max_uk - ch_uk) * 0.5
+                        except Exception:
+                            pass  # Shaping is best-effort; never crash a rollout
+
+            rewards.append(torch.tensor(score, device=self.device,
+                                        dtype=torch.float32))
         return rewards

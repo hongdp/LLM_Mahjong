@@ -1,210 +1,324 @@
 """
 Generate SFT training data from complete simulated Mahjong games.
 
-Each sample is one player turn:
-  - prompt  : ChatML-formatted system+user message (game state)
-  - response: <think>...</think><action type="discard" tile="X" />
+Each sample is one player decision (turn or interrupt phase):
+  - prompt  : ChatML system+user message built from the SAME prompt module
+              the live orchestrator uses (src/tasks/mahjong/prompts.py)
+  - response: <think>...</think> + one action copied verbatim from the
+              engine-provided legal action list
 
-The discard chosen is either the best Ukeire move (if shanten module
-is available) or a random legal tile, giving the model a realistic
-but always-legal teacher signal.
+FAITHFUL CoT: the <think> content is derived from the SAME computation
+that selects the action — real shanten counts, ukeire comparisons, wait
+tiles, and yaku from the scorer — never post-hoc template phrases. The
+model is taught the decision procedure (enumerate -> compare -> pick),
+not a rationalization habit.
+
+Teacher policy: always take validated tsumo/ron; declare riichi often
+(picking the widest wait); claim melds only when they REDUCE shanten,
+and only sometimes; explicit skip decisions (with the shanten reasoning
+for skipping) are also sampled so the model learns to pass.
 
 Usage:
-    python -m scripts.generate_sft_data --num_games 200 --out data/sft_mahjong.jsonl
+    python -m scripts.generate_sft_data --num_games 300 --out data/sft_mahjong.jsonl
 """
 
 import argparse
 import json
 import os
 import random
-import sys
 import re
+import sys
 
-# Allow running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.tasks.mahjong.table import PyMahjongTable
+from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
+from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content
+from src.tasks.mahjong.shanten import TileEfficiency, pad_for_melds
 
-try:
-    from src.tasks.mahjong.shanten import TileEfficiency
-    _te = TileEfficiency()
-    USE_SHANTEN = True
-except Exception:
-    _te = None
-    USE_SHANTEN = False
+_te = TileEfficiency()
 
-# ─────────────────────────────────────────────
-# Prompt template (mirrors orchestrator.py)
-# ─────────────────────────────────────────────
-SYSTEM_CONTENT = (
-    "你是一个专业的日本麻将AI。\n"
-    "### 状态说明：\n"
-    "- 场况 (Global)：包含场风、局数和宝牌指示牌。\n"
-    "- 私有 (Private)：包含你的自风、点数和手牌。\n"
-    "- 公共 (Public)：包含其他所有玩家的牌河和副露。\n"
-    "- 合法动作 (Legal Actions)：包含当前你可以执行的合法动作列表。\n"
-    "### 输出格式要求：\n"
-    "你必须且只能从当前状态的【合法动作】列表中选择一个动作输出。\n"
-    "所有的思考必须写在 <think> 和 </think> 标签内。\n"
-    "最后在标签外部输出唯一的单行XML动作（如 <action type=\"discard\" tile=\"1m\" />）。\n"
-)
+RIICHI_PROB = 0.8
+MELD_PROB = 0.25     # gate applies only to shanten-REDUCING melds
+SKIP_SAMPLE_PROB = 0.3
+KAN_PROB = 0.3
 
 
-def choose_discard(hand: list[str]) -> str:
-    """Pick the best tile to discard (highest-Ukeire or random)."""
-    if USE_SHANTEN and _te is not None:
-        try:
-            candidates = _te.evaluate_discards(hand)
-            if candidates:
-                best = max(candidates, key=lambda t: len(candidates[t]))
-                return best
-        except Exception:
-            pass
-    return random.choice(hand)
+def _shanten(tiles: list, n_melds: int) -> int:
+    n_melds = max(0, min(n_melds, (14 - len(tiles)) // 3))
+    try:
+        return _te.calculate_shanten(pad_for_melds(tiles, n_melds))
+    except ValueError:
+        return 8
 
 
-def make_think(tile: str, hand: list[str]) -> str:
-    """Generate a short, plausible thinking rationale for the chosen discard."""
-    # Check if it forms any pair / partial sequence context
-    count = hand.count(tile)
-    suit = tile[-1]
-    num = tile[:-1] if tile[:-1].isdigit() else ""
+def ranked_discards(hand: list, n_melds: int) -> dict:
+    """{discard_tile: (post_shanten, ukeire_list)} for tiles in hand."""
+    try:
+        ranked = _te.evaluate_discards_ranked(pad_for_melds(hand, n_melds))
+        return {t: v for t, v in ranked.items() if t in hand}
+    except Exception:
+        return {}
 
-    if suit == "z":
-        reason = f"{tile}是字牌（孤张），无法凑成顺子，优先打出。"
-    elif count == 1:
-        # Check adjacency
-        neighbors = []
-        if num:
-            n = int(num)
-            for delta in [-2, -1, 1, 2]:
-                neighbor = f"{n+delta}{suit}"
-                if neighbor in hand and neighbor != tile:
-                    neighbors.append(neighbor)
-        if neighbors:
-            reason = f"{tile}附近有搭子，但整体而言是多余牌，打出{tile}。"
+
+def waits_after_discard(table, pid: int, discard_tile: str) -> list:
+    rest = list(table.hands[pid])
+    rest.remove(discard_tile)
+    n = len(table.melds[pid])
+    waits = []
+    for i34 in range(34):
+        from src.tasks.mahjong.table import str_from_34
+        t = str_from_34(i34)
+        if rest.count(t) < 4 and _shanten(rest + [t], n) == -1:
+            waits.append(t)
+    return waits
+
+
+def discard_decision(table, pid: int, hand: list):
+    """Shanten-first, ukeire-second discard + faithful think from the
+    same computation."""
+    n_melds = len(table.melds[pid])
+    ranked = ranked_discards(hand, n_melds)
+    if not ranked:
+        tile = random.choice(hand)
+        return tile, f"打{tile}调整手牌结构。"
+    key = lambda t: (ranked[t][0], -len(ranked[t][1]))
+    tile = min(ranked, key=key)
+    top3 = sorted(ranked.items(), key=lambda kv: (kv[1][0], -len(kv[1][1])))[:3]
+    comparison = "，".join(
+        f"打{t}→{sh}向听/受入{len(uk)}种" for t, (sh, uk) in top3
+    )
+    sh_best = ranked[tile][0]
+    return tile, (
+        f"候选对比：{comparison}。打{tile}保持{sh_best}向听且受入最大。"
+    )
+
+
+def win_think(table, pid: int, win_tile: str, is_tsumo: bool) -> str:
+    result = table._win_result(pid, win_tile, is_tsumo=is_tsumo)
+    how = "自摸" if is_tsumo else "荣和"
+    if result is None:  # defensive: should not happen for offered wins
+        return f"{win_tile}补全和牌形，{how}。"
+    yaku = "、".join(str(y) for y in (result.yaku or []))
+    return f"{win_tile}补全和牌形：{yaku}，{result.han}番{result.fu}符，{how}。"
+
+
+def riichi_think(table, pid: int, tile: str) -> str:
+    waits = waits_after_discard(table, pid, tile)
+    visible = table.discards
+    remain = {
+        w: 4 - table.hands[pid].count(w)
+        - sum(d.replace('*', '') == w for r in visible.values() for d in r)
+        for w in waits
+    }
+    wait_str = " ".join(f"{w}(剩{max(0, remain[w])}张)" for w in waits)
+    return f"打{tile}后门清听牌，等 {wait_str}。宣告立直施压。"
+
+
+def meld_shanten_delta(table, pid: int, action_xml: str):
+    """(before, after) shanten if this claim were executed."""
+    m = ACTION_RE.search(action_xml)
+    a_type, tile, with_attr = m.group(1), m.group(2), m.group(3)
+    hand = list(table.hands[pid])
+    n = len(table.melds[pid])
+    before = _shanten(hand, n)
+    removed = []
+    if a_type == "pon":
+        removed = [tile, tile]
+    elif a_type == "kan":
+        removed = [tile, tile, tile]
+    elif a_type == "chi" and with_attr:
+        removed = with_attr.split()
+    rest = list(hand)
+    for t in removed:
+        if t in rest:
+            rest.remove(t)
+    after = _shanten(rest, n + 1)
+    return before, after
+
+
+MELD_NAME = {"pon": "碰", "kan": "杠", "chi": "吃"}
+
+
+def make_response(think: str, action_xml: str) -> str:
+    return f"<think>\n{think}\n</think>\n{action_xml}"
+
+
+def make_sample(game_id: int, player_id: int, obs: str,
+                legal_actions: list, action_xml: str, think: str) -> dict:
+    user_content = build_user_content(obs, legal_actions)
+    response = make_response(think, action_xml)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+        {"role": "assistant", "content": response},
+    ]
+    flat_text = (
+        f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+        f"<|im_start|>user\n{user_content}<|im_end|>\n"
+        f"<|im_start|>assistant\n{response}<|im_end|>"
+    )
+    return {"game_id": game_id, "player_id": player_id,
+            "messages": messages, "text": flat_text}
+
+
+def pick_turn_action(table, pid: int, hand: list, legal_actions: list):
+    """Teacher decision for the turn phase. Returns (action_xml, think)."""
+    by_type = {}
+    for a in legal_actions:
+        by_type.setdefault(ACTION_RE.search(a).group(1), []).append(a)
+
+    if "tsumo" in by_type:
+        return by_type["tsumo"][0], win_think(
+            table, pid, table.last_drawn[pid], is_tsumo=True)
+
+    if table.riichi[pid]:
+        a = by_type["discard"][0]
+        tile = ACTION_RE.search(a).group(2)
+        return a, f"已立直锁手，只能摸切{tile}，等待听牌命中。"
+
+    if "riichi" in by_type and random.random() < RIICHI_PROB:
+        best_a, best_waits = None, []
+        for a in by_type["riichi"]:
+            tile = ACTION_RE.search(a).group(2)
+            waits = waits_after_discard(table, pid, tile)
+            if len(waits) > len(best_waits):
+                best_a, best_waits = a, waits
+        tile = ACTION_RE.search(best_a).group(2)
+        return best_a, riichi_think(table, pid, tile)
+
+    if "kan" in by_type and random.random() < KAN_PROB:
+        a = by_type["kan"][0]
+        tile = ACTION_RE.search(a).group(2)
+        return a, f"{tile}已集齐四张，开杠翻新宝牌并补摸岭上牌。"
+
+    tile, think = discard_decision(table, pid, hand)
+    a = f'<action type="discard" tile="{tile}" />'
+    if a not in legal_actions:
+        a = next((x for x in legal_actions if 'discard' in x), legal_actions[0])
+    return a, think
+
+
+def pick_interrupt_action(table, i_id: int, options: list):
+    """Teacher decision for the interrupt phase.
+    Returns (action_xml, think, is_claim) or None to emit no sample."""
+    claim_tile = table.last_discard.replace('*', '') if table.last_discard else ""
+    ron = next((a for a in options if 'ron' in a), None)
+    if ron is not None:
+        return ron, win_think(table, i_id, claim_tile, is_tsumo=False), True
+
+    melds = [a for a in options if 'skip' not in a]
+    if not melds:
+        return None
+    # Evaluate every claim by its real shanten delta.
+    scored = []
+    for a in melds:
+        before, after = meld_shanten_delta(table, i_id, a)
+        scored.append((after, before, a))
+    scored.sort()
+    after, before, best = scored[0]
+    m = ACTION_RE.search(best)
+    name = MELD_NAME.get(m.group(1), m.group(1))
+
+    if after < before and random.random() < MELD_PROB:
+        think = (f"{name}{claim_tile}后向听{before}→{after}，"
+                 f"鸣牌加速听牌。")
+        return best, think, True
+    if random.random() < SKIP_SAMPLE_PROB:
+        if after >= before:
+            think = (f"鸣牌不降向听（{before}→{after}），"
+                     f"破坏门清不值得，跳过。")
         else:
-            reason = f"{tile}是孤张，无法与其他牌凑成顺子或刻子，打出{tile}。"
-    else:
-        reason = f"{tile}在手牌中多余，打出{tile}以优化手牌结构。"
-    return reason
+            think = (f"虽然{name}{claim_tile}可降向听（{before}→{after}），"
+                     f"但保留门清和立直机会价值更高，跳过。")
+        return '<action type="skip" />', think, False
+    return None
 
 
-def format_messages(obs: str, legal_actions: list[str]) -> tuple[str, str]:
-    """Return (system_content, user_content) for a given observation."""
-    legal_actions_str = "\n".join([f"  - {act}" for act in legal_actions])
-    user_content = f"### 当前状态：\nState:\n{obs}合法动作 (Legal Actions)：\n{legal_actions_str}\n\n请输出你的动作："
-    return SYSTEM_CONTENT, user_content
-
-
-def simulate_game(game_id: int) -> list[dict]:
-    """Run one complete game and collect (prompt, response) pairs."""
+def simulate_game(game_id: int) -> list:
     table = PyMahjongTable()
-    table.reset()
     samples = []
 
-    max_turns = 200  # safety cap
-    for _ in range(max_turns):
+    for _ in range(400):  # safety cap; games end naturally well before
         player_id = table.turn
         hand = list(table.hands[player_id])
         obs = table._format_state(player_id)
         legal_actions = table.get_legal_actions(player_id)
 
-        # Allow testing tsumo/riichi directly if available
-        non_discard = [a for a in legal_actions if 'discard' not in a]
-        if non_discard and random.random() < 0.5:
-            action_xml = random.choice(non_discard)
-            tile = re.search(r'tile="([^"]+)"', action_xml)
-            tile = tile.group(1) if tile else ""
-            think_text = "条件满足，执行特殊动作以推进胜利进度。"
-        else:
-            tile = choose_discard(hand)
-            think_text = make_think(tile, hand)
-            action_xml = f'<action type="discard" tile="{tile}" />'
-            
-        response = f"<think>\n{think_text}\n</think>\n{action_xml}"
-        system_content, user_content = format_messages(obs, legal_actions)
+        action_xml, think = pick_turn_action(
+            table, player_id, hand, legal_actions)
+        samples.append(make_sample(
+            game_id, player_id, obs, legal_actions, action_xml, think))
 
-        # Store in both raw-message and flat-text form
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user",   "content": user_content},
-            {"role": "assistant", "content": response},
-        ]
-        flat_text = (
-            f"<|im_start|>system\n{system_content}<|im_end|>\n"
-            f"<|im_start|>user\n{user_content}<|im_end|>\n"
-            f"<|im_start|>assistant\n{response}<|im_end|>"
-        )
+        _, _, done, info = table.step(player_id, action_xml)
+        if done:
+            break
+        if not info.get("discarded", False):
+            continue  # kan: same player keeps the turn
 
-        samples.append({"game_id": game_id, "player_id": player_id, "messages": messages, "text": flat_text})
-
-        # Step env with the chosen action
-        _, _, done, _ = table.step(player_id, action_xml)
-        if done: break
-        
-        # --- INTERRUPT PHASE ---
-        interrupted = False
+        # --- INTERRUPT PHASE (priority: ron > kan/pon > chi) ---
+        claims = []
         for offset in range(1, 4):
             i_id = (player_id + offset) % 4
-            interrupt_actions = table.get_interrupt_actions(i_id)
-            non_skip = [a for a in interrupt_actions if 'skip' not in a]
-            
-            if non_skip and random.random() < 0.3:  # 30% chance to claim
-                action = random.choice(non_skip)
-                i_obs = table._format_state(i_id)
-                i_think = f"机会来了，可以执行鸣牌或和牌动作，执行 {action}。"
-                i_response = f"<think>\n{i_think}\n</think>\n{action}"
-                i_sys, i_user = format_messages(i_obs, interrupt_actions)
-                
-                i_msg = [
-                    {"role": "system", "content": i_sys},
-                    {"role": "user", "content": i_user},
-                    {"role": "assistant", "content": i_response}
-                ]
-                i_flat = f"<|im_start|>system\n{i_sys}<|im_end|>\n<|im_start|>user\n{i_user}<|im_end|>\n<|im_start|>assistant\n{i_response}<|im_end|>"
-                samples.append({"game_id": game_id, "player_id": i_id, "messages": i_msg, "text": i_flat})
-                
-                _, _, done, _ = table.step_interrupt(i_id, action)
-                interrupted = True
+            options = table.get_interrupt_actions(i_id)
+            if len(options) == 1:
+                continue
+            decision = pick_interrupt_action(table, i_id, options)
+            if decision is None:
+                continue
+            action, i_think, is_claim = decision
+            i_obs = table._format_state(i_id)
+            if is_claim:
+                claims.append((0 if 'ron' in action else 1,
+                               i_id, i_obs, options, action, i_think))
+            else:
+                samples.append(make_sample(
+                    game_id, i_id, i_obs, options, action, i_think))
+
+        interrupted = False
+        for _prio, i_id, i_obs, options, action, i_think in sorted(
+                claims, key=lambda c: c[0]):
+            if interrupted:
                 break
-                
-        if done: break
-        
+            samples.append(make_sample(
+                game_id, i_id, i_obs, options, action, i_think))
+            _, _, done, info = table.step_interrupt(i_id, action)
+            interrupted = info.get("interrupt", False)
+            if done:
+                return samples
+
         if not interrupted:
             _, done = table.advance_turn()
-            if done: break
+            if done:
+                break
 
     return samples
 
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Mahjong SFT data")
-    parser.add_argument("--num_games", type=int, default=200,
-                        help="Number of complete games to simulate")
-    parser.add_argument("--out", type=str, default="data/sft_mahjong.jsonl",
-                        help="Output JSONL path")
+    parser.add_argument("--num_games", type=int, default=200)
+    parser.add_argument("--out", type=str, default="data/sft_mahjong.jsonl")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     random.seed(args.seed)
-    os.makedirs(os.path.dirname(args.out) if os.path.dirname(args.out) else ".", exist_ok=True)
+    out_dir = os.path.dirname(args.out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
-    total_samples = 0
-    strategy = "Ukeire-optimal" if USE_SHANTEN else "random-legal"
-    print(f"Generating SFT data: {args.num_games} games | discard strategy: {strategy}")
-
+    total = 0
     with open(args.out, "w", encoding="utf-8") as f:
         for game_id in range(args.num_games):
             samples = simulate_game(game_id)
             for s in samples:
                 f.write(json.dumps(s, ensure_ascii=False) + "\n")
-            total_samples += len(samples)
+            total += len(samples)
             if (game_id + 1) % 20 == 0:
-                print(f"  {game_id+1}/{args.num_games} games  ({total_samples} samples so far)")
+                print(f"  {game_id + 1}/{args.num_games} games "
+                      f"({total} samples so far)")
 
-    print(f"\n✅ Done! {total_samples} samples written to {args.out}")
-    print(f"   Avg {total_samples / args.num_games:.1f} turns/game")
+    print(f"\n✅ Done! {total} samples written to {args.out}")
+    print(f"   Avg {total / args.num_games:.1f} samples/game")
 
 
 if __name__ == "__main__":

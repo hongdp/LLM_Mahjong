@@ -15,7 +15,8 @@ from torch.utils.tensorboard import SummaryWriter
 
 from src.core.registry import get_task
 from src.core.rollout import ReplayBuffer
-import src.tasks.mahjong.task 
+from src.core.chat_format import visible_text, render_sft_texts
+import src.tasks.mahjong.task
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Custom Multi-Turn RLHF Trainer")
@@ -64,6 +65,10 @@ def parse_args():
     parser.add_argument(
         "--min_format_rate", type=float, default=0.3,
         help="Phase 2 only: abort if rollout format compliance stays below this for 3 consecutive epochs."
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42,
+        help="Seed for python/torch RNGs (deals, rollout sampling, SFT shuffling)."
     )
     args = parser.parse_args()
     
@@ -122,7 +127,11 @@ def plot_metrics(metrics: dict, task_name: str, exp_dir: str):
 def main():
     import datetime
     args = parse_args()
-    
+
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+
     if args.exp_name is None:
         args.exp_name = f"exp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     elif not args.resume:
@@ -166,7 +175,15 @@ def main():
             print(f"Loading PEFT adapter from {args.peft_model_path}...")
             model = PeftModel.from_pretrained(model, args.peft_model_path, is_trainable=True)
         else:
-            peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM")
+            # Explicit target_modules: new architectures (e.g. qwen3_5) have
+            # no default mapping in peft yet; these names cover all Qwen
+            # generations.
+            peft_config = LoraConfig(
+                r=16, lora_alpha=32, lora_dropout=0.05, bias="none",
+                task_type="CAUSAL_LM",
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
+            )
             model = get_peft_model(model, peft_config)
     else:
         model.to(device)
@@ -187,16 +204,22 @@ def main():
     # --- Phase 1 format reward helper ---
     # Whitelist of action types the table engine actually emits — hallucinated
     # types (e.g. "reveal", "hold") must NOT count as format-compliant.
+    # Actions inside think blocks don't count either.
     _action_re = re.compile(
-        r'<action\s+type="(discard|chi|pon|kan|riichi|ron|tsumo|skip)"(?:\s+tile="([^"]+)")?\s*/>'
+        r'<action\s+type="(discard|chi|pon|kan|riichi|ron|tsumo|skip)"'
+        r'(?:\s+tile="([^"]+)")?(?:\s+with="([^"]+)")?\s*/>'
     )
     _hand_re = re.compile(r'手牌: ((?:[1-9][mpsz] )*[1-9][mpsz])')
 
+    def _valid_action(action_text: str):
+        """Action tag outside the think block, or None."""
+        return _action_re.search(visible_text(action_text))
+
     def phase1_format_reward(prompt: str, action: str) -> float:
         """Phase 1: reward a well-formed action tag; discard/riichi tiles must be in hand."""
-        m = _action_re.search(action)
+        m = _valid_action(action)
         if not m:
-            return -5.0      # No valid action tag
+            return -5.0      # No valid action tag outside <think>
         action_type, tile = m.group(1), m.group(2)
         if action_type in ("discard", "riichi"):
             hand_match = _hand_re.search(prompt)
@@ -247,27 +270,24 @@ def main():
             for i in range(0, len(sft_records), sft_bs):
                 batch = sft_records[i : i + sft_bs]
 
-                # Build full text and prompt-only text for each sample
+                # Build full text and prompt-only text for each sample.
+                # messages-first: render through the model's own chat
+                # template (incl. its think-block conventions) so SFT text
+                # matches the rollout prompt format exactly.
                 full_texts, prompt_texts, response_texts = [], [], []
                 for rec in batch:
-                    if "text" in rec:
+                    if "messages" in rec:
+                        msgs = rec["messages"]
+                        prompt, full = render_sft_texts(tokenizer, msgs)
+                        full_texts.append(full)
+                        prompt_texts.append(prompt)
+                        response_texts.append(msgs[-1]["content"])
+                    else:  # legacy flat-text records
                         full_texts.append(rec["text"])
                         prompt_part = rec["text"].split("<|im_start|>assistant")[0] + "<|im_start|>assistant\n"
                         prompt_texts.append(prompt_part)
-                        # Extract assistant response for logging
                         parts = rec["text"].split("<|im_start|>assistant\n", 1)
                         response_texts.append(parts[1].replace("<|im_end|>", "").strip() if len(parts) > 1 else "")
-                    else:
-                        msgs = rec["messages"]
-                        full = tokenizer.apply_chat_template(msgs, tokenize=False)
-                        prompt_msgs = [m for m in msgs if m["role"] != "assistant"]
-                        prompt = tokenizer.apply_chat_template(
-                            prompt_msgs, tokenize=False, add_generation_prompt=True
-                        )
-                        full_texts.append(full)
-                        prompt_texts.append(prompt)
-                        asst = next((m["content"] for m in msgs if m["role"] == "assistant"), "")
-                        response_texts.append(asst)
 
                 # Log first LOG_SAMPLES of epoch 0 for inspection
                 if i == 0 and len(sft_losses) == 0:
@@ -362,7 +382,7 @@ def main():
         # Checked early so a format collapse aborts instead of burning epochs on garbage.
         valid_steps = sum(
             1 for ep in buffer.episodes for step in ep
-            if _action_re.search(step.action_text)
+            if _valid_action(step.action_text)
         )
         total_steps = sum(len(ep) for ep in buffer.episodes)
         format_rate = valid_steps / max(total_steps, 1)

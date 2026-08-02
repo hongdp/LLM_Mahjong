@@ -1,11 +1,20 @@
-from typing import Dict, Any, List, TypedDict
-from langgraph.graph import StateGraph, END
+import os
+import re
 import random
-import torch
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from typing import Any, Dict, List, Optional, TypedDict
 
-from src.tasks.mahjong.table import PyMahjongTable
+import torch
+from langgraph.graph import StateGraph, END
+
+from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
+from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content
+from src.core.chat_format import visible_text, render_generation_prompt
 from src.core.rollout import TrajectoryStep
+
+# Interrupt resolution priority: ron beats kan/pon beats chi (atamahane:
+# earlier seat order wins ties because collection order is preserved).
+_PRIORITY = {"ron": 0, "kan": 1, "pon": 2, "chi": 3}
+
 
 class MahjongState(TypedDict):
     table: PyMahjongTable
@@ -13,260 +22,232 @@ class MahjongState(TypedDict):
     model: Any
     tokenizer: Any
     done: bool
-    last_action: str
     last_player: int
     needs_interrupt: bool
     exp_dir: str
 
-def turn_node(state: MahjongState):
-    """
-    Wakes up the active player to draw and discard.
-    In a real rollout, we query the LLM.
-    """
+
+def _extract_action(raw_output: str) -> Optional[str]:
+    """Extracts the action tag from OUTSIDE the think block only —
+    actions merely mentioned while reasoning must not be executed."""
+    m = ACTION_RE.search(visible_text(raw_output))
+    return m.group(0) if m else None
+
+
+def _query(state: MahjongState, player_id: int, legal_actions: List[str]):
+    """Asks the LLM (or a random fallback policy) for an action.
+    Returns (prompt_text, raw_output, parsed_action_or_None)."""
     table = state['table']
-    model = state.get('model')
-    tokenizer = state.get('tokenizer')
-    player_id = table.turn
+    model, tokenizer = state.get('model'), state.get('tokenizer')
     obs = table._format_state(player_id)
-    
-    system_content = (
-        "你是一个专业的日本麻将AI。\n"
-        "### 状态说明：\n"
-        "- 场况 (Global)：包含场风、局数和宝牌指示牌。\n"
-        "- 私有 (Private)：包含你的自风、点数和手牌。\n"
-        "- 公共 (Public)：包含其他所有玩家的牌河和副露。\n"
-        "- 合法动作 (Legal Actions)：包含当前你可以执行的合法动作列表。\n"
-        "### 输出格式要求：\n"
-        "你必须且只能从当前状态的【合法动作】列表中选择一个动作输出。\n"
-        "所有的思考必须写在 <think> 和 </think> 标签内。\n"
-        "最后在标签外部输出唯一的单行XML动作（如 <action type=\"discard\" tile=\"1m\" />）。\n"
-    )
-    
-    legal_actions_list = table.get_legal_actions(player_id)
-    legal_actions_str = "\n".join([f"  - {act}" for act in legal_actions_list]) if legal_actions_list else "  - <action type=\"skip\" />"
-    
-    user_content = f"### 当前状态：\nState:\n{obs}合法动作 (Legal Actions)：\n{legal_actions_str}\n\n请输出你的动作："
-    
+    user_content = build_user_content(obs, legal_actions)
+
     if model and tokenizer:
         messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content}
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
         ]
-        chat_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        prompt = chat_prompt
-        
-        inputs = tokenizer(chat_prompt, return_tensors="pt").to(model.device)
+        prompt = render_generation_prompt(tokenizer, messages)
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
         with torch.no_grad():
-            outputs = model.generate(**inputs, max_new_tokens=256, pad_token_id=tokenizer.eos_token_id)
-        # Decode only the newly generated text
-        generated_ids = outputs[0][inputs.input_ids.shape[-1]:]
-        raw_output = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-        
-        action_text_for_training = raw_output
-        
-        # Extract the action XML, ignoring the <think> part
-        import re
-        action_match = re.search(r'<action\s+.*?/>', raw_output)
-        action_xml = action_match.group(0) if action_match else '<action type="skip" />'
+            # Sampling (not greedy) is essential: policy-gradient RL can only
+            # reinforce actions the policy actually explores.
+            outputs = model.generate(
+                **inputs, max_new_tokens=256,
+                do_sample=True, temperature=0.9, top_p=0.95,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        generated = outputs[0][inputs.input_ids.shape[-1]:]
+        raw_output = tokenizer.decode(generated, skip_special_tokens=True).strip()
+        parsed = _extract_action(raw_output)
     else:
-        prompt = f"System: {system_content}\nUser: {user_content}"
-        # Fallback to random legal action (for testing pipeline quickly)
-        legal_actions = table.get_legal_actions(player_id)
-        action_xml = random.choice(legal_actions) if legal_actions else '<action type="skip" />'
-        raw_output = action_xml
-        action_text_for_training = action_xml
-        
-    state['last_action'] = action_xml
-    state['last_player'] = player_id
-    
-    # --- LIVE LOGGING ---
+        prompt = f"System: {SYSTEM_PROMPT}\nUser: {user_content}"
+        parsed = random.choice(legal_actions)
+        raw_output = parsed
+    return prompt, raw_output, parsed
+
+
+def _log_live(state: MahjongState, header: str, prompt: str, raw: str, parsed: str):
     exp_dir = state.get('exp_dir') or "./logs"
-    import os
     os.makedirs(exp_dir, exist_ok=True)
-    live_log_path = os.path.join(exp_dir, "live_rollout.txt")
-    with open(live_log_path, "a", encoding="utf-8") as f:
-        # If we have raw_output from LLM, log it completely (including <think>)
-        if model and tokenizer:
-            f.write(f"=== [Player {player_id}] ===\n[INPUT PROMPT]:\n{prompt}\n[MODEL OUTPUT]:\n{raw_output}\n[PARSED ACTION]: {action_xml}\n{'-'*60}\n")
-        else:
-            f.write(f"=== [Player {player_id}] ===\n[ACTION]: {action_xml}\n{'-'*60}\n")
-    # --------------------
-    
-    # Apply step to environment
-    obs_dict, rewards, done, info = table.step(player_id, action_xml)
+    path = os.path.join(exp_dir, "live_rollout.txt")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(
+            f"=== {header} ===\n[INPUT PROMPT]:\n{prompt}\n"
+            f"[MODEL OUTPUT]:\n{raw}\n[PARSED ACTION]: {parsed}\n{'-' * 60}\n"
+        )
+
+
+def _log_result(state: MahjongState, table: PyMahjongTable):
+    if not table.result_summary:
+        return
+    exp_dir = state.get('exp_dir') or "./logs"
+    path = os.path.join(exp_dir, "live_rollout.txt")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"=== 对局结束: {table.result_summary} ===\n")
+
+
+def turn_node(state: MahjongState):
+    table = state['table']
+    player_id = table.turn
+    legal_actions = table.get_legal_actions(player_id)
+
+    prompt, raw_output, parsed = _query(state, player_id, legal_actions)
+    action_for_engine = parsed or ""
+    _log_live(state, f"[Player {player_id}]", prompt, raw_output,
+              parsed or "(no action tag)")
+
+    obs_dict, rewards, done, info = table.step(player_id, action_for_engine)
     state['done'] = done
-    # Route to the interrupt phase whenever a tile actually hit the river
-    # (covers riichi and engine-forced discards, not just literal "discard").
+    state['last_player'] = player_id
     state['needs_interrupt'] = info.get('discarded', False)
-    
-    # Record trajectory
-    step = TrajectoryStep(
+
+    state['trajectories'][player_id].append(TrajectoryStep(
         prompt_text=prompt,
-        action_text=action_text_for_training,
-        reward=rewards[player_id], # Local step reward (e.g. Ukeire)
-        is_terminal=done
-    )
-    state['trajectories'][player_id].append(step)
-    
+        action_text=raw_output,
+        reward=rewards[player_id],
+        is_terminal=done,
+    ))
+    if done:
+        _log_result(state, table)
     return state
 
+
 def interrupt_node(state: MahjongState):
-    """
-    Check for other 3 players to declare Pon/Chi/Kan/Ron.
-    """
     table = state['table']
-    model = state.get('model')
-    tokenizer = state.get('tokenizer')
     last_discarder = state['last_player']
-    
-    system_content = (
-        "你是一个专业的日本麻将AI。\n"
-        "### 状态说明：\n"
-        "- 场况 (Global)：包含场风、局数和宝牌指示牌。\n"
-        "- 私有 (Private)：包含你的自风、点数和手牌。\n"
-        "- 公共 (Public)：包含其他所有玩家的牌河和副露。\n"
-        "- 合法动作 (Legal Actions)：包含当前你可以执行的合法动作列表。\n"
-        "### 输出格式要求：\n"
-        "你必须且只能从当前状态的【合法动作】列表中选择一个动作输出。\n"
-        "所有的思考必须写在 <think> 和 </think> 标签内。\n"
-        "最后在标签外部输出唯一的单行XML动作（如 <action type=\"skip\" />）。\n"
-    )
-    
-    interrupted = False
-    
+
+    # Phase 1: collect every interested player's decision.
+    candidates = []
     for offset in range(1, 4):
         player_id = (last_discarder + offset) % 4
-        legal_actions_list = table.get_interrupt_actions(player_id)
-        
-        # If only skip is available, don't bother LLM
-        if len(legal_actions_list) == 1 and 'skip' in legal_actions_list[0]:
+        options = table.get_interrupt_actions(player_id)
+        if len(options) == 1:  # skip-only: don't bother the LLM
             continue
-            
-        legal_actions_str = "\n".join([f"  - {act}" for act in legal_actions_list])
-        obs = table._format_state(player_id)
-        user_content = f"### 当前状态：\nState:\n{obs}合法动作 (Legal Actions)：\n{legal_actions_str}\n\n请输出你的动作："
-        
-        if model and tokenizer:
-            messages = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
-            chat_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = tokenizer(chat_prompt, return_tensors="pt").to(model.device)
-            with torch.no_grad():
-                import copy
-                inputs_for_gen = copy.deepcopy(inputs)
-                outputs = model.generate(**inputs_for_gen, max_new_tokens=256, pad_token_id=tokenizer.eos_token_id)
-            generated_ids = outputs[0][inputs.input_ids.shape[-1]:]
-            raw_output = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-            
-            import re
-            action_match = re.search(r'<action\s+.*?/>', raw_output)
-            action_xml = action_match.group(0) if action_match else '<action type="skip" />'
-            action_text_for_training = raw_output
-        else:
-            chat_prompt = f"System: {system_content}\nUser: {user_content}"
-            action_xml = random.choice(legal_actions_list)
-            raw_output = action_xml
-            action_text_for_training = action_xml
-            
-        # Logging
-        exp_dir = state.get('exp_dir') or "./logs"
-        import os
-        live_log_path = os.path.join(exp_dir, "live_rollout.txt")
-        with open(live_log_path, "a", encoding="utf-8") as f:
-            if model and tokenizer:
-                f.write(f"=== [Player {player_id} (Interrupt)] ===\n[INPUT PROMPT]:\n{chat_prompt}\n[MODEL OUTPUT]:\n{raw_output}\n[PARSED ACTION]: {action_xml}\n{'-'*60}\n")
-            else:
-                f.write(f"=== [Player {player_id} (Interrupt)] ===\n[ACTION]: {action_xml}\n{'-'*60}\n")
-                
-        # Apply step
-        obs_dict, rewards, done, info = table.step_interrupt(player_id, action_xml)
+        prompt, raw_output, parsed = _query(state, player_id, options)
+        _log_live(state, f"[Player {player_id} (Interrupt)]", prompt,
+                  raw_output, parsed or "(no action tag)")
+        a_type = None
+        if parsed:
+            m = ACTION_RE.search(parsed)
+            a_type = m.group(1) if m else None
+        candidates.append({
+            "player_id": player_id, "prompt": prompt, "raw": raw_output,
+            "parsed": parsed, "type": a_type, "reward": 0.0,
+        })
 
-        # Record trajectory
-        step = TrajectoryStep(
-            prompt_text=chat_prompt,
-            action_text=action_text_for_training,
-            reward=rewards[player_id],
-            is_terminal=done
+    # Phase 2: resolve by priority (ron > kan > pon > chi); collection
+    # order breaks ties, giving atamahane for double ron.
+    executed = None
+    done = False
+    for cand in sorted(candidates, key=lambda c: _PRIORITY.get(c["type"], 9)):
+        if cand["parsed"] is None:
+            cand["reward"] = table.FORMAT_PENALTY
+            continue
+        if cand["type"] == "skip" or cand["type"] is None:
+            continue
+        if executed is not None:
+            continue  # lost the priority race: action not applied, no penalty
+        _, rewards, i_done, info = table.step_interrupt(
+            cand["player_id"], cand["parsed"]
         )
-        state['trajectories'][player_id].append(step)
-        
-        # Only a call the engine actually accepted interrupts the flow —
-        # penalized illegal attempts (false ron, bad meld) behave as skip.
+        cand["reward"] = rewards[cand["player_id"]]
         if info.get("interrupt", False):
-            state['done'] = done
-            state['last_action'] = action_xml
-            state['last_player'] = player_id
-            interrupted = True
-            break
-            
-    if not interrupted:
-        _, done = table.advance_turn()
+            executed = cand
+            done = i_done
+
+    # Phase 3: record every queried player's trajectory step.
+    for cand in candidates:
+        state['trajectories'][cand["player_id"]].append(TrajectoryStep(
+            prompt_text=cand["prompt"],
+            action_text=cand["raw"],
+            reward=cand["reward"],
+            is_terminal=done and executed is cand,
+        ))
+
+    if executed is not None:
         state['done'] = done
-        state['last_action'] = '<action type="skip" />'
+        state['last_player'] = executed["player_id"]
+        if done:
+            _log_result(state, table)
+    else:
+        _, r_done = table.advance_turn()
+        state['done'] = r_done
+        if r_done:
+            _log_result(state, table)
 
     state['needs_interrupt'] = False
     return state
 
+
 def should_continue(state: MahjongState) -> str:
     if state.get('done', False):
         return END
-
     if state.get('needs_interrupt', False):
         return "interrupt"
     return "turn"
+
 
 def build_mahjong_graph():
     builder = StateGraph(MahjongState)
     builder.add_node("turn", turn_node)
     builder.add_node("interrupt", interrupt_node)
-
     builder.set_entry_point("turn")
-    builder.add_conditional_edges("turn", should_continue, {"interrupt": "interrupt", "turn": "turn", END: END})
-    # interrupt must also respect `done` (a ron ends the game immediately)
-    builder.add_conditional_edges("interrupt", should_continue, {"interrupt": "interrupt", "turn": "turn", END: END})
-
+    builder.add_conditional_edges(
+        "turn", should_continue,
+        {"interrupt": "interrupt", "turn": "turn", END: END},
+    )
+    builder.add_conditional_edges(
+        "interrupt", should_continue,
+        {"interrupt": "interrupt", "turn": "turn", END: END},
+    )
     return builder.compile()
 
-def run_rollout(num_games: int, model=None, tokenizer=None, exp_dir: str=None) -> List[List[TrajectoryStep]]:
-    """
-    Runs self-play games and returns a list of episodes.
-    Each episode is a list of TrajectorySteps.
-    """
+
+def run_rollout(num_games: int, model=None, tokenizer=None,
+                exp_dir: str = None) -> List[List[TrajectoryStep]]:
+    """Runs self-play games and returns one trajectory per player per game,
+    with terminal settlement rewards distributed to all four players."""
     graph = build_mahjong_graph()
     all_episodes = []
-    
-    for _ in range(num_games):
+
+    for game_idx in range(num_games):
         table = PyMahjongTable()
-        table.reset()
-        
-        # 4 independent trajectory tracks for the 4 players
         trajectories = {i: [] for i in range(4)}
-        
-        # Clear live log and write header
-        import os
+
         live_log_dir = exp_dir or "./logs"
         os.makedirs(live_log_dir, exist_ok=True)
-        live_log_path = os.path.join(live_log_dir, "live_rollout.txt")
-        with open(live_log_path, "w", encoding="utf-8") as f:
-            f.write("=== NEW MAHJONG GAME ROLLOUT ===\n")
-            
+        mode = "w" if game_idx == 0 else "a"
+        with open(os.path.join(live_log_dir, "live_rollout.txt"), mode,
+                  encoding="utf-8") as f:
+            f.write(f"=== NEW MAHJONG GAME ROLLOUT (game {game_idx}) ===\n")
+
         initial_state = MahjongState({
             "table": table,
             "trajectories": trajectories,
             "model": model,
             "tokenizer": tokenizer,
             "done": False,
-            "last_action": "",
             "last_player": -1,
             "needs_interrupt": False,
-            "exp_dir": exp_dir
+            "exp_dir": exp_dir,
         })
-        
-        # Run graph until END
-        final_state = graph.invoke(initial_state)
-        
-        # Add all 4 player's trajectories to the replay buffer
-        for p_id in range(4):
-            if len(final_state['trajectories'][p_id]) > 0:
-                all_episodes.append(final_state['trajectories'][p_id])
-                
+        final_state = graph.invoke(
+            initial_state, config={"recursion_limit": 1000}
+        )
+
+        # Distribute end-of-game settlement to EVERY player's trajectory —
+        # deal-in penalties and opponent losses must reach the gradient.
+        table = final_state['table']
+        trajectories = final_state['trajectories']
+        if table.final_rewards:
+            for pid in range(4):
+                if trajectories[pid]:
+                    trajectories[pid][-1].reward += table.final_rewards[pid]
+                    trajectories[pid][-1].is_terminal = True
+
+        for pid in range(4):
+            if trajectories[pid]:
+                all_episodes.append(trajectories[pid])
+
     return all_episodes

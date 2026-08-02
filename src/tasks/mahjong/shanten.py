@@ -1,6 +1,36 @@
 from typing import List, Set
 from mahjong.shanten import Shanten
 
+_SUIT_BASE_34 = {'m': 0, 'p': 9, 's': 18, 'z': 27}
+
+
+def _tile_to_34(tile: str) -> int:
+    return _SUIT_BASE_34[tile[-1]] + int(tile[:-1]) - 1
+
+
+def _tile_from_34(idx: int) -> str:
+    if idx < 9:
+        return f"{idx + 1}m"
+    if idx < 18:
+        return f"{idx - 9 + 1}p"
+    if idx < 27:
+        return f"{idx - 18 + 1}s"
+    return f"{idx - 27 + 1}z"
+
+
+def pad_for_melds(tiles: List[str], num_melds: int) -> List[str]:
+    """Pad one dummy completed triplet per meld (using tile types absent
+    from the hand) so shanten math treats an open hand as full-size."""
+    if num_melds == 0:
+        return list(tiles)
+    used = {_tile_to_34(t) for t in tiles}
+    pad_types = [i for i in range(33, -1, -1) if i not in used]
+    padded = list(tiles)
+    for m in range(num_melds):
+        padded.extend([_tile_from_34(pad_types[m])] * 3)
+    return padded
+
+
 class TileEfficiency:
     def __init__(self):
         self.shanten_calc = Shanten()
@@ -65,6 +95,33 @@ class TileEfficiency:
                 tiles_34[i] -= 1
                 
         return ukeire_tiles
+
+    def evaluate_discards_ranked(self, tiles: List[str]) -> dict:
+        """
+        For a 14-tile-equivalent hand: { discard_tile: (post_shanten, ukeire) }.
+
+        Correct tile efficiency ranks by (lowest post-discard shanten,
+        then widest ukeire). Ranking by ukeire count alone is WRONG:
+        looser (higher-shanten) hands accept more tile types, so a pure
+        ukeire-greedy policy systematically discards joint tiles and
+        regresses the hand.
+        """
+        tiles_34 = self._string_to_34_array(tiles)
+        result = {}
+        for i in range(34):
+            if tiles_34[i] > 0:
+                tiles_34[i] -= 1
+                base = self.shanten_calc.calculate_shanten(tiles_34)
+                ukeire = []
+                for j in range(34):
+                    if tiles_34[j] < 4:
+                        tiles_34[j] += 1
+                        if self.shanten_calc.calculate_shanten(tiles_34) < base:
+                            ukeire.append(self._34_index_to_string(j))
+                        tiles_34[j] -= 1
+                result[self._34_index_to_string(i)] = (base, ukeire)
+                tiles_34[i] += 1
+        return result
 
     def evaluate_discards(self, tiles: List[str]) -> dict:
         """
