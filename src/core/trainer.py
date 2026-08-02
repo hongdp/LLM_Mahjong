@@ -109,6 +109,11 @@ def parse_args():
              "(1 = legacy sequential path)."
     )
     parser.add_argument(
+        "--covariate_baseline", action="store_true",
+        help="Subtract a fitted initial-hand-quality baseline from episode "
+             "returns (deal-luck control variate; unbiased)."
+    )
+    parser.add_argument(
         "--seed", type=int, default=42,
         help="Seed for python/torch RNGs (deals, rollout sampling, SFT shuffling)."
     )
@@ -356,7 +361,8 @@ def main():
 
     task = get_task(args.task, device=device, reward_model=args.reward_model,
                     value_facts=args.value_facts,
-                    parallel_games=args.parallel_games)
+                    parallel_games=args.parallel_games,
+                    covariate_baseline=args.covariate_baseline)
 
     # TensorBoard writer
     tb_log_dir = os.path.join(exp_dir, "tensorboard")

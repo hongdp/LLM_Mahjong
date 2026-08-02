@@ -265,3 +265,27 @@ REWARD_MODELS = {
     "potential": MahjongPotentialReward,  # energy-consistent PBRS
     "potential_value": _potential_value,  # PBRS + dora term in the energy
 }
+
+
+# ---------------------------------------------------------------------------
+# Deal-quality covariate (for the buffer-level control-variate baseline).
+# Action-independent by construction: computed from the FIRST observation of
+# an episode, before any policy decision — subtracting any function of it
+# from returns leaves the expected policy gradient unchanged.
+_COV_MODEL = None
+
+
+def initial_hand_energy(prompt: str) -> float:
+    """Best reachable structural energy of the episode's starting hand
+    (dora_weight=0: pure speed quality). Returns 0.0 if unparsable."""
+    global _COV_MODEL
+    if _COV_MODEL is None:
+        _COV_MODEL = MahjongPotentialReward(device="cpu", dora_weight=0.0)
+    hand_match = _COV_MODEL.HAND_RE.search(prompt)
+    if not hand_match:
+        return 0.0
+    hand = hand_match.group(1).split()
+    fulu_match = _COV_MODEL.FULU_RE.search(prompt)
+    n_melds = fulu_match.group(1).count('(') if fulu_match else 0
+    e = _COV_MODEL._pre_energy(hand, n_melds)
+    return float(e) if e is not None else 0.0
