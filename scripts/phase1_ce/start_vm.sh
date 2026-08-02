@@ -1,15 +1,36 @@
 #!/bin/bash
-# Starts the GCP Compute Engine VM.
+# Creates (first run) or starts (subsequent runs) the Phase 1 GPU VM.
+# Machine: a2-highgpu-1g = 1x A100 40GB, 12 vCPU, 85GB RAM (fits A2_CPUS=12 quota).
+set -euo pipefail
 
-PROJECT_ID="your-gcp-project-id"
-ZONE="us-central1-a"
-VM_NAME="rlhf-gpu-vm"
+PROJECT_ID="workstation-185016"
+ZONE="us-central1-b"            # -a was STOCKOUT on 2026-08-01; capacity reported in -b, -f
+VM_NAME="mahjong-a100"
+MACHINE_TYPE="a2-highgpu-1g"
+IMAGE_FAMILY="common-cu129-ubuntu-2204-nvidia-580"  # driver 580 -> supports cu130 torch wheels
+IMAGE_PROJECT="deeplearning-platform-release"
+BOOT_DISK_GB="200"
 
-echo "Starting VM: $VM_NAME in zone $ZONE..."
-gcloud compute instances start $VM_NAME \
-    --project=$PROJECT_ID \
-    --zone=$ZONE
+if gcloud compute instances describe "$VM_NAME" --project="$PROJECT_ID" --zone="$ZONE" &>/dev/null; then
+    echo "VM $VM_NAME exists — starting it..."
+    gcloud compute instances start "$VM_NAME" --project="$PROJECT_ID" --zone="$ZONE"
+else
+    echo "Creating VM $VM_NAME ($MACHINE_TYPE, 1x A100 40GB) in $ZONE..."
+    gcloud compute instances create "$VM_NAME" \
+        --project="$PROJECT_ID" \
+        --zone="$ZONE" \
+        --machine-type="$MACHINE_TYPE" \
+        --image-family="$IMAGE_FAMILY" \
+        --image-project="$IMAGE_PROJECT" \
+        --boot-disk-size="${BOOT_DISK_GB}GB" \
+        --boot-disk-type=pd-balanced \
+        --maintenance-policy=TERMINATE \
+        --scopes=storage-rw,logging-write,monitoring-write,pubsub,trace \
+        --metadata="install-nvidia-driver=True"
+fi
 
-echo "VM Started!"
-echo "To SSH into the VM, run:"
-echo "gcloud compute ssh $VM_NAME --project=$PROJECT_ID --zone=$ZONE"
+# Make plain ssh/rsync work against the VM (writes a Host alias into ~/.ssh/config).
+gcloud compute config-ssh --project="$PROJECT_ID" > /dev/null
+
+echo "VM up. SSH alias: $VM_NAME.$ZONE.$PROJECT_ID"
+echo "  gcloud compute ssh $VM_NAME --project=$PROJECT_ID --zone=$ZONE"

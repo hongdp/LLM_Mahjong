@@ -48,4 +48,14 @@
 - **Repo layout**: `experiments/` and `.antigravitycli/` added to `.gitignore` (Aug 2026). Top-level `checkpoints/` (2.4G) and `logs/` are legacy pre-experiment-system outputs — superseded by per-experiment dirs; safe to archive/delete manually. `src/data_loader.py` and `src/models/` are unused skeleton stubs from the original template.
 - **Engine audit (Aug 2026)**: full issue list with severity ranking lives in `docs/engine_known_issues.md`. **Do NOT launch a long RL run until the P0 items there are fixed** — as of the audit, reward exploits (unconditional riichi bonus, meld instant rewards on hands that can never win, model-supplied ron tile) and the missing loser-reward plumbing mean RL would optimize score hacks, not mahjong. Keep that file's checkboxes updated as fixes land.
 
+---
+### GCP Phase 1 Infra Facts & Lessons (Aug 2026)
+- **Project**: `workstation-185016` (billing enabled). Results bucket: `gs://llm-mahjong-experiments` (us-central1). VM: `mahjong-a100` (a2-highgpu-1g, 1×A100 40GB) in **us-central1-b** — zone `-a` was A100-STOCKOUT on 2026-08-01; the error message lists which zones still have capacity.
+- **Quotas (checked 2026-08-01)**: A100-40GB=1 (A2_CPUS=12, exactly one a2-highgpu-1g), L4=8, T4=4, A100-80GB=0, H100 metric absent (must request), **PREEMPTIBLE_CPUS=0 in every region → Spot VMs unusable until a quota bump**. TPU v5e quota exists but bitsandbytes has no XLA backend and interactive rollouts thrash XLA recompilation — not worth the port for this workload.
+- **GPU selection for this pipeline**: wall-clock is dominated by RL rollout (batch-1 autoregressive decode), which is **memory-bandwidth-bound, not compute- or VRAM-bound**. Rank GPUs by bandwidth: L4 300GB/s < RTX 4080 717GB/s < A100 1.6TB/s. An L4 is *slower than the local 4080* and saves nothing ($43 vs $48 per full run); A100 40GB on-demand (~$3.67/h, ~13h) is the sweet spot.
+- **Default VM service-account scope is `devstorage.read_only`** — GCS uploads fail silently late. Create VMs with `--scopes=storage-rw,...` (baked into `scripts/phase1_ce/start_vm.sh`).
+- **DLVM `common-cu129-*` images ship NO conda** (despite older docs) — bootstrap a plain python3.10 venv; pinned deps in `scripts/phase1_ce/requirements_pinned.txt` (mirrors the local rlhf_mahjong env; torch cu130 wheels need the driver-580 image family).
+- **`trainer.py --resume` only reuses the directory name** — no optimizer/epoch state restore, and no checkpoint exists until SFT fully completes. Until real mid-run resume lands, preemptible/Spot runs would corrupt the pre-registered epoch-count criteria; run on-demand.
+- **Run hygiene**: `run_training.sh` traps EXIT → uploads the whole experiment dir + nohup log to GCS, then `shutdown -h now`, so the VM never idles on the meter even on crash.
+
 *(End of SKILLS.md. Append new learnings below this line in the future.)*
