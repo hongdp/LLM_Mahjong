@@ -228,8 +228,13 @@ def parse_live_file(path):
             if cur_gid not in open_games:
                 open_games[cur_gid] = {}
                 order.append(cur_gid)
-            steps = open_games[cur_gid].setdefault(pid, [])
-            step = {"step": len(steps), "reward": 0.0, "terminal": False}
+            game = open_games[cur_gid]
+            steps = game.setdefault(pid, [])
+            # file order == real chronological order within a game: expose it
+            # so the frontend can replay the table in true turn order
+            step = {"step": len(steps), "reward": 0.0, "terminal": False,
+                    "player": pid,
+                    "seq": sum(len(v) for v in game.values())}
             step.update(state)
             step["think"] = think
             step["action"] = {"type": a_type, "tile": a_tile, "with": a_with,
