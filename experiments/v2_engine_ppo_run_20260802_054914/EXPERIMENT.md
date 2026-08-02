@@ -1,13 +1,15 @@
-# v2_engine_ppo_run_20260802_041049
+# v2_engine_ppo_run_20260802_054914
 
-- **Date**: 2026-08-01 21:10 (04:10 UTC 08-02)  **Status**: aborted in RL epoch 1 (user-directed pause for performance tuning; no epoch completed, no checkpoints). Superseded by the infra-rev3 restart (bf16_lora, 12 games/epoch, update batch 4 — see perf_tuning_east_20260802). Design carried over unchanged.
-- **Arm**: A — PPO algorithm ablation. Single variable vs the concurrently running PBRS restart run `v2_engine_pbrs_run_20260802_041048` (REINFORCE): the RL update rule. Everything else identical — PBRS potential reward, same SFT adapter (from `v2_engine_full_run_20260802_005918`, loaded verbatim, sft_epochs=0), seed 42, 50 epochs × 4 games, lr 1e-6, temp 0.9/top_p 0.95.
+- **Date**: 2026-08-01 22:49 (05:49 UTC 08-02)  **Status**: running
+- **Arm**: A — PPO algorithm ablation. Single variable vs the concurrently running PBRS restart run `v2_engine_pbrs_run_20260802_054918` (REINFORCE): the RL update rule. Everything else identical — PBRS potential reward, same SFT adapter (from `v2_engine_full_run_20260802_005918`, loaded verbatim, sft_epochs=0), seed 42, 50 epochs × 12 games, lr 1e-6, temp 0.9/top_p 0.95.
 - **Algorithm**: PPO clipped surrogate (eps 0.2), 3 inner passes per rollout batch with approx-KL early stop at 0.03. Behavior logprobs recorded at rollout from RAW pre-warp logits (`output_logits=True`); sequences rebuilt from stored token ids (no retokenization drift). At old==new the gradient equals the REINFORCE gradient (unit-tested). No critic: advantages remain buffer-normalized MC return-to-go clipped ±5 (GRPO-flavored).
 - **Env**: VM `mahjong-a100-e` (a2-highgpu-1g, A100-SXM4-40GB), zone us-east1-b, same image family/pinned venv as prior runs.
 - **Input artifacts**: SFT adapter `checkpoints_sft_warmup_mahjong` pulled from `gs://llm-mahjong-experiments/v2_engine_full_run_20260802_005918/`; `data/sft_mahjong.jsonl` sha256 `b3eefd6d…becf6` verified on VM.
-- **Results sink**: `gs://llm-mahjong-experiments/v2_engine_ppo_run_20260802_041049/`; auto-shutdown on exit.
+- **Results sink**: `gs://llm-mahjong-experiments/v2_engine_ppo_run_20260802_054914/`; auto-shutdown on exit.
 
-- **Infra rev2** (shared by all three concurrent runs): torch 2.12.1+cu129, fast-path kernels active, batched parallel rollout parallel_games=4 (6-9× measured decode scaling). Non-semantic.
+- **Infra rev2→3 (see rev3 note)** (shared by all three concurrent runs): torch 2.12.1+cu129, fast-path kernels active, batched parallel rollout parallel_games=4 (6-9× measured decode scaling). Non-semantic.
+
+- **Infra rev3** (all three arms, measured in perf_tuning_east_20260802): bf16_lora (unquantized base, +55% decode), 12 games/epoch at parallel_games=12 (~3x data per epoch at ~equal wall-clock vs 4 games), update batch_size 4, [SETTLEMENT] breakdown logging. Success criteria unchanged (scale-free). Predecessor 0410xx runs aborted in epoch 1 with no completed epochs.
 
 ## Purpose & Hypothesis
 1. PPO's sample reuse (up to 3 passes) extracts more improvement per rollout batch: rl/avg_episode_reward trend ≥ the REINFORCE arm's over the same 50 epochs.
@@ -22,7 +24,7 @@
 5. **Checkpoint rule**: best = highest avg episode reward checkpoint (top-3 retention).
 
 ## Progress
-- [21:10 (04:10 UTC 08-02)] Launched. Pre-flight: local PPO integration smoke passed (1 epoch/1 game on RTX 4080), 34 unit tests green incl. PPO loss math.
+- [22:49 (05:49 UTC 08-02)] Launched. Pre-flight: local PPO integration smoke passed (1 epoch/1 game on RTX 4080), 34 unit tests green incl. PPO loss math.
 
 ## Results
 (pending)

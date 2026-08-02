@@ -1,13 +1,13 @@
 {
     "model_name": "Qwen/Qwen3.5-2B",
     "task": "mahjong",
-    "use_qlora": true,
-    "batch_size": 2,
-    "num_episodes": 4,
+    "use_qlora": false,
+    "batch_size": 4,
+    "num_episodes": 12,
     "epochs": 50,
     "learning_rate": 1e-06,
     "training_phase": 2,
-    "sft_epochs": 3,
+    "sft_epochs": 0,
     "sft_data": "data/sft_mahjong_value.jsonl",
     "sft_batch_size": 2,
     "sft_max_samples": 2000,
@@ -20,5 +20,7 @@
     "target_kl": 0.03,
     "value_facts": true,
     "exp_name": "v2_engine_ppo_value_run",
-    "parallel_games": 4
+    "parallel_games": 12,
+    "bf16_lora": true,
+    "peft_model_path": "experiments/v2_engine_ppo_value_run_20260802_041051/checkpoints_sft_warmup_mahjong"
 }
