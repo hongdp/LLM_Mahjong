@@ -163,6 +163,20 @@ def parse_rollout_file(path):
                 elif line.startswith("ACTION:"):
                     mode = "action"
                     action_lines.append(line[len("ACTION:"):].lstrip())
+                elif line.startswith("[SETTLEMENT]"):
+                    mode = None
+                    m2 = re.search(
+                        r'final_points=(-?\d+) \| point_reward=([+-][\d.]+) \| '
+                        r'rank_bonus=([+-][\d.]+) \| settlement=([+-][\d.]+) \| '
+                        r'result=(.*)$', line)
+                    if m2:
+                        cur["settlement"] = {
+                            "final_points": int(m2.group(1)),
+                            "point_reward": float(m2.group(2)),
+                            "rank_bonus": float(m2.group(3)),
+                            "settlement": float(m2.group(4)),
+                            "result": m2.group(5),
+                        }
                 elif SEP_RE.match(line):
                     mode = None
                 elif mode == "prompt":

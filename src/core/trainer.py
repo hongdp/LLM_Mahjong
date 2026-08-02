@@ -138,6 +138,15 @@ def save_trajectory_log(buffer: ReplayBuffer, epoch: int, task_name: str, exp_di
                 f.write(f"[Step {step_idx}] Reward: {step.reward:.2f} | Terminal: {step.is_terminal}\n")
                 f.write(f"PROMPT:\n{step.prompt_text.strip()}\n")
                 f.write(f"ACTION: {step.action_text}\n")
+                if step.settlement is not None:
+                    delta = (step.final_points or 25000) - 25000
+                    f.write(
+                        f"[SETTLEMENT] final_points={step.final_points} | "
+                        f"point_reward={delta * 0.001:+.3f} | "
+                        f"rank_bonus={step.rank_bonus:+.2f} | "
+                        f"settlement={step.settlement:+.3f} | "
+                        f"result={step.game_result}\n"
+                    )
                 f.write("-" * 40 + "\n")
             f.write("\n\n")
     print(f"📄 Saved rollout log to {log_path}")

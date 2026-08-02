@@ -543,7 +543,16 @@ function explainReward(st){
     lines.push("该动作类型无步级整形奖励（副露/和牌价值全部由终局结算传导）");
   }
   if (st.terminal){
-    lines.push("终局步：叠加结算 = (终局点数−25000)×0.001 + 顺位奖励(+2/+0.5/−0.5/−2)；放铳无额外罚项（点棒转移已定价）");
+    const si = st.settlement;
+    if (si){
+      const delta = si.final_points - 25000;
+      lines.push(`终局点数 ${si.final_points}（点差 ${delta>0?"+":""}${delta} × 0.001 = ${fmt(si.point_reward,3)}）`);
+      lines.push(`顺位奖励 ${si.rank_bonus>0?"+":""}${fmt(si.rank_bonus,2)}`);
+      lines.push(`结算合计 ${si.settlement>0?"+":""}${fmt(si.settlement,3)}；本步整形/约束 = 总奖励 − 结算 = ${fmt(st.reward - si.settlement,3)}`);
+      if (si.result) lines.push(`对局结果：${si.result}`);
+    } else {
+      lines.push("终局步：叠加结算 = (终局点数−25000)×0.001 + 顺位奖励(+2/+0.5/−0.5/−2)；放铳无额外罚项（点棒转移已定价）——旧档案无结算明细，新 run 起会记录具体数值");
+    }
   }
   return lines;
 }

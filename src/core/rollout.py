@@ -17,6 +17,12 @@ class TrajectoryStep:
     is_terminal: bool
     gen_token_ids: list = None
     old_logprobs: list = None
+    # Settlement breakdown, filled on the terminal step only (for logs/UI —
+    # training keeps consuming the combined `reward`).
+    settlement: float = None      # final_rewards[pid] as merged into reward
+    final_points: int = None      # points after the game's point transfers
+    rank_bonus: float = None      # placement share of the settlement
+    game_result: str = None       # engine result_summary string
 
 class ReplayBuffer:
     """
