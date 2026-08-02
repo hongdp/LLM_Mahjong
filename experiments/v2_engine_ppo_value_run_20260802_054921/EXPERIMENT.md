@@ -1,14 +1,16 @@
-# v2_engine_ppo_value_run_20260802_041051
+# v2_engine_ppo_value_run_20260802_054921
 
-- **Date**: 2026-08-01 21:10 (04:10 UTC 08-02)  **Status**: aborted in RL epoch 1 (user-directed pause for performance tuning; no epoch completed). Superseded by the infra-rev3 restart (bf16_lora, 12 games/epoch, update batch 4 — see perf_tuning_east_20260802). Arm B's SFT adapter (value template, 3 epochs, final loss 0.0877) is this run's surviving artifact, reused by its successor.
-- **Arm**: B — PPO + value bundle. Deliberately multi-variable vs arm A (`v2_engine_ppo_run`): adds the full value iteration on top of PPO. Deltas: (1) reward_model=potential_value — PBRS energy gains +0.3·(#dora held); (2) prompt template gains a computed `自家宝牌:` line (value_facts=true); (3) fresh SFT corpus regenerated with the value-aware teacher (dora-keeping tie-break, faithful CoT mentions it) — hence a FULL SFT warm-up (3×2000) precedes RL: the old adapter is template-incompatible by design.
+- **Date**: 2026-08-01 22:49 (05:49 UTC 08-02)  **Status**: running
+- **Arm**: B — PPO + value bundle. Deliberately multi-variable vs arm A (`v2_engine_ppo_run`): adds the full value iteration on top of PPO. Deltas: (1) reward_model=potential_value — PBRS energy gains +0.3·(#dora held); (2) prompt template gains a computed `自家宝牌:` line (value_facts=true); (3) fresh SFT corpus regenerated with the value-aware teacher (dora-keeping tie-break, faithful CoT mentions it) — SFT reused from predecessor 041051 (value-template adapter, 3×2000, final loss 0.0877) — loaded verbatim, sft_epochs=0.
 - **Reward math note**: the dora term is a potential term — telescoping to −Φ(s₀) still exact (unit-tested), so consistency/anti-farming guarantees carry over; it only redirects credit toward keeping value tiles.
 - **Algorithm**: PPO identical to arm A (eps 0.2, 3 passes, target_kl 0.03).
 - **Env**: VM `mahjong-a100-w` (a2-highgpu-1g, A100-SXM4-40GB), zone us-west1-b, same image/pinned venv.
 - **Input artifacts**: `data/sft_mahjong_value.jsonl` — value-aware regeneration, 300 games, seed 42, line-shuffled seed 42; sha256 `4133fa33284c2be7f07b76477ef21f9b3fbefc7e5905e96928e48b9eca47a76f` (verified on VM after sync).
-- **Results sink**: `gs://llm-mahjong-experiments/v2_engine_ppo_value_run_20260802_041051/`; auto-shutdown on exit.
+- **Results sink**: `gs://llm-mahjong-experiments/v2_engine_ppo_value_run_20260802_054921/`; auto-shutdown on exit.
 
-- **Infra rev2** (shared by all three concurrent runs): torch 2.12.1+cu129, fast-path kernels active, batched parallel rollout parallel_games=4 (6-9× measured decode scaling). Non-semantic.
+- **Infra rev2→3 (see rev3 note)** (shared by all three concurrent runs): torch 2.12.1+cu129, fast-path kernels active, batched parallel rollout parallel_games=4 (6-9× measured decode scaling). Non-semantic.
+
+- **Infra rev3** (all three arms, measured in perf_tuning_east_20260802): bf16_lora (unquantized base, +55% decode), 12 games/epoch at parallel_games=12 (~3x data per epoch at ~equal wall-clock vs 4 games), update batch_size 4, [SETTLEMENT] breakdown logging. Success criteria unchanged (scale-free). Predecessor 0410xx runs aborted in epoch 1 with no completed epochs.
 
 ## Purpose & Hypothesis
 1. Value facts + dora-aware teacher give the model usable value signal: rollouts show measurably higher dora retention than arms without it (probe: dora count in winning hands / discarded-dora rate).
@@ -23,7 +25,7 @@
 5. **Checkpoint rule**: best = highest avg episode reward checkpoint.
 
 ## Progress
-- [21:10 (04:10 UTC 08-02)] Launched (SFT 3×2000 on value-aware corpus, then 50-epoch PPO RL).
+- [22:49 (05:49 UTC 08-02)] Launched (RL-only; value-template adapter reused from 041051).
 
 ## Results
 (pending)

@@ -32,6 +32,11 @@ class MahjongTask(BaseTask):
         self.parallel_games = int(kwargs.get('parallel_games', 1))
         if self.parallel_games > 1:
             print(f"⚡ Parallel rollout: {self.parallel_games} concurrent games")
+        # Deal-luck control variate: subtract a fitted function of the
+        # initial hand quality from episode returns before normalization.
+        self.covariate_baseline = bool(kwargs.get('covariate_baseline', False))
+        if self.covariate_baseline:
+            print("🎯 Covariate baseline: ON (returns corrected by initial-hand quality)")
 
     def collect_rollouts(self, num_episodes: int, model=None, tokenizer=None,
                          exp_dir: str = None,
@@ -65,8 +70,14 @@ class MahjongTask(BaseTask):
             # Combine engine reward with heuristic reward
             for step, s_reward in zip(episode, step_rewards):
                 step.reward += s_reward.item()
-                
-            buffer.add_episode(episode)
+
+            if self.covariate_baseline and episode:
+                from src.tasks.mahjong.rewards import initial_hand_energy
+                buffer.add_episode(
+                    episode,
+                    covariate=initial_hand_energy(episode[0].prompt_text))
+            else:
+                buffer.add_episode(episode)
             
         print(f"📊 Collected {len(buffer.episodes)} player trajectories.")
         return buffer

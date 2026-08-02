@@ -204,7 +204,11 @@
   <h1>🀄 LLM Mahjong 训练检视台</h1>
   <select id="expSel" title="experiment"></select>
   <button id="syncBtn" title="rsync 该实验的日志/曲线（从 GCP VM）">⟳ 从 VM 同步</button>
-  <label class="hint"><input type="checkbox" id="autoRef"> 60s 自动刷新（曲线 + live 对局）</label>
+  <label class="hint"><input type="checkbox" id="autoRef"> 每
+    <input type="number" id="refSec" value="60" min="5" max="3600" step="5"
+           style="width:56px;font:inherit;color:var(--ink);background:var(--surface);
+                  border:1px solid var(--border);border-radius:6px;padding:2px 6px;">
+    秒自动刷新（曲线 + live 对局）</label>
   <div class="spacer"></div>
   <button id="themeBtn" title="theme">◐</button>
 </header>
@@ -438,6 +442,16 @@ async function loadMetrics(){
   lineChart(mk(), fc, {title:"格式合规率", sub:"rl/format_compliance · 成功标准 ≥0.95，熔断 <0.30",
     xLabel:"epoch", includeY:[0,1], yFmt:v=>(v*100).toFixed(0)+"%",
     refLines:[{y:0.95,label:"标准 95%"},{y:0.30,label:"熔断 30%"}]});
+
+  /* PPO health charts — only when the run logged them (no-critic PPO:
+     these replace what a critic-loss panel would tell you) */
+  const kl=m["rl/approx_kl"]||[], cf=m["rl/clip_frac"]||[], pp=m["rl/ppo_passes"]||[];
+  if (kl.length) lineChart(mk(), kl, {title:"PPO approx KL", sub:"rl/approx_kl · 超 0.03 提前停内循环",
+    xLabel:"epoch", includeY:[0], refLines:[{y:0.03,label:"target_kl"}], yFmt:v=>fmt(v,4)});
+  if (cf.length) lineChart(mk(), cf, {title:"PPO 截断触发率", sub:"rl/clip_frac · ratio 越界被 clip 的 token 占比",
+    xLabel:"epoch", includeY:[0], yFmt:v=>(v*100).toFixed(1)+"%"});
+  if (pp.length) lineChart(mk(), pp, {title:"PPO 实际遍数", sub:"rl/ppo_passes · 每个 rollout 批被复用的次数（≤3）",
+    xLabel:"epoch", includeY:[0,3]});
 }
 
 /* ------------------------------------------------ rollouts */
@@ -543,17 +557,33 @@ function explainReward(st){
     lines.push("该动作类型无步级整形奖励（副露/和牌价值全部由终局结算传导）");
   }
   if (st.terminal){
-    lines.push("终局步：叠加结算 = (终局点数−25000)×0.001 + 顺位奖励(+2/+0.5/−0.5/−2)；放铳无额外罚项（点棒转移已定价）");
+    const si = st.settlement;
+    if (si){
+      const delta = si.final_points - 25000;
+      lines.push(`终局点数 ${si.final_points}（点差 ${delta>0?"+":""}${delta} × 0.001 = ${fmt(si.point_reward,3)}）`);
+      lines.push(`顺位奖励 ${si.rank_bonus>0?"+":""}${fmt(si.rank_bonus,2)}`);
+      lines.push(`结算合计 ${si.settlement>0?"+":""}${fmt(si.settlement,3)}；本步整形/约束 = 总奖励 − 结算 = ${fmt(st.reward - si.settlement,3)}`);
+      if (si.result) lines.push(`对局结果：${si.result}`);
+    } else {
+      lines.push("终局步：叠加结算 = (终局点数−25000)×0.001 + 顺位奖励(+2/+0.5/−0.5/−2)；放铳无额外罚项（点棒转移已定价）——旧档案无结算明细，新 run 起会记录具体数值");
+    }
   }
   return lines;
 }
-/* step kind: 14-tile hand (3n+2) = draw/discard decision (one 巡);
+/* step kind: 14-tile hand (3n+2) = draw/discard decision;
    13-tile-equivalent = interrupt query (pon/chi/kan/ron offer). */
 function isTurnStep(s){ return ((s.self?.hand?.length||0) % 3) === 2; }
+/* a turn step is a real DRAW (one 巡) unless the player's meld count just
+   grew — post-claim discards consume no wall tile. */
 function junOf(steps, idx){
-  let j = 0;
-  for (let i = 0; i <= idx && i < steps.length; i++)
-    if (isTurnStep(steps[i])) j++;
+  let j = 0, prevMelds = 0;
+  for (let i = 0; i <= idx && i < steps.length; i++){
+    const s = steps[i];
+    if (!isTurnStep(s)) continue;
+    const m = s.self?.melds?.length || 0;
+    if (m <= prevMelds) j++;          // no new meld -> this was a draw
+    prevMelds = m;
+  }
   return j;
 }
 function stepLabel(steps, idx){
@@ -794,17 +824,30 @@ $("#syncBtn").onclick = async ()=>{
   } finally { b.disabled=false; b.textContent="⟳ 从 VM 同步"; }
 };
 let refTimer=null;
-$("#autoRef").onchange=e=>{
-  if (e.target.checked) refTimer=setInterval(async ()=>{
+function refSeconds(){
+  const s=Math.max(5, Math.min(3600, +$("#refSec").value||60));
+  $("#refSec").value=s;
+  return s;
+}
+function startRefTimer(){
+  clearInterval(refTimer);
+  refTimer=setInterval(async ()=>{
     if (CUR.liveMode){
       // live view is only as fresh as the local copy — pull from the VM first
       try { await fetch("/api/sync?exp="+encodeURIComponent(CUR.exp),{method:"POST"}); } catch(_){}
       await loadRollouts();
     }
     loadMetrics();
-  },60000);
-  else clearInterval(refTimer);
+  }, refSeconds()*1000);
+  localStorage.setItem("mj_refsec", refSeconds());
+}
+$("#autoRef").onchange=e=>{
+  if (e.target.checked) startRefTimer();
+  else { clearInterval(refTimer); refTimer=null; }
 };
+$("#refSec").onchange=()=>{ localStorage.setItem("mj_refsec", refSeconds());
+  if ($("#autoRef").checked) startRefTimer(); };
+{ const saved=+localStorage.getItem("mj_refsec"); if (saved>=5) $("#refSec").value=saved; }
 async function refreshAll(keepSelection){
   const prevEpoch=$("#epochSel").value;
   await loadExperiments();

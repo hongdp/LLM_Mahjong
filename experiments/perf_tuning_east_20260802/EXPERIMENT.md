@@ -19,8 +19,11 @@ Synthetic decode sweep (900-tok prompt, 64-tok gen, sampling t0.9/p0.95):
 - bf16 ≈ +55% over nf4 at every B → new trainer mode `--bf16_lora` (LoRA on unquantized bf16 base; mutually exclusive with --use_qlora).
 - `_batch_generate` max_batch raised 8 → 24 (follows parallel_games).
 
-## In progress
-- Real-game E2E: `configs/tune_bf16_b24.json` — 24 games, parallel 24, PPO capture, update batch_size 4. Measures true rollout wall-time (incl. interrupts + tail effect) and PPO update time at ~2k samples.
+## Real-game E2E result (`tune_bf16_b24_20260802_050057`)
+- 24 games, bf16_lora, parallel 24, PPO (3 passes, batch 4): **~40 min total** for rollout + update.
+- 96 trajectories, 1864 transitions, format 99.9% (1863/1864) — batching + bf16 + nf4-trained adapter on bf16 base: no quality loss.
+- PPO: 3 full passes, no KL early stop, batch_size 4 no OOM.
+- Per-game cost 100s vs pre-optimization 525s = **5.2×**.
 
 ## Pending decisions for relaunch (user)
 - games/epoch 4 → 12–24 (design change; success criteria are scale-free; all arms change together)
@@ -28,7 +31,7 @@ Synthetic decode sweep (900-tok prompt, 64-tok gen, sampling t0.9/p0.95):
 - update batch_size 2 → 4 (gradient-noise change; A100 memory allows)
 
 ## Results
-(pending)
+See tables above. Headline: sequential nf4 11.5 tok/s → batched bf16 (B=24) 335 tok/s synthetic; real E2E per-game cost 525s → 100s (5.2×).
 
 ## Conclusion
-(pending)
+Adopt for relaunch (infra rev3): bf16_lora + parallel_games=num_episodes + update batch_size 4 + [SETTLEMENT] logging + git-pull code sync. Games/epoch decision (4/12/24 at ~8h/~17h/~33h per 50-epoch run) escalated to user. Remaining backlog: KV-persistent rollout (v3.1), state-value baseline.

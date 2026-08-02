@@ -278,8 +278,15 @@ def run_rollout(num_games: int, model=None, tokenizer=None,
         if table.final_rewards:
             for pid in range(4):
                 if trajectories[pid]:
-                    trajectories[pid][-1].reward += table.final_rewards[pid]
-                    trajectories[pid][-1].is_terminal = True
+                    last = trajectories[pid][-1]
+                    last.reward += table.final_rewards[pid]
+                    last.is_terminal = True
+                    last.settlement = table.final_rewards[pid]
+                    last.final_points = table.points[pid]
+                    last.rank_bonus = (table.final_rewards[pid]
+                                       - (table.points[pid] - 25000)
+                                       * table.REWARD_SCALE)
+                    last.game_result = table.result_summary
 
         for pid in range(4):
             if trajectories[pid]:
