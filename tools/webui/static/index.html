@@ -828,14 +828,25 @@ function renderStepView(){
    monotonically; interrupt offers sort after the draw they react to). */
 const PLAY={timer:null, idx:0, tl:[], game:null, anchor:null};
 
+function totalMelds(st){
+  return (st.self?.melds?.length||0) +
+    (st.opponents||[]).reduce((s,op)=>s+(op.melds?.length||0),0);
+}
 function buildTimeline(game){
   const entries=[];
   (game||[]).forEach((ep,pi)=>ep.steps.forEach((st,si)=>entries.push({pi,si,st})));
   if (entries.length && entries.every(x=>x.st.seq!==undefined))
     entries.sort((a,b)=>a.st.seq-b.st.seq);
   else entries.sort((a,b)=>{
+    /* no explicit order in epoch logs — reconstruct from monotone state:
+       wall shrinks with every draw; calls (pon/chi) don't draw, so ties on
+       wall are ordered by table-wide meld count (only ever grows), which
+       puts the fed discard + offer prompts before the caller's post-meld
+       discard; then draw-steps before the offers they trigger */
     const wa=a.st.global?.wall??-1, wb=b.st.global?.wall??-1;
     if (wa!==wb) return wb-wa;
+    const ma=totalMelds(a.st), mb=totalMelds(b.st);
+    if (ma!==mb) return ma-mb;
     const ta=isTurnStep(a.st), tb=isTurnStep(b.st);
     if (ta!==tb) return ta?-1:1;
     return a.pi-b.pi;
