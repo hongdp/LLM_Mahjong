@@ -204,7 +204,11 @@
   <h1>🀄 LLM Mahjong 训练检视台</h1>
   <select id="expSel" title="experiment"></select>
   <button id="syncBtn" title="rsync 该实验的日志/曲线（从 GCP VM）">⟳ 从 VM 同步</button>
-  <label class="hint"><input type="checkbox" id="autoRef"> 60s 自动刷新（曲线 + live 对局）</label>
+  <label class="hint"><input type="checkbox" id="autoRef"> 每
+    <input type="number" id="refSec" value="60" min="5" max="3600" step="5"
+           style="width:56px;font:inherit;color:var(--ink);background:var(--surface);
+                  border:1px solid var(--border);border-radius:6px;padding:2px 6px;">
+    秒自动刷新（曲线 + live 对局）</label>
   <div class="spacer"></div>
   <button id="themeBtn" title="theme">◐</button>
 </header>
@@ -820,17 +824,30 @@ $("#syncBtn").onclick = async ()=>{
   } finally { b.disabled=false; b.textContent="⟳ 从 VM 同步"; }
 };
 let refTimer=null;
-$("#autoRef").onchange=e=>{
-  if (e.target.checked) refTimer=setInterval(async ()=>{
+function refSeconds(){
+  const s=Math.max(5, Math.min(3600, +$("#refSec").value||60));
+  $("#refSec").value=s;
+  return s;
+}
+function startRefTimer(){
+  clearInterval(refTimer);
+  refTimer=setInterval(async ()=>{
     if (CUR.liveMode){
       // live view is only as fresh as the local copy — pull from the VM first
       try { await fetch("/api/sync?exp="+encodeURIComponent(CUR.exp),{method:"POST"}); } catch(_){}
       await loadRollouts();
     }
     loadMetrics();
-  },60000);
-  else clearInterval(refTimer);
+  }, refSeconds()*1000);
+  localStorage.setItem("mj_refsec", refSeconds());
+}
+$("#autoRef").onchange=e=>{
+  if (e.target.checked) startRefTimer();
+  else { clearInterval(refTimer); refTimer=null; }
 };
+$("#refSec").onchange=()=>{ localStorage.setItem("mj_refsec", refSeconds());
+  if ($("#autoRef").checked) startRefTimer(); };
+{ const saved=+localStorage.getItem("mj_refsec"); if (saved>=5) $("#refSec").value=saved; }
 async function refreshAll(keepSelection){
   const prevEpoch=$("#epochSel").value;
   await loadExperiments();
