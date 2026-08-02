@@ -389,32 +389,65 @@ def arena_status():
     with _cache_lock:
         if _arena_cache["data"] is not None and time.time() - _arena_cache["t"] < 25:
             return _arena_cache["data"]
+    hdr_re = re.compile(r"^=== ARENA seed=(\d+) orient=(\d) A_seats=\[(\d), (\d)\] "
+                        r"result=(.*) ===$")
+    pts_re = re.compile(r"点数: \[([\d, -]+)\]")
+    win_re = re.compile(r"玩家(\d) (?:荣和|自摸)")
     out = []
     for m in ARENA_MATCHES:
-        row = {"tag": m["tag"], "state": "unreachable", "deals": 0,
+        name = m["json"].replace(".json", "")
+        row = {"tag": m["tag"], "state": "unreachable", "deals": 0, "games": 0,
                "mean_diff": None, "wins_a": 0, "wins_b": 0, "verdict": None}
         try:
             r = subprocess.run(
                 ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", m["host"],
-                 f"cat ~/{m['json']} 2>/dev/null; echo ===LOG===; "
-                 f"cat ~/{m['json']}.log 2>/dev/null; echo ===PS===; "
+                 f"cat ~/{m['json']} 2>/dev/null; echo ===T===; "
+                 f"grep '^=== ARENA' ~/LLM_Mahjong/experiments/{name}/"
+                 f"mahjong_epoch_1_rollouts.txt 2>/dev/null; echo ===PS===; "
                  f"pgrep -f run_arena >/dev/null && echo RUN || echo IDLE"],
                 capture_output=True, text=True, timeout=25, stdin=subprocess.DEVNULL)
             body = r.stdout
-            jpart, _, rest = body.partition("===LOG===")
-            lpart, _, ps = rest.partition("===PS===")
+            jpart, _, rest = body.partition("===T===")
+            tpart, _, ps = rest.partition("===PS===")
             if jpart.strip().startswith("{"):
                 d = json.loads(jpart)
-                row.update(state="done", deals=d["deals"], mean_diff=d["mean_diff"],
-                           ci95=d.get("ci95"), wins_a=d["wins_a"], wins_b=d["wins_b"],
+                row.update(state="done", deals=d["deals"], games=2 * d["deals"],
+                           mean_diff=d["mean_diff"], ci95=d.get("ci95"),
+                           wins_a=d["wins_a"], wins_b=d["wins_b"],
                            verdict=d["verdict"])
             else:
-                diffs, wa, wb = [], 0, 0
-                for mm in _ARENA_LINE.finditer(lpart):
-                    diffs.append(float(mm.group(1)))
-                    wa += int(mm.group(2)); wb += int(mm.group(3))
+                games = {}
+                for line in tpart.splitlines():
+                    hm = hdr_re.match(line.strip())
+                    if not hm:
+                        continue
+                    seed, orient = int(hm.group(1)), int(hm.group(2))
+                    a = {int(hm.group(3)), int(hm.group(4))}
+                    res = hm.group(5)
+                    pm = pts_re.search(res)
+                    pts = [int(x) for x in pm.group(1).split(",")] if pm else None
+                    games[(seed, orient)] = (a, pts, res)
+                wa = wb = 0
+                diffs = []
+                seeds = {k[0] for k in games}
+                for sd in seeds:
+                    pair = [games.get((sd, 0)), games.get((sd, 1))]
+                    for g in pair:
+                        if not g:
+                            continue
+                        a, pts, res = g
+                        wm = win_re.search(res)
+                        if wm:
+                            if int(wm.group(1)) in a:
+                                wa += 1
+                            else:
+                                wb += 1
+                    if all(pair) and pair[0][1] and pair[1][1]:
+                        d0 = sum(p for i, p in enumerate(pair[0][1]) if i in pair[0][0]) - 50000
+                        d1 = sum(p for i, p in enumerate(pair[1][1]) if i in pair[1][0]) - 50000
+                        diffs.append(d0 + d1)
                 row.update(state="running" if "RUN" in ps else "starting",
-                           deals=len(diffs),
+                           games=len(games), deals=len(diffs),
                            mean_diff=(sum(diffs) / len(diffs)) if diffs else None,
                            wins_a=wa, wins_b=wb)
         except Exception as ex:
@@ -424,6 +457,7 @@ def arena_status():
         _arena_cache["t"] = __import__("time").time()
         _arena_cache["data"] = out
     return out
+
 
 # ---------------------------------------------------------------- http plumbing
 

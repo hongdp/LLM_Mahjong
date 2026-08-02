@@ -1147,7 +1147,7 @@ async function loadArena(){
     if (r.state === "done"){
       d.textContent = `✅ ${r.verdict} · ${r.deals}副 · 胜 A${r.wins_a}/B${r.wins_b} · ±${Math.round(r.ci95||0)}`;
     } else {
-      d.textContent = `${r.state==="running"?"🏃":"⏳"} ${r.deals}/32 副 · 胜 A${r.wins_a}/B${r.wins_b}`;
+      d.textContent = `${r.state==="running"?"🏃":"⏳"} ${r.games||0}/64 局 · ${r.deals}/32 配对 · 胜 A${r.wins_a}/B${r.wins_b}`;
       running++;
     }
     c.append(d);
