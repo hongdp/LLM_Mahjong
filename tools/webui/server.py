@@ -34,6 +34,7 @@ VM_EXP_ROOT = "LLM_Mahjong/experiments"
 VM_HOSTS = {
     "v2_engine_ppo_value_run": "mahjong-a100-b.europe-west4-a.workstation-185016",
     "v2_engine_ppo_run": "mahjong-a100-e.us-east1-b.workstation-185016",
+    "tune_": "mahjong-a100-e.us-east1-b.workstation-185016",
 }
 
 

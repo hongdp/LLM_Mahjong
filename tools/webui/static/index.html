@@ -547,13 +547,20 @@ function explainReward(st){
   }
   return lines;
 }
-/* step kind: 14-tile hand (3n+2) = draw/discard decision (one 巡);
+/* step kind: 14-tile hand (3n+2) = draw/discard decision;
    13-tile-equivalent = interrupt query (pon/chi/kan/ron offer). */
 function isTurnStep(s){ return ((s.self?.hand?.length||0) % 3) === 2; }
+/* a turn step is a real DRAW (one 巡) unless the player's meld count just
+   grew — post-claim discards consume no wall tile. */
 function junOf(steps, idx){
-  let j = 0;
-  for (let i = 0; i <= idx && i < steps.length; i++)
-    if (isTurnStep(steps[i])) j++;
+  let j = 0, prevMelds = 0;
+  for (let i = 0; i <= idx && i < steps.length; i++){
+    const s = steps[i];
+    if (!isTurnStep(s)) continue;
+    const m = s.self?.melds?.length || 0;
+    if (m <= prevMelds) j++;          // no new meld -> this was a draw
+    prevMelds = m;
+  }
   return j;
 }
 function stepLabel(steps, idx){
