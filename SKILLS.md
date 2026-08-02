@@ -18,7 +18,7 @@
 
 ## 3. Security & Git Hygiene
 *   **NEVER** commit GCP service account keys (`*key.json`, `*credentials.json`), local environment variables (`.env`), or massive model checkpoints (`*.safetensors`, `*.pt`) to Git. The `.gitignore` has been specifically tailored to prevent this.
-*   **COMMIT CONFIRMATION RULE**: When the project reaches a certain milestone and passes necessary tests, the AI MUST explicitly ask the USER if they want to create a Git commit. **The AI MUST NOT run `git commit` or any auto-commit scripts without first receiving explicit confirmation from the USER.**
+*   **AUTO-COMMIT RULE** (updated 2026-08-01, user-approved): The AI MAY run `git commit` autonomously at logical milestones — a completed feature/fix with relevant tests passing, or an experiment record update. Commit messages must be descriptive (conventional-commit style preferred). Keep commits scoped: don't bundle unrelated changes. **`git push` and any history rewrite (rebase/reset/amend of pushed commits) still require explicit user confirmation.**
 
 ## 4. Current Setup Status (May 2026)
 - **Framework Replacement**: Abandoned `trl`'s `PPOTrainer`/`GRPOTrainer` due to their inability to handle interactive multi-turn POMDPs. Implemented a custom decoupled architecture (`ReplayBuffer` -> Custom Advantage Trainer).

@@ -176,6 +176,7 @@
   .rstrip .bar { flex:1; min-width:3px; border-radius:2px; cursor:pointer;
                  position:relative; }
   .rstrip .bar.cur { outline:2px solid var(--ink); outline-offset:1px; }
+  .rstrip .bar.intr { opacity:.5; }   /* interrupt queries: quieter than draws */
 
   /* ---- model output ---- */
   .actline { display:flex; align-items:center; gap:10px; margin:8px 0; flex-wrap:wrap; }
@@ -546,6 +547,22 @@ function explainReward(st){
   }
   return lines;
 }
+/* step kind: 14-tile hand (3n+2) = draw/discard decision (one 巡);
+   13-tile-equivalent = interrupt query (pon/chi/kan/ron offer). */
+function isTurnStep(s){ return ((s.self?.hand?.length||0) % 3) === 2; }
+function junOf(steps, idx){
+  let j = 0;
+  for (let i = 0; i <= idx && i < steps.length; i++)
+    if (isTurnStep(steps[i])) j++;
+  return j;
+}
+function stepLabel(steps, idx){
+  const total = steps.length;
+  const juns = junOf(steps, total - 1);
+  const kind = isTurnStep(steps[idx]) ? "摸切" : "询问";
+  return `第 ${junOf(steps, idx)}/${juns} 巡 · 第 ${idx+1}/${total} 步 · ${kind}`;
+}
+
 function shortExplain(st){
   const a=st.action||{};
   if (a.bad_format) return "格式违规";
@@ -587,10 +604,11 @@ function renderInspector(){
     const strip=el("div","rstrip");
     const maxAbs=Math.max(...steps.map(s=>Math.abs(s.reward)),1);
     steps.forEach((s,i)=>{
-      const b=el("div","bar"+(i===CUR.step?" cur":""));
+      const turn=isTurnStep(s);
+      const b=el("div","bar"+(i===CUR.step?" cur":"")+(turn?"":" intr"));
       const h=Math.max(4, Math.abs(s.reward)/maxAbs*36);
       b.style.height=h+"px"; b.style.background=rewardColor(s.reward,maxAbs);
-      b.title=`step ${i} · R ${fmt(s.reward,2)} · ${shortExplain(s)}`;
+      b.title=`${turn?"摸切":"询问"} · 第${junOf(steps,i)}巡 · step ${i} · R ${fmt(s.reward,2)} · ${shortExplain(s)}`;
       b.onclick=()=>{CUR.step=i; syncStep();};
       CUR._bars.push(b);
       strip.append(b);
@@ -604,7 +622,7 @@ function renderInspector(){
   const next=el("button","","→"); next.onclick=()=>{CUR.step++; syncStep();};
   const slider=el("input"); slider.type="range"; slider.min=0; slider.max=steps.length-1; slider.value=CUR.step;
   slider.oninput=e=>{CUR.step=+e.target.value; syncStep();};
-  const lbl=el("span","hint",`step ${CUR.step+1}/${steps.length}`);
+  const lbl=el("span","hint",stepLabel(steps, CUR.step));
   CUR._slider=slider; CUR._lbl=lbl;
   nav.append(prev,slider,next,lbl);
   stripCard.append(nav);
@@ -620,7 +638,7 @@ function syncStep(){
   CUR.step=Math.max(0, Math.min(CUR.step, steps.length-1));
   CUR._bars?.forEach((b,i)=>b.classList.toggle("cur", i===CUR.step));
   if (CUR._slider) CUR._slider.value=CUR.step;
-  if (CUR._lbl) CUR._lbl.textContent=`step ${CUR.step+1}/${steps.length}`;
+  if (CUR._lbl) CUR._lbl.textContent=stepLabel(steps, CUR.step);
   renderStepView();
 }
 
@@ -715,7 +733,13 @@ function renderStepView(){
 
   /* right: model output */
   const out=el("div","card");
-  out.append(el("div","title","模型输出"));
+  const otitle=el("div","title");
+  otitle.textContent="模型输出";
+  const kindBadge=el("span","badge"+(isTurnStep(st)?" me":""),
+    isTurnStep(st) ? "🀄 摸切决策" : "✋ 副露/荣和询问");
+  kindBadge.style.marginLeft="8px";
+  otitle.append(kindBadge);
+  out.append(otitle);
   const act=el("div","actline");
   const a=st.action||{};
   const chip=el("span","actchip"+(a.bad_format?" bad":""));
