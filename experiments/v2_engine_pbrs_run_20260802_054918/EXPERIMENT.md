@@ -35,6 +35,13 @@ the SFT stage only. This run becomes the PBRS baseline.
 3. **Game quality**: ≥10% of rollout games end in a win (ron/tsumo).
 4. **Checkpoint rule**: "best" = highest avg episode reward checkpoint (top-3 retention), not the last epoch.
 
+
+> **评测注记（2026-08-02，run 中追加，预注册标准不变）**：同权重自对弈下，
+> rl/avg_episode_reward 的结算成分四家严格归零，均值主体是 PBRS 起手常数
+> （≈+6.5）——标准 #2 对策略强度近乎不敏感（用户洞察）。强度判定以标准 #3
+> （和牌率）、行为探针（放铳率/听牌率/打点）与完赛后的锚定对战（复式
+> checkpoint 竞技场，见 TASKS #11）为准。
+
 ## Progress
 - [2026-08-01 22:49 (05:49 UTC 08-02)] Launched (RL-only, PBRS shaping). Predecessor stopped cleanly after its SFT checkpoint was written; VM kept up; monitor state reset.
 
