@@ -74,7 +74,7 @@ def parse_args():
     )
     parser.add_argument(
         "--reward_model", type=str, default="step",
-        choices=["step", "potential", "potential_value"],
+        choices=["step", "potential", "potential_value", "settlement"],
         help="Step shaping model: 'step' = legacy absolute scores; "
              "'potential' = energy-consistent PBRS (telescopes to a deal "
              "constant, cannot be farmed); 'potential_value' = PBRS with a "
