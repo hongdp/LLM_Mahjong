@@ -219,6 +219,9 @@
 <h2>训练曲线</h2>
 <div class="charts" id="charts"></div>
 
+<h2>竞技场 <span class="hint" id="arenaState"></span></h2>
+<div class="kpis" id="arenaCards"></div>
+
 <h2>牌局检视</h2>
 <div class="controls">
   <label>epoch <select id="epochSel"></select></label>
@@ -1099,6 +1102,35 @@ $("#playSec").onchange=()=>{
     PLAY.timer=setInterval(playTick, playSeconds()*1000); }
 };
 
+
+async function loadArena(){
+  let rows; try { rows = await jget("/api/arena"); } catch(e){ return; }
+  const host = $("#arenaCards"); host.innerHTML = "";
+  let running = 0;
+  rows.forEach(r=>{
+    const c = el("div","tilecard");
+    c.append(el("div","lbl", r.tag));
+    const v = el("div","val");
+    if (r.mean_diff != null){
+      const s = r.mean_diff > 0 ? "+" : "";
+      v.textContent = `${s}${Math.round(r.mean_diff)}`;
+      v.style.color = r.mean_diff > 0 ? "var(--series)" : (r.mean_diff < 0 ? "var(--neg)" : "");
+    } else v.textContent = "—";
+    c.append(v);
+    const d = el("div","delta");
+    if (r.state === "done"){
+      d.textContent = `✅ ${r.verdict} · ${r.deals}副 · 胜 A${r.wins_a}/B${r.wins_b} · ±${Math.round(r.ci95||0)}`;
+    } else {
+      d.textContent = `${r.state==="running"?"🏃":"⏳"} ${r.deals}/32 副 · 胜 A${r.wins_a}/B${r.wins_b}`;
+      running++;
+    }
+    c.append(d);
+    host.append(c);
+  });
+  $("#arenaState").textContent = running ? `（配对点差 = RL方总点数−50000，双向合计；${running} 场进行中）`
+                                         : "（全部完赛）";
+}
+
 /* ------------------------------------------------ sync + refresh */
 $("#syncBtn").onclick = async ()=>{
   const b=$("#syncBtn"); b.disabled=true; b.textContent="同步中…";
@@ -1144,7 +1176,7 @@ async function refreshAll(keepSelection){
     $("#epochSel").value=prevEpoch; await loadRollouts();
   }
 }
-(async ()=>{ await loadExperiments(); await loadMetrics(); await loadEpochs(); })();
+(async ()=>{ await loadExperiments(); await loadMetrics(); await loadEpochs(); await loadArena(); setInterval(loadArena, 30000); })();
 </script>
 </body>
 </html>

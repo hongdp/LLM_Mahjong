@@ -366,6 +366,62 @@ def sync_from_vm(exp_name):
         return {"ok": False, "stderr": "rsync timed out"}
 
 
+
+
+# ---------------------------------------------------------------- arena
+ARENA_MATCHES = [
+    {"tag": "BASE: RL ep26 vs SFT", "host": "mahjong-a100.us-central1-b.workstation-185016",
+     "json": "arena_base.json"},
+    {"tag": "ARM-A: PPO ep24 vs SFT", "host": "mahjong-a100-e.us-east1-b.workstation-185016",
+     "json": "arena_ppo.json"},
+    {"tag": "ARM-B: PPO+value ep25 vs value-SFT", "host": "mahjong-a100-b.europe-west4-a.workstation-185016",
+     "json": "arena_value.json"},
+]
+_arena_cache = {"t": 0.0, "data": None}
+_ARENA_LINE = re.compile(r'seed=\d+ diff=([+-][\d.]+) wins A/B=(\d+)/(\d+)')
+
+
+def arena_status():
+    import time
+    with _cache_lock:
+        if _arena_cache["data"] is not None and time.time() - _arena_cache["t"] < 25:
+            return _arena_cache["data"]
+    out = []
+    for m in ARENA_MATCHES:
+        row = {"tag": m["tag"], "state": "unreachable", "deals": 0,
+               "mean_diff": None, "wins_a": 0, "wins_b": 0, "verdict": None}
+        try:
+            r = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", m["host"],
+                 f"cat ~/{m['json']} 2>/dev/null; echo ===LOG===; "
+                 f"cat ~/{m['json']}.log 2>/dev/null; echo ===PS===; "
+                 f"pgrep -f run_arena >/dev/null && echo RUN || echo IDLE"],
+                capture_output=True, text=True, timeout=25, stdin=subprocess.DEVNULL)
+            body = r.stdout
+            jpart, _, rest = body.partition("===LOG===")
+            lpart, _, ps = rest.partition("===PS===")
+            if jpart.strip().startswith("{"):
+                d = json.loads(jpart)
+                row.update(state="done", deals=d["deals"], mean_diff=d["mean_diff"],
+                           ci95=d.get("ci95"), wins_a=d["wins_a"], wins_b=d["wins_b"],
+                           verdict=d["verdict"])
+            else:
+                diffs, wa, wb = [], 0, 0
+                for mm in _ARENA_LINE.finditer(lpart):
+                    diffs.append(float(mm.group(1)))
+                    wa += int(mm.group(2)); wb += int(mm.group(3))
+                row.update(state="running" if "RUN" in ps else "starting",
+                           deals=len(diffs),
+                           mean_diff=(sum(diffs) / len(diffs)) if diffs else None,
+                           wins_a=wa, wins_b=wb)
+        except Exception as ex:
+            row["error"] = str(ex)[:120]
+        out.append(row)
+    with _cache_lock:
+        _arena_cache["t"] = __import__("time").time()
+        _arena_cache["data"] = out
+    return out
+
 # ---------------------------------------------------------------- http plumbing
 
 _rollout_cache = {}
@@ -407,6 +463,8 @@ class Handler(BaseHTTPRequestHandler):
                        "text/html; charset=utf-8")
         elif u.path == "/api/experiments":
             self._json(list_experiments())
+        elif u.path == "/api/arena":
+            self._json(arena_status())
         elif u.path == "/api/metrics":
             exp = os.path.basename(q.get("exp", ""))
             self._json(read_metrics(exp))
