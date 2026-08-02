@@ -32,6 +32,7 @@
 > checkpoint 竞技场，见 TASKS #11）为准。
 
 ## Progress
+- [2026-08-02 ~10:30 UTC, ep10] 轻度格式侵蚀观察：100%→98.6%/10ep。失败形态=短而完整的 think 后直接 EOS（非截断，中位 12-34 字符 vs 正常 58），高发于「宣告立直」类结论句尾。approx_kl 稳定 ~0.001（无过度更新）。不干预（距 95% 标准余量大，-10 压制在场）；此为 ref-KL 锚的首个实证依据（TASKS 背景队列 #10）。
 - [22:49 (05:49 UTC 08-02)] Launched (RL-only; value-template adapter reused from 041051).
 
 ## Results
