@@ -1,66 +1,102 @@
 # LLM Mahjong — 基于 LLM 的多智能体日麻自对弈 RL 系统
 
-用 4 个共享权重的 LLM 实例进行四人立直麻将自对弈（POMDP），通过自定义的 Advantage-Weighted RL 循环（Replay Buffer + 策略梯度）训练模型，从基础牌效率逐步进化到防守与全局判断。
+用 4 个共享权重的 LLM 座位进行四人立直麻将自对弈（POMDP），通过自研的解耦 RL 管线
+（批量并发 rollout → ReplayBuffer → REINFORCE / PPO）训练 Qwen3.5-2B + LoRA，
+从基础牌效率逐步进化到价值判断与防守。
 
-详细设计见 [docs/mahjong_design_document.md](docs/mahjong_design_document.md)，GCP 三阶段部署方案见 [docs/implementation_plan.md](docs/implementation_plan.md)。项目经验与硬件约束记录在 [SKILLS.md](SKILLS.md)（每次开发前先读）。麻将引擎的已知问题与修复优先级见 [docs/engine_known_issues.md](docs/engine_known_issues.md)（**跑正式 RL 实验前先看 P0 部分**）。
+**必读文档**：
+- [SKILLS.md](SKILLS.md) — 项目经验/硬件约束/性能诊断（每次开发前先读）
+- [TASKS.md](TASKS.md) — 任务看板（持久快照，随里程碑更新）
+- [docs/reward_energy_pbrs.md](docs/reward_energy_pbrs.md) — 势函数奖励的数学与保证
+- [docs/v3_threaded_context_design.md](docs/v3_threaded_context_design.md) — 下一代串联上下文架构设计稿
+- [docs/engine_known_issues.md](docs/engine_known_issues.md) — 引擎规则保真度与有意延后项
+- [docs/mahjong_design_document.md](docs/mahjong_design_document.md) / [docs/implementation_plan.md](docs/implementation_plan.md) — 原始设计与三阶段部署方案
 
 ## 架构总览
 
 ```
 src/
-├── core/                  # 通用 RL 引擎（与游戏解耦）
-│   ├── trainer.py         # 主入口：SFT warm-up + RL 循环（NLL × Advantage）
-│   ├── rollout.py         # ReplayBuffer / TrajectoryStep / Return-to-Go 计算
-│   ├── task.py            # Task 抽象基类
-│   ├── registry.py        # 任务注册表
-│   └── base_reward.py     # 奖励模型基类
-└── tasks/mahjong/         # 麻将领域逻辑
-    ├── table.py           # 136 张牌桌引擎（发牌/合法动作/吃碰杠和）
-    ├── shanten.py         # 向听数 / 受入计算
-    ├── orchestrator.py    # LangGraph 回合图（turn 节点 + interrupt 节点）
-    ├── rewards.py         # 奖励塑形（格式/向听/受入/和牌）
-    └── task.py            # MahjongTask（collect_rollouts 入口）
+├── core/                    # 通用 RL 引擎（与游戏解耦）
+│   ├── trainer.py           # 主入口：SFT warm-up + RL 循环（REINFORCE 或 PPO）
+│   ├── ppo.py               # PPO clipped-surrogate 损失（纯张量，单测覆盖）
+│   ├── rollout.py           # ReplayBuffer / TrajectoryStep / Return-to-Go / 协变量基线
+│   ├── chat_format.py       # 唯一的模板渲染源（SFT 与 rollout 必须一致）
+│   ├── task.py / registry.py / base_reward.py
+└── tasks/mahjong/
+    ├── table.py             # 136 张牌桌引擎（真实算分/立直/振听/流局听牌费/结算分发）
+    ├── shanten.py           # 向听/受入/宝牌映射
+    ├── orchestrator.py      # LangGraph 顺序 rollout（legacy，parallel_games=1）
+    ├── batch_rollout.py     # N 局并发批量 rollout（生成器协议 + 批量 generate）
+    ├── rewards.py           # 奖励注册表：step / potential / potential_value + 协变量
+    └── task.py              # MahjongTask（collect_rollouts 入口）
 
 scripts/
-├── generate_sft_data.py   # 生成 SFT 冷启动数据（最优受入轨迹 → ChatML JSONL）
-├── phase0_local/          # 本地小规模验证（run_local_test.sh）
-├── phase1_ce/             # GCP Compute Engine（start_vm / sync_code / run_training）
-└── phase2_vertex/         # Vertex AI 容器化训练（build_docker / submit_job）
+├── generate_sft_data.py     # 忠实 CoT 教师语料（--value_facts 价值感知模式）
+├── analyze_defense_probe.py # 防守探针：对手立直后弃和率/放铳率
+├── phase1_ce/               # GCP 单卡 VM 工作流（start_vm / sync_code / run_training）
+└── phase2_vertex/           # Vertex AI（未启用）
 
-configs/                   # 训练配置（JSON，传给 trainer --config）
-data/sft_mahjong.jsonl     # SFT warm-up 数据
-experiments/<name>_<ts>/   # 每次训练的输出目录（config、日志、checkpoint、tensorboard）— 不入 git
+tools/webui/                 # 本地训练检视台（曲线 + 雀魂式复盘 + 实时视图）
+configs/                     # 训练配置 JSON（传给 trainer --config）
+experiments/<name>_<ts>/     # 每次训练的输出（记录入 git，重产物不入）
 ```
 
-## 快速开始（本地 Phase 0）
+## 奖励系统（registry 模式，`reward_model` 配置项选择）
 
+| 名称 | 说明 |
+|---|---|
+| `step` | 旧版绝对分塑形（可刷分，仅为历史复现保留） |
+| `potential` | **势函数塑形（PBRS）**：Φ=−2·向听+0.05·受入；折扣和 telescoping 到发牌常数——与终局结算严格一致、不可刷分、最优策略不变 |
+| `potential_value` | PBRS + 0.3×宝牌持有项（引导价值探索，保证不变） |
+
+终局结算 = 真实点差×0.001 + 顺位奖 ±2/±0.5（四家轨迹全部分发）；流局听牌费（场 3000）已实现。
+可选 `--covariate_baseline`：按起手质量回归消除发牌运气方差（默认关）。
+
+## 训练算法
+
+- `--rl_algo reinforce`（默认）：advantage-weighted NLL，每批 1 遍
+- `--rl_algo ppo`：clipped surrogate（ε=0.2）+ 每批 ≤3 遍复用 + approx-KL 早停；
+  无 critic（GRPO 风格：全 buffer 归一化 MC return，±5 截断）；rollout 时记录行为策略
+  原始 logits logprobs，按 token id 重建序列（无重分词漂移）
+- 精度：`--use_qlora`（nf4，16GB 卡）或 `--bf16_lora`（A100 推荐，解码 +55%）
+- `--parallel_games N`：N 局并发批量 rollout（A100 实测 24 路近线性，单局成本 5.2× 优化）
+
+## 快速开始
+
+**本地（RTX 4080 16GB，QLoRA）**：
 ```bash
 conda activate rlhf_mahjong
-bash scripts/phase0_local/run_local_test.sh                       # 冒烟测试（1 epoch）
-bash scripts/phase0_local/run_local_test.sh configs/full_run.json # SFT + RL 完整流程
+python -m src.core.trainer --config configs/v2_ppo_smoke.json   # PPO+并发冒烟
+python -m unittest discover tests                               # 47 项单测
 ```
 
-监控训练：
-
+**GCP Phase 1（A100 40GB，bf16）**：
 ```bash
-tensorboard --logdir experiments/<exp_name>/tensorboard
+VM_NAME=mahjong-a100 ZONE=us-central1-b bash scripts/phase1_ce/start_vm.sh
+VM_NAME=... bash scripts/phase1_ce/sync_code.sh    # 数据同步（代码建议走 git pull）
+ssh <vm> 'nohup bash LLM_Mahjong/scripts/phase1_ce/run_training.sh configs/v2_pbrs_run.json > ~/train_nohup.log 2>&1 &'
+# 完赛自动：上传 gs://llm-mahjong-experiments/<exp>/ → shutdown（EXIT trap，崩溃同样生效）
 ```
+注意：A100 配额每区域 1 块，多 VM 并发需跨区域；VM 停机不保留 GPU 容量（详见 SKILLS.md）。
 
-关键指标：`sft/epoch_loss`、`rl/loss`、`rl/avg_episode_reward`、`rl/format_compliance`。
-每轮 rollout 的完整 prompt/输出会写入 `experiments/<exp_name>/live_rollout.txt`，用于人工检查模型行为。
+**训练检视台**：
+```bash
+conda run -n rlhf_mahjong python tools/webui/server.py --port 8642
+```
+曲线（含 PPO 健康指标）、雀魂式逐步复盘（巡数/结算明细/奖励解读）、进行中对局实时视图、跨 VM 一键同步。
 
-## 配置说明
+## 主力配置
 
 | 配置 | 用途 |
 |---|---|
-| `configs/experiment_1.json` | 最小冒烟测试（1 epoch, 1 episode） |
-| `configs/full_run.json` | 完整流程：3 epoch SFT warm-up + 100 epoch RL |
-| `configs/baseline.json` | 跳过 SFT（`sft_epochs: 0`），通过 `peft_model_path` 加载已有 SFT adapter 直接进 RL |
+| `configs/v2_pbrs_run.json` | 基线：PBRS + REINFORCE，50×12，bf16 |
+| `configs/v2_ppo_run.json` | Arm A：+PPO（对基线单变量） |
+| `configs/v2_ppo_value_run.json` | Arm B：PPO + 价值 bundle（potential_value + 价值事实模板 + 价值语料 adapter） |
+| `configs/v2_ppo_smoke.json` | 本地冒烟（1 epoch，4 局并发） |
 
-重要参数：`training_phase` 1=仅格式奖励，2=完整策略奖励；`num_episodes` 每个 epoch 的自对弈局数；`peft_model_path` 复用已训练的 LoRA adapter。
+## 当前状态（2026-08-02）
 
-## 当前状态（2026-08）
-
-- **Phase 0 已完成**：完整 136 张牌引擎、吃/碰/杠/和逻辑、LangGraph 中断路由、SFT warm-up + RL 双阶段训练管线均可跑通（本地 Qwen2.5-0.5B + QLoRA）。
-- **已知阻塞问题**：最近一次 baseline RL run 中，rollout 阶段约 91% 的输出没有产生合法 `<action>` 标签（模型只输出牌面列表），被 fallback 解析为 `skip`——RL 实际在垃圾数据上训练。原因很可能是 `baseline.json` 加载的是 `config_test_run` 的 adapter（只训了 1 个 SFT epoch、500 条样本），格式能力不足。下一步应改为加载 `full_run` 的 3-epoch SFT checkpoint 或提高 SFT 强度后再验证。
-- 本地 16GB 显存无法跑 Gemma 系列（peft fp32 embedding 上浮），Phase 1 需上 GCP。
+- **三臂 rev3 对照运行中**（各 ~17h）：基线 / PPO 消融 / PPO+价值 bundle，
+  预注册成功标准：格式 ≥0.95 达 45/50 epoch、末10均值 > 首10、和牌局 ≥10%、PPO 健康。
+- 完赛后自动：GCS 归档 → VM 关机 → 三臂对比 + 防守探针 + 方差分解（critic vs 重放决策依据）。
+- 实验记录制度：启动前 EXPERIMENT.md 预注册，`experiments/INDEX.md` 总账（ml-experiment-tracking skill）。

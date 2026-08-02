@@ -41,12 +41,21 @@
 - **Experiment Records (Aug 2026):** All experiments MUST follow the shared `ml-experiment-tracking` skill (`~/Workspace/SKILLS/ml-experiment-tracking/SKILL.md`, linked into `~/.claude/skills/`): write `EXPERIMENT.md` (purpose / method / success criteria) BEFORE launching, append progress during the run, record results / conclusion / artifact manifest after, and keep `experiments/INDEX.md` up to date. The May 2026 baseline run left no record of its intent or outcome — that must not happen again.
 
 ---
-### Status Snapshot (Aug 2026)
-- **Project idle since ~May 21, 2026.** Uncommitted work at that point: `--peft_model_path` support in `trainer.py` (load a pre-trained SFT LoRA adapter and skip warm-up) + loosened action regex, and the matching `baseline.json` changes.
-- **Blocking issue found in last run** (`experiments/baseline_local_run_20260517_034738`): during RL rollout, ~122/134 model outputs contained NO `<action>` tag (model emitted bare tile lists like `3s 4s 6s 9s ...`), all falling back to `<action type="skip" />`. Root-cause hypothesis: `baseline.json` points `peft_model_path` at the **config_test_run** adapter, which only had **1 SFT epoch on 500 samples** — insufficient format grounding. The `full_run_20260517_035217` checkpoint had 3 SFT epochs (final loss 0.0725) and is the better candidate.
-- **Metric caveat**: the loosened `_action_re` in `trainer.py` now matches ANY `type="..."` value, so hallucinated types (`reveal`, `hold`, `add_to_pool` were observed) count as "format compliant" and earn +5.0 in phase-1 reward. Needs a whitelist of legal action types.
-- **Repo layout**: `experiments/` and `.antigravitycli/` added to `.gitignore` (Aug 2026). Top-level `checkpoints/` (2.4G) and `logs/` are legacy pre-experiment-system outputs — superseded by per-experiment dirs; safe to archive/delete manually. `src/data_loader.py` and `src/models/` are unused skeleton stubs from the original template.
-- **Engine audit (Aug 2026)**: full issue list with severity ranking lives in `docs/engine_known_issues.md`. **Do NOT launch a long RL run until the P0 items there are fixed** — as of the audit, reward exploits (unconditional riichi bonus, meld instant rewards on hands that can never win, model-supplied ron tile) and the missing loser-reward plumbing mean RL would optimize score hacks, not mahjong. Keep that file's checkboxes updated as fixes land.
+### Status Snapshot (2026-08-02 — supersedes the May/early-Aug snapshot)
+- **Three-arm rev3 comparison IN FLIGHT** on 3× A100 (us-central1/us-east1/europe-west4): PBRS+REINFORCE baseline vs +PPO vs PPO+value-bundle; 50 epochs × 12 concurrent games, bf16_lora, update batch 4. Pre-registered criteria in each run's EXPERIMENT.md. Runs self-archive to `gs://llm-mahjong-experiments` and self-shutdown.
+- **May-era blocking issues all resolved**: format collapse (weak adapter) fixed by 3-epoch SFT adapters; action-type whitelist enforced in `table.py` ACTION_RE; reward exploits eliminated by the v2 engine + PBRS rewards (docs/reward_energy_pbrs.md).
+- **Algorithm stack**: PBRS potential rewards (telescoping-consistent, unfarmable) + optional dora value term; PPO (no critic, KL early stop) or REINFORCE; optional initial-hand covariate baseline. 47 unit tests.
+- **Throughput stack**: batched parallel rollout (near-linear to 24 games), bf16 LoRA on A100 (+55% over nf4), fast-path kernels; per-game cost 525s → 100s (5.2×).
+- **Next majors queued** (TASKS.md): v3 threaded-context architecture (design doc ready), critic head vs duplicate-deal decision pending variance decomposition from the current fleet's data.
+- **Repo layout**: legacy `checkpoints/`/`logs/` and `src/data_loader.py`/`src/models/` stubs unchanged (archive/delete manually when convenient).
+
+### Ops Lessons (Aug 2026, GCP session)
+- **Stopping a GPU VM forfeits its capacity** — us-west1-b A100 was gone on restart (`zonesAvailable: ''`); had to recreate in europe-west4. Weigh idle cost vs stockout risk before stopping.
+- **Instance names are project-global with global DNS** — a TERMINATED VM blocks its name everywhere.
+- **`pkill -f` self-match**: the pattern text appearing ANYWHERE in your own command line (even in a later pipeline segment) kills your own shell. Bracket trick `[r]un_training` only helps if the literal string appears nowhere else in the command.
+- **nohup python stdout is block-buffered** — export PYTHONUNBUFFERED=1 (baked into run_training.sh) or logs look frozen mid-epoch.
+- **Home-uplink rsync tax (~1Mbps)**: sync code via git push → VM `git pull` (repo is public); rsync only for data (with sha256 gate). A background task's `| tail` masks failures — check real exit signals, not pipe tails.
+- **Don't sample generated files mid-write** — the value corpus sha changed between generation and shuffle finishing; verify AFTER the producing task completes.
 
 ---
 ### GCP Phase 1 Infra Facts & Lessons (Aug 2026)
