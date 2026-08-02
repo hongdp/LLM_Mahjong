@@ -32,6 +32,14 @@ class MahjongTask(BaseTask):
         self.parallel_games = int(kwargs.get('parallel_games', 1))
         if self.parallel_games > 1:
             print(f"⚡ Parallel rollout: {self.parallel_games} concurrent games")
+        # Round randomization: sample round wind (东/南) and dealer seat per
+        # episode instead of always playing 东1局 with player 0 as dealer.
+        # Only the VALUES in the 场况/自风 lines change, not the template,
+        # so it stays compatible with existing SFT adapters — but SFT data
+        # regenerated with the same flag covers the other winds properly.
+        self.randomize_round = bool(kwargs.get('randomize_round', True))
+        if self.randomize_round:
+            print("🀄 Round randomization: ON (场风 东/南 × 庄家 0-3)")
         # Deal-luck control variate: subtract a fitted function of the
         # initial hand quality from episode returns before normalization.
         self.covariate_baseline = bool(kwargs.get('covariate_baseline', False))
@@ -49,11 +57,13 @@ class MahjongTask(BaseTask):
                 num_episodes, model, tokenizer, exp_dir,
                 capture_logprobs=capture_logprobs,
                 value_facts=self.value_facts,
-                parallel=self.parallel_games)
+                parallel=self.parallel_games,
+                randomize_round=self.randomize_round)
         else:
             episodes = run_rollout(num_episodes, model, tokenizer, exp_dir,
                                    capture_logprobs=capture_logprobs,
-                                   value_facts=self.value_facts)
+                                   value_facts=self.value_facts,
+                                   randomize_round=self.randomize_round)
         
         buffer = ReplayBuffer(gamma=0.99)
         

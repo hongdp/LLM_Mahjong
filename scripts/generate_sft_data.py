@@ -42,6 +42,9 @@ RIICHI_PROB = 0.8
 MELD_PROB = 0.25     # gate applies only to shanten-REDUCING melds
 SKIP_SAMPLE_PROB = 0.3
 KAN_PROB = 0.3
+# Match the training default (MahjongTask.randomize_round) so the teacher
+# covers every 场风/自风 combination the policy will meet at rollout time.
+RANDOMIZE_ROUND = True
 
 
 def _shanten(tiles: list, n_melds: int) -> int:
@@ -219,7 +222,12 @@ def pick_turn_action(table, pid: int, hand: list, legal_actions: list):
 def pick_interrupt_action(table, i_id: int, options: list):
     """Teacher decision for the interrupt phase.
     Returns (action_xml, think, is_claim) or None to emit no sample."""
-    claim_tile = table.last_discard.replace('*', '') if table.last_discard else ""
+    # During a chankan window the contested tile is the added kan's tile,
+    # not the stale last discard (RCR 4.2.1.12).
+    if table.pending_kan:
+        claim_tile = table.pending_kan["tile"]
+    else:
+        claim_tile = table.last_discard.replace('*', '') if table.last_discard else ""
     ron = next((a for a in options if 'ron' in a), None)
     if ron is not None:
         return ron, win_think(table, i_id, claim_tile, is_tsumo=False), True
@@ -253,7 +261,8 @@ def pick_interrupt_action(table, i_id: int, options: list):
 
 
 def simulate_game(game_id: int) -> list:
-    table = PyMahjongTable(value_facts=VALUE_AWARE)
+    table = PyMahjongTable(value_facts=VALUE_AWARE,
+                           randomize_round=RANDOMIZE_ROUND)
     samples = []
 
     for _ in range(400):  # safety cap; games end naturally well before
@@ -270,10 +279,11 @@ def simulate_game(game_id: int) -> list:
         _, _, done, info = table.step(player_id, action_xml)
         if done:
             break
-        if not info.get("discarded", False):
-            continue  # kan: same player keeps the turn
+        if not (info.get("discarded", False) or info.get("chankan")):
+            continue  # ankan: same player keeps the turn
 
-        # --- INTERRUPT PHASE (priority: ron > kan/pon > chi) ---
+        # --- INTERRUPT PHASE (ron first, then pon/kan over chi) ---
+        # An added kan opens a ron-only window here (chankan, RCR 4.2.1.12).
         claims = []
         for offset in range(1, 4):
             i_id = (player_id + offset) % 4
@@ -305,9 +315,14 @@ def simulate_game(game_id: int) -> list:
                 return samples
 
         if not interrupted:
-            _, done = table.advance_turn()
-            if done:
-                break
+            if table.pending_kan:
+                # Nobody robbed the kan: it completes and the same player
+                # carries on to their post-rinshan discard.
+                table.resolve_pending_kan()
+            else:
+                _, done = table.advance_turn()
+                if done:
+                    break
 
     return samples
 

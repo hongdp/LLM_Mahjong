@@ -23,7 +23,7 @@ from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
 from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content
 from src.core.chat_format import visible_text, render_generation_prompt
 from src.core.rollout import TrajectoryStep
-from src.tasks.mahjong.orchestrator import _PRIORITY, _extract_action
+from src.tasks.mahjong.orchestrator import _resolve_claims, _extract_action
 
 
 @dataclass
@@ -71,7 +71,9 @@ def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
         ))
         if done:
             return
-        if not info.get('discarded', False):
+        # A discard opens the call window; an added kan opens a
+        # chankan-only window (RCR 4.2.1.12).
+        if not (info.get('discarded', False) or info.get('chankan')):
             continue
 
         # ---- interrupt phase (orchestrator.interrupt_node) ----
@@ -97,33 +99,21 @@ def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
                     "reward": 0.0, "gen_ids": req.gen_ids, "old_lp": req.old_lp,
                 })
 
-        executed, done = None, False
-        for cand in sorted(candidates, key=lambda c: _PRIORITY.get(c["type"], 9)):
-            if cand["parsed"] is None:
-                cand["reward"] = table.FORMAT_PENALTY
-                continue
-            if cand["type"] == "skip" or cand["type"] is None:
-                continue
-            if executed is not None:
-                continue   # lost the priority race: not applied, no penalty
-            _, rewards, i_done, info = table.step_interrupt(
-                cand["player_id"], cand["parsed"])
-            cand["reward"] = rewards[cand["player_id"]]
-            if info.get("interrupt", False):
-                executed = cand
-                done = i_done
+        executed, done = _resolve_claims(table, candidates)
 
         for cand in candidates:
             trajectories[cand["player_id"]].append(TrajectoryStep(
                 prompt_text=cand["prompt"], action_text=cand["raw"],
                 reward=cand["reward"],
-                is_terminal=done and executed is cand,
+                is_terminal=done and cand in executed,
                 gen_token_ids=cand["gen_ids"], old_logprobs=cand["old_lp"],
             ))
 
-        if executed is not None:
+        if executed:
             if done:
                 return
+        elif table.pending_kan:
+            table.resolve_pending_kan()
         else:
             _, r_done = table.advance_turn()
             if r_done:
@@ -192,7 +182,9 @@ def _log_batch(exp_dir, game_idx, reqs: List[_Req]):
 def run_rollout_batched(num_games: int, model=None, tokenizer=None,
                         exp_dir: str = None, capture_logprobs: bool = False,
                         value_facts: bool = False,
-                        parallel: int = 4) -> List[List[TrajectoryStep]]:
+                        parallel: int = 4,
+                        randomize_round: bool = False
+                        ) -> List[List[TrajectoryStep]]:
     """Drop-in alternative to orchestrator.run_rollout with concurrent games.
     Semantics per game are identical; only scheduling differs."""
     log_dir = exp_dir or "./logs"
@@ -230,7 +222,8 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
     while next_game < num_games or active:
         # top up the pool
         while next_game < num_games and len(active) < parallel:
-            table = PyMahjongTable(value_facts=value_facts)
+            table = PyMahjongTable(value_facts=value_facts,
+                                   randomize_round=randomize_round)
             trajectories = {i: [] for i in range(4)}
             gen = _drive_game(table, trajectories, model, tokenizer)
             gid = next_game

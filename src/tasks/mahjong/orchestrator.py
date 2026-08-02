@@ -11,9 +11,10 @@ from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content
 from src.core.chat_format import visible_text, render_generation_prompt
 from src.core.rollout import TrajectoryStep
 
-# Interrupt resolution priority: ron beats kan/pon beats chi (atamahane:
-# earlier seat order wins ties because collection order is preserved).
-_PRIORITY = {"ron": 0, "kan": 1, "pon": 2, "chi": 3}
+# Meld resolution priority (RCR 3.3/3.4: pon and kan beat chi). Ron is
+# resolved separately and beats every meld — and per RCR 3.11 EVERY player
+# who declares a legal ron wins, so it is not part of this race.
+_PRIORITY = {"kan": 1, "pon": 2, "chi": 3}
 
 
 class MahjongState(TypedDict):
@@ -110,6 +111,44 @@ def _log_result(state: MahjongState, table: PyMahjongTable):
         f.write(f"=== 对局结束: {table.result_summary} ===\n")
 
 
+def _resolve_claims(table: PyMahjongTable, candidates: List[dict]):
+    """Applies one interrupt window's declarations to the table.
+
+    `candidates` must be in seat order starting from the discarder — that
+    order decides who collects the riichi sticks on a multiple ron.
+    Returns (executed_candidates, game_over). Writes each candidate's
+    engine reward into cand["reward"].
+    """
+    for cand in candidates:
+        if cand["parsed"] is None:
+            cand["reward"] = table.FORMAT_PENALTY
+
+    actionable = [c for c in candidates
+                  if c["parsed"] is not None and c["type"] not in (None, "skip")]
+
+    # RCR 3.11: all declared rons are settled in one call; illegal ones
+    # (furiten / no yaku) are penalized there and the melds play on.
+    rons = [c for c in actionable if c["type"] == "ron"]
+    if rons:
+        _, rewards, done, info = table.step_ron([c["player_id"] for c in rons])
+        for cand in rons:
+            cand["reward"] = rewards[cand["player_id"]]
+        winners = set(info.get("winners", []))
+        if winners:
+            return [c for c in rons if c["player_id"] in winners], done
+
+    executed = []
+    for cand in sorted([c for c in actionable if c["type"] != "ron"],
+                       key=lambda c: _PRIORITY.get(c["type"], 9)):
+        if executed:
+            continue  # lost the priority race: action not applied, no penalty
+        _, rewards, _, info = table.step_interrupt(cand["player_id"], cand["parsed"])
+        cand["reward"] = rewards[cand["player_id"]]
+        if info.get("interrupt", False):
+            executed = [cand]
+    return executed, False
+
+
 def turn_node(state: MahjongState):
     table = state['table']
     player_id = table.turn
@@ -124,7 +163,10 @@ def turn_node(state: MahjongState):
     obs_dict, rewards, done, info = table.step(player_id, action_for_engine)
     state['done'] = done
     state['last_player'] = player_id
-    state['needs_interrupt'] = info.get('discarded', False)
+    # A discard opens the call window; an added kan opens a chankan-only
+    # window (RCR 4.2.1.12) that is driven by the same node.
+    state['needs_interrupt'] = bool(
+        info.get('discarded', False) or info.get('chankan'))
 
     state['trajectories'][player_id].append(TrajectoryStep(
         prompt_text=prompt,
@@ -164,25 +206,9 @@ def interrupt_node(state: MahjongState):
             "gen_ids": gen_ids, "old_lp": old_lp,
         })
 
-    # Phase 2: resolve by priority (ron > kan > pon > chi); collection
-    # order breaks ties, giving atamahane for double ron.
-    executed = None
-    done = False
-    for cand in sorted(candidates, key=lambda c: _PRIORITY.get(c["type"], 9)):
-        if cand["parsed"] is None:
-            cand["reward"] = table.FORMAT_PENALTY
-            continue
-        if cand["type"] == "skip" or cand["type"] is None:
-            continue
-        if executed is not None:
-            continue  # lost the priority race: action not applied, no penalty
-        _, rewards, i_done, info = table.step_interrupt(
-            cand["player_id"], cand["parsed"]
-        )
-        cand["reward"] = rewards[cand["player_id"]]
-        if info.get("interrupt", False):
-            executed = cand
-            done = i_done
+    # Phase 2: resolve. Every legal ron wins together (RCR 3.11); melds
+    # only get their turn if no ron stands.
+    executed, done = _resolve_claims(table, candidates)
 
     # Phase 3: record every queried player's trajectory step.
     for cand in candidates:
@@ -190,16 +216,21 @@ def interrupt_node(state: MahjongState):
             prompt_text=cand["prompt"],
             action_text=cand["raw"],
             reward=cand["reward"],
-            is_terminal=done and executed is cand,
+            is_terminal=done and cand in executed,
             gen_token_ids=cand["gen_ids"],
             old_logprobs=cand["old_lp"],
         ))
 
-    if executed is not None:
+    if executed:
         state['done'] = done
-        state['last_player'] = executed["player_id"]
+        state['last_player'] = executed[0]["player_id"]
         if done:
             _log_result(state, table)
+    elif table.pending_kan:
+        # Chankan window closed unrobbed: the kan completes and the same
+        # player carries on to their discard.
+        table.resolve_pending_kan()
+        state['done'] = False
     else:
         _, r_done = table.advance_turn()
         state['done'] = r_done
@@ -237,7 +268,8 @@ def build_mahjong_graph():
 def run_rollout(num_games: int, model=None, tokenizer=None,
                 exp_dir: str = None,
                 capture_logprobs: bool = False,
-                value_facts: bool = False) -> List[List[TrajectoryStep]]:
+                value_facts: bool = False,
+                randomize_round: bool = False) -> List[List[TrajectoryStep]]:
     """Runs self-play games and returns one trajectory per player per game,
     with terminal settlement rewards distributed to all four players.
     capture_logprobs=True additionally records sampled token ids + behavior
@@ -246,7 +278,8 @@ def run_rollout(num_games: int, model=None, tokenizer=None,
     all_episodes = []
 
     for game_idx in range(num_games):
-        table = PyMahjongTable(value_facts=value_facts)
+        table = PyMahjongTable(value_facts=value_facts,
+                               randomize_round=randomize_round)
         trajectories = {i: [] for i in range(4)}
 
         live_log_dir = exp_dir or "./logs"
