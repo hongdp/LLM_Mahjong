@@ -41,3 +41,13 @@
 
 ## Artifacts
 config_launch.json · tensorboard/ (adds rl/approx_kl, rl/clip_frac, rl/ppo_passes) · checkpoint_epoch_N/ · mahjong_epoch_N_rollouts.txt · gpu_info.txt / pip_freeze.txt / TRAIN_EXIT · GCS mirror incl. train_nohup.log
+
+
+## Final Results（2026-08-02 竞技场裁决）
+- 竞技场（复式32副×双向,vs SFT 锚,原始点数）: **+331 ± 1320（24:19）** — 不显著
+- 完整三臂分析: docs/report_rev3_threearm_20260802.md
+
+## Conclusion
+~600 局 RL 未产生统计可辨强度变化;PBRS 密集塑形主导了行为迁移(立直↓副露↑)。
+成功标准: #1 格式 ✅/边缘(见侵蚀记录) | #2 奖励趋势(已注记为强度盲指标) | #3 和牌局 ✅ 远超10% | #4 checkpoint 规则 ✅。
+后继: rev4 settlement-vs-potential 对决(docs/report_rev3_threearm_20260802.md 提案)。

@@ -67,3 +67,13 @@ the SFT stage only. This run becomes the PBRS baseline.
 | mahjong_epoch_N_rollouts.txt | rollout transcripts (probe mining source) |
 | gpu_info.txt / pip_freeze.txt / TRAIN_EXIT | provenance |
 | gs://llm-mahjong-experiments/v2_engine_pbrs_run_20260802_054918/ | full mirror incl. train_nohup.log |
+
+
+## Final Results（2026-08-02 竞技场裁决）
+- 竞技场（复式32副×双向,vs SFT 锚,原始点数）: **+1038 ± 1876（27:18）** — 方向正但不显著
+- 完整三臂分析: docs/report_rev3_threearm_20260802.md
+
+## Conclusion
+~600 局 RL 未产生统计可辨强度变化;PBRS 密集塑形主导了行为迁移(立直↓副露↑)。
+成功标准: #1 格式 ✅ 全程100% | #2 奖励趋势(已注记为强度盲指标) | #3 和牌局 ✅ 远超10% | #4 checkpoint 规则 ✅。
+后继: rev4 settlement-vs-potential 对决(docs/report_rev3_threearm_20260802.md 提案)。

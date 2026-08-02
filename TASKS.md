@@ -3,20 +3,18 @@
 > 由 Claude 在每个里程碑同步。会话内的实时状态在 Claude Code 任务面板；本文件是持久快照。
 > 最后更新：2026-08-02 00:20（本地）
 
-## 🏃 进行中（自动执行，无需人工）
+## 🏃 进行中
 
-| 任务 | 状态 | 触发/预计 |
-|---|---|---|
-| 三臂 rev3 训练：基线 PBRS+REINFORCE（central）/ Arm A PPO（east）/ Arm B PPO+价值（europe） | Epoch 2+/50，全绿（格式 ≥99.9%） | 完赛 ~2026-08-02 晚；各 VM 自动传 GCS + 关机 |
-| 舰队监控（20 分钟轮询 ×3 VM） | 在岗 | epoch/格式/KL/崩溃/关机事件 |
+（无——全部计划任务完成，三台 VM 已按常设指令关闭）
 
-## ⏳ 待命（条件触发，已获授权自主执行）
+## ⏳ 待命（等用户拍板）
 
-| 任务 | 触发条件 |
+| 提案 | 依据 |
 |---|---|
-| 逐臂收尾：拉 GCS 结果 → 补全 EXPERIMENT.md Results/Conclusion → INDEX | 每个 VM TERMINATED |
-| 三臂对比：成功标准判定 ×3（#2 已知对强度不敏感——零和结算归零，见 EXPERIMENT.md 注记）、防守/价值探针、方差分解、**锚定对战竞技场（#11）** | 三臂全部落地 |
-| 完赛通知（PushNotification）+ VM 全部关机兜底核查 | 分析完成后；**不等答复** |
+| **Rev4：settlement vs potential 双臂对决** | 塑形主导学习方向的完整证据链（总报告）；settlement 模式已实现测试 |
+| Ref-KL 锚 | PPO 臂格式侵蚀实证 |
+| Critic value head | 方差分解：起手仅解释 2%，98% 在中盘状态 |
+| v3 模板捆绑（真值表/自家牌河/短think） | think 审计 6-11% vs 教师 100% |
 
 ## ✅ 近期完成（2026-08-01 会话）
 
@@ -44,5 +42,5 @@
 
 ## 💰 资源状态
 
-- VM：3× A100 训练中（~$11/h 合计），完赛自动关机；GCS bucket `llm-mahjong-experiments`
+- VM：**全部 TERMINATED**（2026-08-02 收官）；全部数据在 GCS `llm-mahjong-experiments` + 本地 experiments/
 - Git：master 领先 origin 6 个 commit（push 需用户确认）

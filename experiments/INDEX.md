@@ -4,9 +4,9 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
-| 2026-08-01 | `v2_engine_pbrs_run_20260802_054918` | 基线（rev3）：PBRS+REINFORCE，bf16，50×12，central | ⏹ ep26 用户停跑转竞技场：格式100%全程,和牌~62%,风格迁移(立直6.6→3.1,副露49→86) | 竞技场对战出最终裁决 |
-| 2026-08-01 | `v2_engine_ppo_run_20260802_054914` | Arm A（rev3）：PPO 消融，同基线仅换算法，east | ⏹ ep24 停跑转竞技场：格式≥99.6%,和牌~62%,罚分自愈现象 | 竞技场裁决 |
-| 2026-08-01 | `v2_engine_ppo_value_run_20260802_054921` | Arm B（rev3）：PPO+价值 bundle，复用 041051 价值 adapter，europe | ⏹ ep25 停跑：副露流门风,格式侵蚀至97.5%(ref-KL依据),和牌~70% | 竞技场裁决 |
+| 2026-08-01 | `v2_engine_pbrs_run_20260802_054918` | 基线（rev3）：PBRS+REINFORCE，bf16，50×12，central | ⏹ ep26 用户停跑转竞技场：格式100%全程,和牌~62%,风格迁移(立直6.6→3.1,副露49→86) | 竞技场:+1038±1876 不显著;总报告 docs/report_rev3_threearm_20260802.md |
+| 2026-08-01 | `v2_engine_ppo_run_20260802_054914` | Arm A（rev3）：PPO 消融，同基线仅换算法，east | ⏹ ep24 停跑 | 竞技场:+331±1320 不显著;打点+18% |
+| 2026-08-01 | `v2_engine_ppo_value_run_20260802_054921` | Arm B（rev3）：PPO+价值 bundle，复用 041051 价值 adapter，europe | ⏹ ep25 停跑 | 竞技场:−1475±1652 不显著;打点4424 但漏点;详见总报告 |
 | 2026-08-01 | `v2_engine_pbrs_run_20260802_041048` | PBRS+REINFORCE 基线（022840 的 infra rev2 重启，设计不变，central A100） | ⏹ epoch 1 内暂停调优，无产出；设计迁移 rev3 重启 | 见 perf_tuning_east_20260802 |
 | 2026-08-01 | `v2_engine_ppo_run_20260802_041049` | Arm A：PPO 消融——对 041048 仅换更新算法（同 adapter/奖励/seed，east A100） | ⏹ epoch 1 内暂停调优，无产出；设计迁移 rev3 重启 | 见 perf_tuning_east_20260802 |
 | 2026-08-01 | `v2_engine_ppo_value_run_20260802_041051` | Arm B：PPO+价值 bundle（Φ宝牌项 + prompt 价值事实 + 价值教师新 SFT，europe A100） | ⏹ SFT 完成(loss 0.0877, adapter 存续复用)，RL epoch 1 内暂停 | 设计迁移 rev3 重启 |
