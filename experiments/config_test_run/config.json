@@ -1,0 +1,18 @@
+{
+    "config": "configs/experiment_1.json",
+    "model_name": "Qwen/Qwen2.5-0.5B-Instruct",
+    "task": "mahjong",
+    "learning_rate": 1e-06,
+    "num_episodes": 1,
+    "epochs": 1,
+    "batch_size": 1,
+    "use_qlora": true,
+    "debug": false,
+    "training_phase": 2,
+    "sft_epochs": 1,
+    "sft_data": "data/sft_mahjong.jsonl",
+    "sft_batch_size": 2,
+    "sft_max_samples": 500,
+    "sft_learning_rate": 0.0001,
+    "exp_name": "config_test_run"
+}

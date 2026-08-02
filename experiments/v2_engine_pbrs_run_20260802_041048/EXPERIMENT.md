@@ -1,0 +1,60 @@
+# v2_engine_pbrs_run_20260802_041048
+
+- **Date**: 2026-08-01 21:10 (04:10 UTC 08-02)  **Status**: running
+- **Infra rev2** (non-semantic, all three concurrent runs share it): torch 2.12.1+cu129, Qwen3.5 fast-path kernels ACTIVE (flash-linear-attention 0.5.2 + causal-conv1d 1.6.2 source-built), batched parallel rollout `parallel_games=4` (scheduler unit-tested; measured aggregate decode scaling 6-9× on A100). Game semantics identical to the sequential path.
+- **Design change vs v2_engine_full_run**: single variable — RL step shaping switched from `MahjongStepReward` (absolute scores, farmable, inconsistent with settlement) to **`MahjongPotentialReward`** (energy-consistent PBRS; see docs/reward_energy_pbrs.md). User-approved mid-flight switch: the predecessor run `v2_engine_full_run_20260802_005918` was stopped at SFT-complete/RL-not-started, and its SFT adapter is loaded verbatim (`peft_model_path` + `sft_epochs=0`), so the SFT stage is bit-identical by construction.
+- **Reward math**: Φ(h) = −2.0·shanten + 0.05·|ukeire|; F_i = γψ_i − ψ_{i−1}; terminal energy := 0. Discounted shaping telescopes to −Φ(initial hand) ⇒ shaped return = settlement return + deal constant: cannot be farmed, optimal policy invariant (Ng et al. 1999). Format −10 / ghost-tile −5 stay as constraint terms. 6 unit tests green (`tests/test_potential_reward.py`).
+- **Git**: local commit pending (rewards/task/trainer + configs/v2_pbrs_run.json); code rsynced to VM and import-verified before launch.
+- **Env**: identical to v2_engine_full_run_20260802_005918 — VM mahjong-a100 (A100-SXM4-40GB, us-central1-b), same venv/pinned packages, seed 42.
+- **Input artifacts**:
+  - SFT adapter: `experiments/v2_engine_full_run_20260802_005918/checkpoints_sft_warmup_mahjong` (3 epochs × 2000 samples, final epoch avg loss ≈0.105, trained this same day on the A100)
+  - `data/sft_mahjong.jsonl` sha256 `b3eefd6d…becf6` (already verified on VM)
+- **Results sink**: `gs://llm-mahjong-experiments/v2_engine_pbrs_run_20260802_041048/`; VM auto-shutdown on exit.
+
+- **Restart provenance**: identical design to  (aborted mid-epoch-1 for the infra fix — no results existed). Same SFT adapter, config, seed.
+
+## Purpose & Hypothesis
+1. (inherited) Template-aligned faithful-CoT SFT gives ≥95% action-format compliance that RL does not erode.
+2. (revised for PBRS) With shaping that telescopes to a deal constant, the RL objective is the settlement itself: rl/avg_episode_reward now measures true game outcome + constant, so an upward trend is evidence of actual mahjong improvement, not shaping farming.
+3. (inherited) Win actions survive into rollouts: some games end in ron/tsumo.
+4. (new, qualitative) Because intermediate reward can no longer be farmed by "many locally-optimal discards", trajectories that lose points should receive clearly negative advantages → earlier emergence of defensive behavior is plausible; probe with the fold/deal-in analysis.
+
+## Method
+No SFT warm-up (adapter loaded). RL: 50 epochs × 4 self-play games, lr 1e-6,
+gamma 0.99 (buffer AND potential shaping), advantage normalized + clipped ±5,
+sampling temperature 0.9/top_p 0.95, batch_size 2, min_format_rate 0.3 abort.
+Config snapshot in config_launch.json (`configs/v2_pbrs_run.json`).
+Comparison baseline: none same-reward; the aborted step-reward run provides
+the SFT stage only. This run becomes the PBRS baseline.
+
+## Success Criteria (pre-registered before launch)
+1. **Format**: rl/format_compliance ≥ 0.95 for ≥45 of 50 epochs; abort guard never triggers.
+2. **Learning signal**: mean rl/avg_episode_reward over final 10 epochs > mean over first 10 epochs. (Scale differs from the step-reward design; the trend criterion is scale-free.)
+3. **Game quality**: ≥10% of rollout games end in a win (ron/tsumo).
+4. **Checkpoint rule**: "best" = highest avg episode reward checkpoint (top-3 retention), not the last epoch.
+
+## Progress
+- [2026-08-01 21:10 (04:10 UTC 08-02)] Launched (RL-only, PBRS shaping). Predecessor stopped cleanly after its SFT checkpoint was written; VM kept up; monitor state reset.
+
+## Results
+| Metric | This run | Criterion |
+|---|---|---|
+| (pending) | | |
+
+## Conclusion
+(pending)
+
+## Next Steps
+- Defense probes (fold-rate / deal-in-rate after opponent riichi) from per-epoch rollout logs.
+- Optional next iteration: state-value baseline to cancel the −ψ_{t−1} variance term in return-to-go.
+- Expert iteration: mine top-reward episodes into the next SFT corpus.
+
+## Artifacts
+| Path | Description |
+|---|---|
+| config_launch.json | effective config snapshot |
+| tensorboard/ | rl/loss, rl/avg_episode_reward, rl/format_compliance, rl/avg_advantage |
+| checkpoint_epoch_N/ | LoRA adapters, top-3 by reward + latest |
+| mahjong_epoch_N_rollouts.txt | rollout transcripts (probe mining source) |
+| gpu_info.txt / pip_freeze.txt / TRAIN_EXIT | provenance |
+| gs://llm-mahjong-experiments/v2_engine_pbrs_run_20260802_041048/ | full mirror incl. train_nohup.log |

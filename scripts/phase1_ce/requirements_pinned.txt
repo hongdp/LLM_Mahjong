@@ -1,0 +1,32 @@
+# GCP Phase 1 VM environment (2026-08-01, rev2).
+# torch pinned to cu129 to MATCH the DLVM image's CUDA 12.9 toolkit — required
+# to compile causal-conv1d, which (with flash-linear-attention) enables the
+# Qwen3.5 fast path. causal-conv1d itself is built from source on the VM:
+#   CUDA_HOME=/usr/local/cuda-12.9 CAUSAL_CONV1D_FORCE_BUILD=TRUE \
+#   pip install causal-conv1d --no-build-isolation   (needs wheel ninja packaging)
+# (local dev env stays on cu130; the 2.12.0 vs 2.12.1 patch delta is accepted.)
+--extra-index-url https://download.pytorch.org/whl/cu129
+torch==2.12.1
+flash-linear-attention==0.5.2
+wheel
+ninja
+packaging
+transformers==5.8.1
+peft==0.19.1
+bitsandbytes==0.49.2
+accelerate==1.13.0
+trl==1.4.0
+datasets==4.8.5
+tokenizers==0.22.2
+safetensors==0.7.0
+numpy==2.2.6
+langgraph==1.2.0
+langchain==1.3.1
+langchain-core==1.4.0
+pymahjong==1.1.2
+mahjong==2.0.0
+pydantic==2.13.4
+matplotlib==3.10.9
+python-dotenv==1.2.2
+tensorboard==2.20.0
+protobuf==6.33.6

@@ -1,0 +1,23 @@
+{
+    "config": "configs/v2_pbrs_run.json",
+    "model_name": "Qwen/Qwen3.5-2B",
+    "peft_model_path": "experiments/v2_engine_full_run_20260802_005918/checkpoints_sft_warmup_mahjong",
+    "task": "mahjong",
+    "learning_rate": 1e-06,
+    "num_episodes": 4,
+    "epochs": 50,
+    "batch_size": 2,
+    "use_qlora": true,
+    "debug": false,
+    "training_phase": 2,
+    "sft_epochs": 0,
+    "sft_data": "data/sft_mahjong.jsonl",
+    "sft_batch_size": 2,
+    "sft_max_samples": 2000,
+    "sft_learning_rate": 0.0001,
+    "exp_name": "v2_engine_pbrs_run_20260802_022840",
+    "resume": false,
+    "min_format_rate": 0.3,
+    "reward_model": "potential",
+    "seed": 42
+}

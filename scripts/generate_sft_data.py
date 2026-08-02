@@ -33,7 +33,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
 from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content
-from src.tasks.mahjong.shanten import TileEfficiency, pad_for_melds
+from src.tasks.mahjong.shanten import (TileEfficiency, pad_for_melds,
+                                       dora_from_indicator)
 
 _te = TileEfficiency()
 
@@ -73,9 +74,13 @@ def waits_after_discard(table, pid: int, discard_tile: str) -> list:
     return waits
 
 
+VALUE_AWARE = False  # set by --value_facts: tie-break keeps dora
+
+
 def discard_decision(table, pid: int, hand: list):
     """Shanten-first, ukeire-second discard + faithful think from the
-    same computation."""
+    same computation. With VALUE_AWARE, ties on (shanten, ukeire) are
+    broken by keeping dora — and the think says so (faithful CoT)."""
     n_melds = len(table.melds[pid])
     ranked = ranked_discards(hand, n_melds)
     if not ranked:
@@ -83,6 +88,18 @@ def discard_decision(table, pid: int, hand: list):
         return tile, f"打{tile}调整手牌结构。"
     key = lambda t: (ranked[t][0], -len(ranked[t][1]))
     tile = min(ranked, key=key)
+    value_note = ""
+    if VALUE_AWARE:
+        dora_tiles = {dora_from_indicator(i) for i in table.dora_indicators}
+        tied = [t for t in ranked if key(t) == key(tile)]
+        non_dora = [t for t in tied if t not in dora_tiles]
+        kept_dora = [t for t in tied if t in dora_tiles]
+        if kept_dora and non_dora and tile in dora_tiles:
+            tile = non_dora[0]
+            value_note = (
+                f"打{tile}与打{kept_dora[0]}同向听同受入，"
+                f"弃{tile}保留宝牌{kept_dora[0]}。"
+            )
     top3 = sorted(ranked.items(), key=lambda kv: (kv[1][0], -len(kv[1][1])))[:3]
     comparison = "，".join(
         f"打{t}→{sh}向听/受入{len(uk)}种" for t, (sh, uk) in top3
@@ -90,6 +107,7 @@ def discard_decision(table, pid: int, hand: list):
     sh_best = ranked[tile][0]
     return tile, (
         f"候选对比：{comparison}。打{tile}保持{sh_best}向听且受入最大。"
+        + value_note
     )
 
 
@@ -235,7 +253,7 @@ def pick_interrupt_action(table, i_id: int, options: list):
 
 
 def simulate_game(game_id: int) -> list:
-    table = PyMahjongTable()
+    table = PyMahjongTable(value_facts=VALUE_AWARE)
     samples = []
 
     for _ in range(400):  # safety cap; games end naturally well before
@@ -299,8 +317,13 @@ def main():
     parser.add_argument("--num_games", type=int, default=200)
     parser.add_argument("--out", type=str, default="data/sft_mahjong.jsonl")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--value_facts", action="store_true",
+                        help="Value-aware template + teacher: 自家宝牌 line "
+                             "in prompts, dora-keeping tie-break in CoT.")
     args = parser.parse_args()
 
+    global VALUE_AWARE
+    VALUE_AWARE = args.value_facts
     random.seed(args.seed)
     out_dir = os.path.dirname(args.out)
     if out_dir:

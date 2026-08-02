@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Mahjong · 训练检视台</title>
+<style>
+  :root {
+    color-scheme: light;
+    --plane:#f9f9f7; --surface:#fcfcfb;
+    --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10);
+    --series:#2a78d6; --neg:#e34948; --zero:#f0efec;
+    --tile-bg:#fdfdfa; --tile-border:#d8d6cc; --tile-shadow:rgba(0,0,0,.10);
+    --man:#b3372f; --pin:#1c5cab; --sou:#1e7d32; --honor:#3a3a36;
+    --think-bg:#f3f2ee; --felt:#3a7561;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --plane:#0d0d0d; --surface:#1a1a19;
+      --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+      --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+      --series:#3987e5; --neg:#e66767; --zero:#383835;
+      --tile-bg:#262624; --tile-border:#43423e; --tile-shadow:rgba(0,0,0,.45);
+      --man:#e07a70; --pin:#7aaee8; --sou:#7cc07f; --honor:#d6d5cd;
+      --think-bg:#222220; --felt:#20423a;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+    --series:#3987e5; --neg:#e66767; --zero:#383835;
+    --tile-bg:#262624; --tile-border:#43423e; --tile-shadow:rgba(0,0,0,.45);
+    --man:#e07a70; --pin:#7aaee8; --sou:#7cc07f; --honor:#d6d5cd;
+    --think-bg:#222220; --felt:#20423a;
+  }
+  * { box-sizing:border-box; margin:0; }
+  body {
+    background:var(--plane); color:var(--ink);
+    font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+    padding:20px clamp(12px,3vw,36px) 60px;
+  }
+  h1 { font-size:17px; font-weight:650; letter-spacing:.2px; }
+  h2 { font-size:13px; font-weight:600; color:var(--ink2); text-transform:uppercase;
+       letter-spacing:.6px; margin:26px 0 10px; }
+  header { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  header .spacer { flex:1; }
+  select,button {
+    font:inherit; color:var(--ink); background:var(--surface);
+    border:1px solid var(--border); border-radius:8px; padding:5px 10px;
+  }
+  button { cursor:pointer; } button:hover { border-color:var(--axis); }
+  button.primary { border-color:var(--series); }
+  .hint { color:var(--muted); font-size:12px; }
+
+  /* ---- stat tiles ---- */
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+          gap:10px; margin-top:14px; }
+  .tilecard { background:var(--surface); border:1px solid var(--border);
+              border-radius:10px; padding:12px 14px; }
+  .tilecard .lbl { font-size:12px; color:var(--ink2); }
+  .tilecard .val { font-size:26px; font-weight:600; margin-top:2px; }
+  .tilecard .delta { font-size:12px; margin-top:1px; color:var(--muted); }
+  .delta.up { color:#006300; } :root[data-theme="dark"] .delta.up { color:#0ca30c; }
+  @media (prefers-color-scheme: dark){ :root:where(:not([data-theme="light"])) .delta.up { color:#0ca30c; } }
+  .delta.down { color:var(--neg); }
+
+  /* ---- charts ---- */
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+            gap:12px; }
+  .chart { background:var(--surface); border:1px solid var(--border);
+           border-radius:10px; padding:12px 14px 6px; position:relative; }
+  .chart .title { font-size:13px; font-weight:600; }
+  .chart .sub { font-size:11.5px; color:var(--muted); margin-bottom:4px; }
+  .chart svg { width:100%; height:170px; display:block; }
+  .tooltip {
+    position:absolute; pointer-events:none; display:none; z-index:5;
+    background:var(--surface); border:1px solid var(--border); border-radius:8px;
+    padding:6px 9px; font-size:12px; box-shadow:0 4px 14px rgba(0,0,0,.18);
+    white-space:nowrap;
+  }
+  .tooltip .v { font-weight:650; font-size:13px; }
+  .tooltip .k { color:var(--ink2); }
+
+  /* ---- rollout inspector ---- */
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+              margin-bottom:12px; }
+  .controls label { font-size:12px; color:var(--ink2); }
+  .board { display:grid; grid-template-columns:minmax(300px,3fr) minmax(260px,2fr);
+           gap:12px; align-items:start; }
+  @media (max-width:900px){ .board { grid-template-columns:1fr; } }
+  .card { background:var(--surface); border:1px solid var(--border);
+          border-radius:10px; padding:14px 16px; }
+  .gbar { display:flex; gap:16px; flex-wrap:wrap; align-items:center;
+          font-size:12.5px; color:var(--ink2); padding-bottom:10px;
+          border-bottom:1px solid var(--grid); margin-bottom:12px; }
+  .gbar b { color:var(--ink); font-weight:600; }
+  .seatrow { padding:7px 0; border-bottom:1px solid var(--grid); }
+  .seatrow:last-child { border-bottom:none; }
+  .seathead { display:flex; gap:10px; align-items:baseline; margin-bottom:4px; }
+  .seatname { font-weight:650; font-size:13px; }
+  .pts { color:var(--ink2); font-size:12px; }
+  .badge { font-size:11px; border:1px solid var(--border); border-radius:20px;
+           padding:1px 8px; color:var(--ink2); }
+  .badge.riichi { color:var(--neg); border-color:var(--neg); font-weight:600; }
+  .badge.me { color:var(--series); border-color:var(--series); font-weight:600; }
+
+  /* ---- game board (雀魂-style replay table) ---- */
+  .mboard {
+    background:var(--felt); border-radius:16px; padding:12px 14px;
+    display:flex; flex-direction:column; gap:9px;
+  }
+  .seat { display:flex; align-items:center; gap:10px; flex-wrap:nowrap;
+          overflow-x:auto; padding:2px 0; }
+  .schip { display:flex; gap:8px; align-items:center; border-radius:16px;
+           padding:2.5px 11px; font-size:11.5px; white-space:nowrap; flex:none;
+           background:rgba(0,0,0,.30); color:#f2f1e8; min-width:118px;
+           justify-content:center; }
+  .schip .sname { font-weight:650; }
+  .schip .sriichi { color:#ffada8; font-weight:700; letter-spacing:1px; }
+  .schip.me-chip { outline:1.5px solid rgba(255,255,255,.55); }
+  .sriver { display:flex; flex-wrap:nowrap; gap:2.5px; align-items:center;
+            min-height:27px; }
+  .smelds { display:flex; gap:4px; flex:none; }
+  .smelds .meldbox { margin:0; background:rgba(0,0,0,.16); border-color:rgba(255,255,255,.25); }
+  .mcenter { background:rgba(0,0,0,.22); border-radius:10px; color:#f2f1e8;
+             display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+             padding:7px 16px; font-size:12px; }
+  .mcenter .kyoku { font-size:14.5px; font-weight:700; letter-spacing:1px; }
+  .mcenter .crow { display:flex; align-items:center; gap:6px; opacity:.92; }
+  .mcenter .rew { font-size:12.5px; }
+  .mcenter .rew.pos { color:#9fe0a2; } .mcenter .rew.neg { color:#ffada8; }
+  .shand { display:flex; flex-wrap:nowrap; gap:3px; align-items:flex-end;
+           overflow-x:auto; margin-top:6px; padding-left:128px; }
+  .boardfoot { display:flex; gap:14px; align-items:center; margin-top:10px;
+               flex-wrap:wrap; }
+
+  /* ---- mahjong tiles ---- */
+  .trow { display:flex; flex-wrap:wrap; gap:3px; align-items:flex-end; min-height:40px; }
+  .mtile {
+    width:27px; height:37px; border-radius:5px; flex:none;
+    background:var(--tile-bg); border:1px solid var(--tile-border);
+    box-shadow:0 1px 2px var(--tile-shadow);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    line-height:1.05; user-select:none;
+  }
+  .mtile .n { font-size:14px; font-weight:700; }
+  .mtile .s { font-size:9.5px; font-weight:600; }
+  .mtile.z .n { font-size:16px; }
+  .mtile.m .n,.mtile.m .s { color:var(--man); }
+  .mtile.p .n,.mtile.p .s { color:var(--pin); }
+  .mtile.s .n,.mtile.s .s { color:var(--sou); }
+  .mtile.z .n { color:var(--honor); }
+  .mtile.z5 .n { color:var(--muted); }  /* 白 */
+  .mtile.z6 .n { color:var(--sou); }    /* 發 */
+  .mtile.z7 .n { color:var(--man); }    /* 中 */
+  .mtile.sideways { transform:rotate(90deg) translateY(-4px); margin:0 6px; }
+  .mtile.chosen { outline:2px solid var(--series); outline-offset:1px; }
+  .mtile.big { width:34px; height:47px; }
+  .mtile.big .n { font-size:18px; } .mtile.big .s { font-size:11px; }
+  .mtile.mini { width:21px; height:29px; border-radius:4px; }
+  .mtile.mini .n { font-size:11px; } .mtile.mini .s { font-size:8px; }
+  .mtile.tiny { width:19px; height:26px; border-radius:3.5px; }
+  .mtile.tiny .n { font-size:10px; } .mtile.tiny .s { font-size:7px; }
+  .mtile.tiny.sideways { transform:rotate(90deg); margin:0 3px; }
+  .meldbox { display:inline-flex; gap:2px; padding:2px 5px; margin-left:6px;
+             border:1px dashed var(--grid); border-radius:6px; }
+
+  /* ---- step nav / reward strip ---- */
+  .stepnav { display:flex; gap:10px; align-items:center; margin:10px 0 12px; }
+  .stepnav input[type=range] { flex:1; accent-color:var(--series); }
+  .rstrip { display:flex; gap:2px; align-items:center; height:40px; margin-top:6px; }
+  .rstrip .bar { flex:1; min-width:3px; border-radius:2px; cursor:pointer;
+                 position:relative; }
+  .rstrip .bar.cur { outline:2px solid var(--ink); outline-offset:1px; }
+
+  /* ---- model output ---- */
+  .actline { display:flex; align-items:center; gap:10px; margin:8px 0; flex-wrap:wrap; }
+  .actchip { display:inline-flex; align-items:center; gap:7px; font-weight:600;
+             border:1px solid var(--series); border-radius:8px; padding:4px 10px; }
+  .actchip.bad { border-color:var(--neg); color:var(--neg); }
+  .rew { font-weight:650; }
+  .rew.pos { color:#006300; } .rew.neg { color:var(--neg); }
+  :root[data-theme="dark"] .rew.pos { color:#0ca30c; }
+  @media (prefers-color-scheme: dark){ :root:where(:not([data-theme="light"])) .rew.pos { color:#0ca30c; } }
+  .think { background:var(--think-bg); border-radius:8px; padding:10px 12px;
+           font-size:13px; color:var(--ink2); white-space:pre-wrap; margin-top:8px; }
+  .rewdetail { border:1px solid var(--grid); border-radius:8px; padding:9px 12px;
+               margin:8px 0 2px; }
+  .rewdetail .rhead { display:flex; gap:12px; align-items:baseline; flex-wrap:wrap;
+                      margin-bottom:4px; }
+  .rewdetail .rline { font-size:12.5px; color:var(--ink2); line-height:1.55; }
+  details summary { cursor:pointer; font-size:12px; color:var(--muted); }
+  .legalrow { margin-top:10px; }
+  .empty { color:var(--muted); padding:30px 0; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🀄 LLM Mahjong 训练检视台</h1>
+  <select id="expSel" title="experiment"></select>
+  <button id="syncBtn" title="rsync 该实验的日志/曲线（从 GCP VM）">⟳ 从 VM 同步</button>
+  <label class="hint"><input type="checkbox" id="autoRef"> 60s 自动刷新（曲线 + live 对局）</label>
+  <div class="spacer"></div>
+  <button id="themeBtn" title="theme">◐</button>
+</header>
+
+<div class="kpis" id="kpis"></div>
+
+<h2>训练曲线</h2>
+<div class="charts" id="charts"></div>
+
+<h2>牌局检视</h2>
+<div class="controls">
+  <label>epoch <select id="epochSel"></select></label>
+  <label>对局 <select id="gameSel"></select></label>
+  <label>视角 <select id="playerSel"></select></label>
+  <span class="hint" id="trajSummary"></span>
+</div>
+<div id="inspector"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+};
+const fmt = (v, d=3) => (v==null||isNaN(v)) ? "—" : (+v).toFixed(d).replace(/\.?0+$/,"") || "0";
+
+/* ------------------------------------------------ theme */
+const themeSeq = ["auto","light","dark"];
+let themeIdx = +(localStorage.getItem("mj_theme") || 0);
+function applyTheme(){
+  const t = themeSeq[themeIdx];
+  if (t === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  $("#themeBtn").textContent = {auto:"◐",light:"○",dark:"●"}[t];
+}
+$("#themeBtn").onclick = () => { themeIdx = (themeIdx+1)%3;
+  localStorage.setItem("mj_theme", themeIdx); applyTheme(); loadMetrics(); };
+applyTheme();
+
+/* ------------------------------------------------ tiles */
+const HONOR = {1:"東",2:"南",3:"西",4:"北",5:"白",6:"發",7:"中"};
+const SUIT  = {m:"萬", p:"筒", s:"索"};
+function tileEl(code, extra){
+  const d = el("div","mtile"+(extra?" "+extra:""));
+  if (!code || code.length<2) { d.append(el("span","n","?")); return d; }
+  const n = code[0], su = code[1];
+  if (su === "z") {
+    d.classList.add("z","z"+n);
+    d.append(el("span","n",HONOR[+n]||"?"));
+  } else {
+    d.classList.add(su);
+    d.append(el("span","n",n));
+    d.append(el("span","s",SUIT[su]||su));
+  }
+  d.title = code;
+  return d;
+}
+function tileRow(codes, opts={}){
+  const row = el("div","trow");
+  (codes||[]).forEach(c=>{
+    const code = typeof c === "string" ? c : c.t;
+    const t = tileEl(code, opts.size);
+    if (typeof c === "object" && c.riichi) t.classList.add("sideways");
+    if (opts.highlight && code === opts.highlight) t.classList.add("chosen");
+    row.append(t);
+  });
+  return row;
+}
+function meldBoxes(melds, size){
+  const frag = document.createDocumentFragment();
+  (melds||[]).forEach(m=>{
+    const box = el("span","meldbox");
+    box.title = m.type;
+    m.tiles.forEach(t=>box.append(tileEl(t, size||"mini")));
+    frag.append(box);
+  });
+  return frag;
+}
+
+/* ------------------------------------------------ charts */
+function niceTicks(lo, hi, n=4){
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const span = hi-lo, step0 = span/n, mag = 10**Math.floor(Math.log10(step0));
+  const step = [1,2,2.5,5,10].map(m=>m*mag).find(s=>span/s<=n+1) || mag*10;
+  const t0 = Math.ceil(lo/step)*step, out=[];
+  for(let t=t0;t<=hi+1e-9;t+=step) out.push(+t.toFixed(10));
+  return out;
+}
+function lineChart(host, pts, opts={}){
+  host.innerHTML = "";
+  const card = el("div","chart");
+  card.append(el("div","title",opts.title||""));
+  card.append(el("div","sub",opts.sub||""));
+  const W=560,H=170,ML=44,MR=14,MT=8,MB=22;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  card.append(svg);
+  const tip = el("div","tooltip"); card.append(tip);
+  host.append(card);
+  if (!pts || !pts.length){
+    const t=document.createElementNS(svg.namespaceURI,"text");
+    t.setAttribute("x",W/2); t.setAttribute("y",H/2); t.setAttribute("text-anchor","middle");
+    t.setAttribute("fill","var(--muted)"); t.setAttribute("font-size","12");
+    t.textContent="暂无数据"; svg.append(t); return;
+  }
+  const css = getComputedStyle(document.documentElement);
+  const C = { series:css.getPropertyValue("--series").trim(),
+              grid:css.getPropertyValue("--grid").trim(),
+              axis:css.getPropertyValue("--axis").trim(),
+              muted:css.getPropertyValue("--muted").trim(),
+              surface:css.getPropertyValue("--surface").trim() };
+  const xs = pts.map(p=>p.step), ys = pts.map(p=>p.value);
+  let ylo = Math.min(...ys, ...(opts.includeY||[]));
+  let yhi = Math.max(...ys, ...(opts.includeY||[]));
+  if (ylo===yhi){ ylo-=0.5; yhi+=0.5; }
+  const pad=(yhi-ylo)*0.08; ylo-=pad; yhi+=pad;
+  const xlo=xs[0], xhi=xs[xs.length-1]===xs[0]?xs[0]+1:xs[xs.length-1];
+  const X=v=>ML+(v-xlo)/(xhi-xlo)*(W-ML-MR);
+  const Y=v=>MT+(yhi-v)/(yhi-ylo)*(H-MT-MB);
+  const S=(n,attrs)=>{const e=document.createElementNS(svg.namespaceURI,n);
+    for(const k in attrs)e.setAttribute(k,attrs[k]);svg.append(e);return e;};
+  niceTicks(ylo,yhi).forEach(t=>{
+    S("line",{x1:ML,x2:W-MR,y1:Y(t),y2:Y(t),stroke:C.grid,"stroke-width":1});
+    S("text",{x:ML-6,y:Y(t)+3.5,"text-anchor":"end","font-size":10,fill:C.muted,
+      "font-variant-numeric":"tabular-nums"}).textContent = opts.yFmt?opts.yFmt(t):fmt(t,2);
+  });
+  (opts.refLines||[]).forEach(r=>{
+    if (r.y<ylo||r.y>yhi) return;
+    S("line",{x1:ML,x2:W-MR,y1:Y(r.y),y2:Y(r.y),stroke:C.axis,"stroke-width":1});
+    S("text",{x:W-MR,y:Y(r.y)-4,"text-anchor":"end","font-size":9.5,fill:C.muted})
+      .textContent=r.label;
+  });
+  S("line",{x1:ML,x2:W-MR,y1:H-MB,y2:H-MB,stroke:C.axis,"stroke-width":1});
+  const xticks = niceTicks(xlo,xhi,5).filter(t=>Number.isInteger(t));
+  xticks.forEach(t=>S("text",{x:X(t),y:H-7,"text-anchor":"middle","font-size":10,
+    fill:C.muted,"font-variant-numeric":"tabular-nums"}).textContent=t);
+  const dpath = pts.map((p,i)=>`${i?"L":"M"}${X(p.step).toFixed(1)},${Y(p.value).toFixed(1)}`).join("");
+  S("path",{d:dpath,fill:"none",stroke:C.series,"stroke-width":2,
+    "stroke-linejoin":"round","stroke-linecap":"round"});
+  const last=pts[pts.length-1];
+  S("circle",{cx:X(last.step),cy:Y(last.value),r:5.5,fill:C.surface});
+  S("circle",{cx:X(last.step),cy:Y(last.value),r:4,fill:C.series});
+  S("text",{x:Math.min(X(last.step)+7,W-4),y:Y(last.value)-7,"font-size":10.5,
+    "font-weight":600,fill:"var(--ink)"}).textContent =
+      opts.yFmt?opts.yFmt(last.value):fmt(last.value);
+  const cross=S("line",{y1:MT,y2:H-MB,stroke:C.axis,"stroke-width":1,visibility:"hidden"});
+  const hdot=S("circle",{r:4,fill:C.series,stroke:C.surface,"stroke-width":2,visibility:"hidden"});
+  svg.addEventListener("pointermove",e=>{
+    const r=svg.getBoundingClientRect();
+    const mx=(e.clientX-r.left)/r.width*W;
+    let best=0,bd=1e9;
+    pts.forEach((p,i)=>{const d=Math.abs(X(p.step)-mx); if(d<bd){bd=d;best=i;}});
+    const p=pts[best];
+    cross.setAttribute("x1",X(p.step)); cross.setAttribute("x2",X(p.step));
+    cross.setAttribute("visibility","visible");
+    hdot.setAttribute("cx",X(p.step)); hdot.setAttribute("cy",Y(p.value));
+    hdot.setAttribute("visibility","visible");
+    tip.style.display="block";
+    tip.innerHTML="";
+    tip.append(el("div","v",opts.yFmt?opts.yFmt(p.value):fmt(p.value,4)));
+    tip.append(el("div","k",(opts.xLabel||"step")+" "+p.step));
+    const cr=card.getBoundingClientRect();
+    let tx=(X(p.step)/W)*r.width+(r.left-cr.left)+12;
+    if (tx+tip.offsetWidth > cr.width-8) tx -= tip.offsetWidth+24;
+    tip.style.left=tx+"px";
+    tip.style.top=((Y(p.value)/H)*r.height+(r.top-cr.top)-10)+"px";
+  });
+  svg.addEventListener("pointerleave",()=>{ tip.style.display="none";
+    cross.setAttribute("visibility","hidden"); hdot.setAttribute("visibility","hidden");});
+}
+
+/* ------------------------------------------------ state + data */
+let EXPS=[], CUR={exp:null, metrics:null, episodes:[], games:[], game:0, player:0, step:0};
+
+async function jget(u){ const r=await fetch(u); if(!r.ok) throw new Error(u+" "+r.status); return r.json(); }
+
+async function loadExperiments(){
+  EXPS = await jget("/api/experiments");
+  const sel=$("#expSel"); sel.innerHTML="";
+  EXPS.forEach(e=>{
+    const o=el("option","",e.name + (e.rollout_epochs.length?` · ${e.rollout_epochs.length} ep logs`:""));
+    o.value=e.name; sel.append(o);
+  });
+  const remembered = localStorage.getItem("mj_exp");
+  CUR.exp = EXPS.find(e=>e.name===remembered)?.name
+         || (EXPS.find(e=>e.rollout_epochs.length)||EXPS[0]||{}).name;
+  if (CUR.exp) sel.value=CUR.exp;
+}
+$("#expSel").onchange = e=>{ CUR.exp=e.target.value;
+  localStorage.setItem("mj_exp",CUR.exp); refreshAll(); };
+
+/* ------------------------------------------------ metrics + KPIs */
+function statTile(label, value, delta, goodDir){
+  const c=el("div","tilecard");
+  c.append(el("div","lbl",label));
+  c.append(el("div","val",value));
+  if (delta!==undefined && delta!==null && !isNaN(delta) && delta!==0){
+    const up = delta>0;
+    const good = goodDir==null ? null : (up === (goodDir==="up"));
+    const d=el("div","delta"+(good==null?"":good?" up":" down"),
+      (up?"▲ ":"▼ ")+fmt(Math.abs(delta),3)+" vs 上一 epoch");
+    c.append(d);
+  } else c.append(el("div","delta"," "));
+  return c;
+}
+async function loadMetrics(){
+  if (!CUR.exp) return;
+  let m; try { m = await jget("/api/metrics?exp="+encodeURIComponent(CUR.exp)); }
+  catch(e){ m={}; }
+  CUR.metrics=m;
+  const k=$("#kpis"); k.innerHTML="";
+  const sft=m["sft/step_loss"]||[], rlr=m["rl/avg_episode_reward"]||[],
+        fc=m["rl/format_compliance"]||[], rll=m["rl/loss"]||[];
+  const lastv=a=>a.length?a[a.length-1].value:null;
+  const prevv=a=>a.length>1?a[a.length-2].value:null;
+  k.append(statTile("SFT loss（最新）", sft.length?fmt(lastv(sft),4):"—"));
+  k.append(statTile("RL epochs 完成", String(rll.length)));
+  k.append(statTile("平均对局奖励", rlr.length?fmt(lastv(rlr),2):"—",
+    rlr.length>1? lastv(rlr)-prevv(rlr):null, "up"));
+  k.append(statTile("格式合规率", fc.length?(lastv(fc)*100).toFixed(1)+"%":"—",
+    fc.length>1?(lastv(fc)-prevv(fc))*100:null, "up"));
+  const ch=$("#charts"); ch.innerHTML="";
+  const mk=()=>{const d=el("div");ch.append(d);return d;};
+  lineChart(mk(), sft, {title:"SFT step loss", sub:"sft/step_loss", xLabel:"step"});
+  lineChart(mk(), rll, {title:"RL loss", sub:"rl/loss（advantage-weighted NLL）", xLabel:"epoch"});
+  lineChart(mk(), rlr, {title:"平均对局奖励", sub:"rl/avg_episode_reward", xLabel:"epoch",
+    includeY:[0], refLines:[{y:0,label:"0"}]});
+  lineChart(mk(), fc, {title:"格式合规率", sub:"rl/format_compliance · 成功标准 ≥0.95，熔断 <0.30",
+    xLabel:"epoch", includeY:[0,1], yFmt:v=>(v*100).toFixed(0)+"%",
+    refLines:[{y:0.95,label:"标准 95%"},{y:0.30,label:"熔断 30%"}]});
+}
+
+/* ------------------------------------------------ rollouts */
+function gameOutcome(game){
+  for (const ep of game){
+    const last = ep.steps[ep.steps.length-1];
+    if (last && last.action){
+      if (last.action.type==="ron") return {kind:"和·荣", ep:ep.episode, tile:last.action.tile};
+      if (last.action.type==="tsumo") return {kind:"和·自摸", ep:ep.episode};
+    }
+  }
+  return {kind:"流局"};
+}
+async function loadEpochs(){
+  const meta = EXPS.find(e=>e.name===CUR.exp);
+  const sel=$("#epochSel"); sel.innerHTML="";
+  (meta?.rollout_epochs||[]).forEach(n=>{const o=el("option","",String(n));o.value=n;sel.append(o);});
+  if (meta?.has_live){ const o=el("option","","live · 进行中"); o.value="live"; sel.append(o); }
+  if (!meta || (!meta.rollout_epochs.length && !meta.has_live)){
+    CUR.liveMode=false; CUR.episodes=[]; CUR.games=[]; renderInspector(); return; }
+  sel.value = meta.rollout_epochs.length
+    ? meta.rollout_epochs[meta.rollout_epochs.length-1] : "live";
+  await loadRollouts();
+}
+$("#epochSel").onchange = loadRollouts;
+async function loadRollouts(){
+  const epoch=$("#epochSel").value;
+  CUR.liveMode = epoch==="live";
+  const gs=$("#gameSel"); gs.innerHTML="";
+  if (CUR.liveMode){
+    let data; try { data = await jget(`/api/live?exp=${encodeURIComponent(CUR.exp)}`); }
+    catch(e){ data={games:[]}; }
+    const games=data.games||[];
+    CUR.games=games.map(g=>g.episodes);
+    CUR.gameResults=games.map(g=>g.result);
+    games.forEach((g,i)=>{
+      const kind=g.result ? g.result.split(" | ")[0] : "进行中…";
+      const o=el("option","",`第 ${i+1} 局 · ${kind}`); o.value=i; gs.append(o);
+    });
+    CUR.game=Math.max(0, CUR.games.length-1);   // follow the ongoing game
+  } else {
+    let data; try { data = await jget(`/api/rollouts?exp=${encodeURIComponent(CUR.exp)}&epoch=${epoch}`); }
+    catch(e){ data={episodes:[]}; }
+    CUR.episodes = data.episodes||[];
+    CUR.gameResults=null;
+    CUR.games=[]; for(let i=0;i+3<CUR.episodes.length||i<CUR.episodes.length;i+=4)
+      CUR.games.push(CUR.episodes.slice(i,i+4));
+    CUR.games.forEach((g,i)=>{
+      const oc=gameOutcome(g);
+      const o=el("option","",`第 ${i+1} 局 · ${oc.kind}`); o.value=i; gs.append(o);
+    });
+    CUR.game=0;
+  }
+  gs.value=CUR.game;
+  fillPlayers();
+}
+$("#gameSel").onchange = e=>{ CUR.game=+e.target.value; fillPlayers(); };
+function fillPlayers(){
+  const ps=$("#playerSel"); ps.innerHTML="";
+  const g=CUR.games[CUR.game]||[];
+  g.forEach((ep,i)=>{
+    const seat = ep.steps[0]?.self?.seat || "?";
+    const total = ep.steps.reduce((s,x)=>s+x.reward,0);
+    const o=el("option","", CUR.liveMode
+      ? `P${i}（${seat}）· ${ep.steps.length} 步`
+      : `P${i}（${seat}）· ΣR ${fmt(total,1)}`); o.value=i; ps.append(o);
+  });
+  CUR.player=0; ps.value=0;
+  CUR.step=(g[0]?.steps.length||1)-1;
+  renderInspector();
+}
+$("#playerSel").onchange = e=>{ CUR.player=+e.target.value;
+  const ep=CUR.games[CUR.game]?.[CUR.player];
+  CUR.step=(ep?.steps.length||1)-1; renderInspector(); };
+
+/* ------------------------------------------------ inspector rendering */
+function rewardColor(r, max){
+  const css=getComputedStyle(document.documentElement);
+  if (Math.abs(r)<1e-9) return css.getPropertyValue("--zero").trim();
+  return r>0 ? css.getPropertyValue("--series").trim()
+             : css.getPropertyValue("--neg").trim();
+}
+
+/* Rule-based reward interpretation. The logs store only the combined scalar,
+   but the shaping constants are fixed (rewards.py / table.py), so each value
+   can be explained: FORMAT -10, illegal/ghost-tile -5, efficiency +2 /
+   -0.5×ukeire-gap / -2×shanten-regression; terminal adds the settlement. */
+function explainReward(st){
+  const r=st.reward, a=st.action||{}, lines=[];
+  if (a.bad_format){
+    lines.push("−10.0 格式违规：输出没有合法 <action> 标签（FORMAT_PENALTY）");
+  } else if (a.type==="discard"||a.type==="riichi"){
+    const base = st.terminal ? null : r;   // terminal mixes in settlement
+    if (base!==null){
+      if (base>=2) lines.push("+2.0 切牌效率最优：保持最低向听且受入最大");
+      else if (base<=-5) lines.push("−5.0 非法：打出不在手牌的牌，或动作非法被强制回退");
+      else if (base<=-2) lines.push(`${fmt(base,1)} 向听倒退：每退一级 −2.0`);
+      else if (base<0) lines.push(`${fmt(base,1)} 受入次优：与最优受入每差 1 种 −0.5`);
+      else lines.push("0 中性：无效率加减");
+    }
+    if (a.type==="riichi") lines.push("立直本身无先验加分——价值由终局结算传导");
+  } else if (["pon","chi","kan","ron","tsumo","skip"].includes(a.type)){
+    lines.push("该动作类型无步级整形奖励（副露/和牌价值全部由终局结算传导）");
+  }
+  if (st.terminal){
+    lines.push("终局步：叠加结算 = (终局点数−25000)×0.001 + 顺位奖励(+2/+0.5/−0.5/−2)；放铳无额外罚项（点棒转移已定价）");
+  }
+  return lines;
+}
+function shortExplain(st){
+  const a=st.action||{};
+  if (a.bad_format) return "格式违规";
+  if (st.terminal) return "终局结算";
+  if (a.type==="discard"||a.type==="riichi"){
+    if (st.reward>=2) return "效率最优";
+    if (st.reward<=-5) return "非法动作";
+    if (st.reward<=-2) return "向听倒退";
+    if (st.reward<0) return "受入次优";
+  }
+  return a.type||"";
+}
+function renderInspector(){
+  const host=$("#inspector"); host.innerHTML="";
+  const game=CUR.games[CUR.game];
+  if (!game){ host.append(el("div","empty","该实验暂无 rollout 日志（跑完 RL epoch 后出现，或点「从 VM 同步」拉取进行中的数据）"));
+    $("#trajSummary").textContent=""; return; }
+  const ep=game[CUR.player]; const steps=ep.steps;
+  if (!steps.length){ host.append(el("div","empty","空轨迹")); return; }
+  CUR.step=Math.min(CUR.step, steps.length-1);
+  CUR._steps=steps;
+  if (CUR.liveMode){
+    const res=CUR.gameResults?.[CUR.game];
+    $("#trajSummary").textContent =
+      `${steps.length} 步 · ${res ? "结局 "+res.split(" | ")[0] : "对局进行中…（点「从 VM 同步」拉取最新）"}`;
+  } else {
+    const oc=gameOutcome(game);
+    $("#trajSummary").textContent =
+      `${steps.length} 步 · 结局 ${oc.kind}${oc.ep!==undefined?` (P${game.indexOf(game.find(g=>g.episode===oc.ep))})`:""}`;
+  }
+
+  /* reward strip (persistent across step changes — only highlight moves) */
+  const stripCard=el("div","card");
+  CUR._bars=[];
+  if (CUR.liveMode){
+    stripCard.append(el("div","sub","实时视图 — 奖励与训练曲线在本 epoch 的 rollout 结束后才由训练端计算"));
+  } else {
+    stripCard.append(el("div","sub","每步奖励（点击跳转）— 蓝正 / 红负"));
+    const strip=el("div","rstrip");
+    const maxAbs=Math.max(...steps.map(s=>Math.abs(s.reward)),1);
+    steps.forEach((s,i)=>{
+      const b=el("div","bar"+(i===CUR.step?" cur":""));
+      const h=Math.max(4, Math.abs(s.reward)/maxAbs*36);
+      b.style.height=h+"px"; b.style.background=rewardColor(s.reward,maxAbs);
+      b.title=`step ${i} · R ${fmt(s.reward,2)} · ${shortExplain(s)}`;
+      b.onclick=()=>{CUR.step=i; syncStep();};
+      CUR._bars.push(b);
+      strip.append(b);
+    });
+    stripCard.append(strip);
+  }
+
+  /* step nav (persistent — rebuilding it mid-drag would kill the drag) */
+  const nav=el("div","stepnav");
+  const prev=el("button","","←"); prev.onclick=()=>{CUR.step--; syncStep();};
+  const next=el("button","","→"); next.onclick=()=>{CUR.step++; syncStep();};
+  const slider=el("input"); slider.type="range"; slider.min=0; slider.max=steps.length-1; slider.value=CUR.step;
+  slider.oninput=e=>{CUR.step=+e.target.value; syncStep();};
+  const lbl=el("span","hint",`step ${CUR.step+1}/${steps.length}`);
+  CUR._slider=slider; CUR._lbl=lbl;
+  nav.append(prev,slider,next,lbl);
+  stripCard.append(nav);
+  host.append(stripCard);
+  const stepHost=el("div"); stepHost.id="stepHost";
+  host.append(stepHost);
+  renderStepView();
+}
+
+function syncStep(){
+  const steps=CUR._steps||[];
+  if (!steps.length) return;
+  CUR.step=Math.max(0, Math.min(CUR.step, steps.length-1));
+  CUR._bars?.forEach((b,i)=>b.classList.toggle("cur", i===CUR.step));
+  if (CUR._slider) CUR._slider.value=CUR.step;
+  if (CUR._lbl) CUR._lbl.textContent=`step ${CUR.step+1}/${steps.length}`;
+  renderStepView();
+}
+
+function renderStepView(){
+  const host=document.getElementById("stepHost");
+  if (!host) return;
+  host.innerHTML="";
+  const steps=CUR._steps||[];
+  const st=steps[CUR.step];
+  if (!st) return;
+
+  const board=el("div","board");
+  /* left: game board (replay table) */
+  const tbl=el("div","card");
+  const g=st.global||{};
+  const me=st.self||{};
+  const W2I={"东":0,"南":1,"西":2,"北":3};
+  const selfW=W2I[me.seat]??0;
+  const mb=el("div","mboard");
+
+  function riverGrid(river){
+    const rv=el("div","sriver");
+    (river||[]).forEach(t=>{
+      const e=tileEl(t.t,"tiny");
+      if (t.riichi) e.classList.add("sideways");
+      rv.append(e);
+    });
+    return rv;
+  }
+  function seatBlock(name, pts, riichi, melds, river, isMe){
+    const b=el("div","seat");
+    const chip=el("div","schip"+(isMe?" me-chip":""));
+    chip.append(el("span","sname",name));
+    chip.append(el("span","",pts+"点"));
+    if (riichi) chip.append(el("span","sriichi","立直"));
+    b.append(chip);
+    if (melds?.length){
+      const m=el("div","smelds"); m.append(meldBoxes(melds,"tiny")); b.append(m);
+    }
+    b.append(riverGrid(river));
+    return b;
+  }
+
+  /* one row per seat, ordered 对面 → 上家 → 下家, then center strip, then 自家 */
+  const RELNAME={1:"下家",2:"对面",3:"上家"};
+  const opps=(st.opponents||[]).map(op=>({
+    ...op, rel:((W2I[op.seat]??0)-selfW+4)%4}));
+  [2,3,1].forEach(rel=>{
+    const op=opps.find(o=>o.rel===rel);
+    if (!op) return;
+    mb.append(seatBlock(`${RELNAME[rel]}·${op.seat}`,op.points,
+      op.riichi||(op.river||[]).some(t=>t.riichi), op.melds, op.river, false));
+  });
+
+  /* center info strip */
+  const c=el("div","mcenter");
+  c.append(el("div","kyoku",`${g.kyoku||"?"}`));
+  const dr=el("div","crow"); dr.append(el("span","","宝牌指示"));
+  dr.append(tileEl(g.dora_ind||"","tiny")); c.append(dr);
+  c.append(el("div","crow",`余牌 ${g.wall??"?"}`));
+  c.append(el("div","crow",`供托 ${g.kyotaku??"?"}`));
+  if (CUR.liveMode){
+    c.append(el("div","crow","实时"));
+  } else {
+    const crew=el("div","rew "+(st.reward>0?"pos":st.reward<0?"neg":""),
+      `本步 ${st.reward>0?"+":""}${fmt(st.reward,2)}`);
+    c.append(crew);
+  }
+  if (st.terminal) c.append(el("div","crow","终局步"));
+  mb.append(c);
+
+  /* self row: reconstructed river (prompt only lists opponents' rivers,
+     so rebuild ours from earlier discard/riichi actions), hand below. */
+  const ownRiver=steps.slice(0,CUR.step)
+    .map(s=>s.action)
+    .filter(a=>a&&(a.type==="discard"||a.type==="riichi")&&a.tile)
+    .map(a=>({t:a.tile,riichi:a.type==="riichi"}));
+  const selfBlock=seatBlock(`自家·${me.seat||"?"}`,me.points??"?",
+    !!me.riichi, me.melds, ownRiver, true);
+  mb.append(selfBlock);
+  const hand=el("div","shand");
+  const hl=(st.action?.type==="discard"||st.action?.type==="riichi")?st.action.tile:null;
+  let hlDone=false;
+  (me.hand||[]).forEach(t=>{
+    const e=tileEl(t,"big");
+    if (hl && !hlDone && t===hl){ e.classList.add("chosen"); hlDone=true; }
+    hand.append(e);
+  });
+  mb.append(hand);
+  tbl.append(mb);
+  board.append(tbl);
+
+  /* right: model output */
+  const out=el("div","card");
+  out.append(el("div","title","模型输出"));
+  const act=el("div","actline");
+  const a=st.action||{};
+  const chip=el("span","actchip"+(a.bad_format?" bad":""));
+  const verb={discard:"打",riichi:"立直打",pon:"碰",chi:"吃",kan:"杠",ron:"荣和",
+              tsumo:"自摸",skip:"过"}[a.type]||a.type||"（无动作标签）";
+  chip.append(el("span","",verb));
+  if (a.tile) chip.append(tileEl(a.tile,"mini"));
+  act.append(chip);
+  act.append(el("span","hint",`合法动作 ${st.legal?.length||0} 个`));
+  out.append(act);
+
+  /* reward detail */
+  if (CUR.liveMode){
+    out.append(el("div","hint","实时视图：步级奖励与结算在 epoch 结束后由训练端计算，届时可在对应 epoch 下查看"));
+  } else {
+    const cum=steps.slice(0,CUR.step+1).reduce((s,x)=>s+x.reward,0);
+    const total=steps.reduce((s,x)=>s+x.reward,0);
+    const rd=el("div","rewdetail");
+    const rhead=el("div","rhead");
+    rhead.append(el("span","rew "+(st.reward>0?"pos":st.reward<0?"neg":""),
+      `本步奖励 ${st.reward>0?"+":""}${fmt(st.reward,2)}`));
+    rhead.append(el("span","hint",`累计 ${fmt(cum,2)} / 全轨迹 ${fmt(total,2)}`));
+    rd.append(rhead);
+    explainReward(st).forEach(l=>{
+      const li=el("div","rline"); li.textContent="· "+l; rd.append(li);
+    });
+    out.append(rd);
+  }
+  if (st.think){
+    const t=el("div","think"); t.textContent=st.think; out.append(t);
+  } else out.append(el("div","hint","（无 think 内容）"));
+  if (st.legal?.length){
+    const det=el("details","legalrow");
+    det.append(el("summary","",`查看合法动作列表（${st.legal.length}）`));
+    const box=el("div","think");
+    box.textContent=st.legal.join("\n");
+    det.append(box);
+    out.append(det);
+  }
+  board.append(out);
+  host.append(board);
+}
+
+/* ------------------------------------------------ sync + refresh */
+$("#syncBtn").onclick = async ()=>{
+  const b=$("#syncBtn"); b.disabled=true; b.textContent="同步中…";
+  try {
+    const r=await fetch("/api/sync?exp="+encodeURIComponent(CUR.exp),{method:"POST"});
+    const j=await r.json();
+    if (!j.ok) alert("同步失败：\n"+(j.stderr||"unknown"));
+    await refreshAll(true);
+  } finally { b.disabled=false; b.textContent="⟳ 从 VM 同步"; }
+};
+let refTimer=null;
+$("#autoRef").onchange=e=>{
+  if (e.target.checked) refTimer=setInterval(async ()=>{
+    if (CUR.liveMode){
+      // live view is only as fresh as the local copy — pull from the VM first
+      try { await fetch("/api/sync?exp="+encodeURIComponent(CUR.exp),{method:"POST"}); } catch(_){}
+      await loadRollouts();
+    }
+    loadMetrics();
+  },60000);
+  else clearInterval(refTimer);
+};
+async function refreshAll(keepSelection){
+  const prevEpoch=$("#epochSel").value;
+  await loadExperiments();
+  $("#expSel").value=CUR.exp;
+  await loadMetrics();
+  await loadEpochs();
+  if (keepSelection && prevEpoch && [...$("#epochSel").options].some(o=>o.value===prevEpoch)){
+    $("#epochSel").value=prevEpoch; await loadRollouts();
+  }
+}
+(async ()=>{ await loadExperiments(); await loadMetrics(); await loadEpochs(); })();
+</script>
+</body>
+</html>

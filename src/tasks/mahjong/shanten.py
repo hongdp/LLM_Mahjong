@@ -18,6 +18,18 @@ def _tile_from_34(idx: int) -> str:
     return f"{idx - 27 + 1}z"
 
 
+def dora_from_indicator(indicator: str) -> str:
+    """Maps a dora indicator tile to the actual dora tile.
+    Number suits cycle 9->1; winds cycle 东南西北->东 (4z->1z);
+    dragons cycle 白發中->白 (7z->5z)."""
+    n, suit = int(indicator[0]), indicator[1]
+    if suit == 'z':
+        if n <= 4:
+            return f"{1 if n == 4 else n + 1}z"
+        return f"{5 if n == 7 else n + 1}z"
+    return f"{1 if n == 9 else n + 1}{suit}"
+
+
 def pad_for_melds(tiles: List[str], num_melds: int) -> List[str]:
     """Pad one dummy completed triplet per meld (using tile types absent
     from the hand) so shanten math treats an open hand as full-size."""

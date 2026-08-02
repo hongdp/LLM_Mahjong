@@ -1,0 +1,34 @@
+# v2_engine_ppo_run_20260802_041049
+
+- **Date**: 2026-08-01 21:10 (04:10 UTC 08-02)  **Status**: running
+- **Arm**: A — PPO algorithm ablation. Single variable vs the concurrently running PBRS restart run `v2_engine_pbrs_run_20260802_041048` (REINFORCE): the RL update rule. Everything else identical — PBRS potential reward, same SFT adapter (from `v2_engine_full_run_20260802_005918`, loaded verbatim, sft_epochs=0), seed 42, 50 epochs × 4 games, lr 1e-6, temp 0.9/top_p 0.95.
+- **Algorithm**: PPO clipped surrogate (eps 0.2), 3 inner passes per rollout batch with approx-KL early stop at 0.03. Behavior logprobs recorded at rollout from RAW pre-warp logits (`output_logits=True`); sequences rebuilt from stored token ids (no retokenization drift). At old==new the gradient equals the REINFORCE gradient (unit-tested). No critic: advantages remain buffer-normalized MC return-to-go clipped ±5 (GRPO-flavored).
+- **Env**: VM `mahjong-a100-e` (a2-highgpu-1g, A100-SXM4-40GB), zone us-east1-b, same image family/pinned venv as prior runs.
+- **Input artifacts**: SFT adapter `checkpoints_sft_warmup_mahjong` pulled from `gs://llm-mahjong-experiments/v2_engine_full_run_20260802_005918/`; `data/sft_mahjong.jsonl` sha256 `b3eefd6d…becf6` verified on VM.
+- **Results sink**: `gs://llm-mahjong-experiments/v2_engine_ppo_run_20260802_041049/`; auto-shutdown on exit.
+
+- **Infra rev2** (shared by all three concurrent runs): torch 2.12.1+cu129, fast-path kernels active, batched parallel rollout parallel_games=4 (6-9× measured decode scaling). Non-semantic.
+
+## Purpose & Hypothesis
+1. PPO's sample reuse (up to 3 passes) extracts more improvement per rollout batch: rl/avg_episode_reward trend ≥ the REINFORCE arm's over the same 50 epochs.
+2. Clipping prevents destructive updates: format compliance stays ≥0.95 with no collapse epochs, and rl/approx_kl stays bounded (early-stop rarely at pass 1).
+3. Pipeline validity: rl/clip_frac > 0 (clipping actually engages) while training remains stable.
+
+## Success Criteria (pre-registered)
+1. **Format**: rl/format_compliance ≥ 0.95 for ≥45 of 50 epochs; abort guard never triggers.
+2. **Learning signal**: mean rl/avg_episode_reward over final 10 epochs > mean over first 10 epochs.
+3. **Game quality**: ≥10% of rollout games end in a win.
+4. **PPO health**: median rl/ppo_passes ≥ 2 (reuse actually happens) AND no epoch with approx_kl > 3× target after pass 1.
+5. **Checkpoint rule**: best = highest avg episode reward checkpoint (top-3 retention).
+
+## Progress
+- [21:10 (04:10 UTC 08-02)] Launched. Pre-flight: local PPO integration smoke passed (1 epoch/1 game on RTX 4080), 34 unit tests green incl. PPO loss math.
+
+## Results
+(pending)
+
+## Conclusion
+(pending)
+
+## Artifacts
+config_launch.json · tensorboard/ (adds rl/approx_kl, rl/clip_frac, rl/ppo_passes) · checkpoint_epoch_N/ · mahjong_epoch_N_rollouts.txt · gpu_info.txt / pip_freeze.txt / TRAIN_EXIT · GCS mirror incl. train_nohup.log

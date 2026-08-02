@@ -8,7 +8,8 @@ from mahjong.meld import Meld
 from mahjong.constants import EAST, SOUTH, WEST, NORTH
 
 from src.tasks.mahjong.wrapper import MahjongEngineAPI
-from src.tasks.mahjong.shanten import TileEfficiency, pad_for_melds
+from src.tasks.mahjong.shanten import (TileEfficiency, pad_for_melds,
+                                       dora_from_indicator)
 
 WINDS_ZH = ["东", "南", "西", "北"]
 WIND_CONST = [EAST, SOUTH, WEST, NORTH]
@@ -71,7 +72,12 @@ class PyMahjongTable(MahjongEngineAPI):
     _efficiency = TileEfficiency()
     _calculator = HandCalculator()
 
-    def __init__(self):
+    def __init__(self, value_facts: bool = False):
+        # value_facts=True appends computed value information (own dora
+        # tiles) to the private state line. This CHANGES the prompt
+        # template — SFT data and rollouts must agree on the flag, or
+        # format compliance collapses (template-consistency rule).
+        self.value_facts = value_facts
         self.reset()
 
     # ------------------------------------------------------------------
@@ -123,10 +129,19 @@ class PyMahjongTable(MahjongEngineAPI):
         )
         own_melds = ' '.join(self._meld_str(m) for m in self.melds[player_id]) or '无'
         riichi_tag = ", 已立直" if self.riichi[player_id] else ""
+        value_tag = ""
+        if self.value_facts:
+            # Computed, not rule text: list this player's dora tiles
+            # (hand + own melds) so a small model can use value directly.
+            dora_tiles = {dora_from_indicator(i) for i in self.dora_indicators}
+            held = [t for t in self.hands[player_id] if t in dora_tiles]
+            held += [t for m in self.melds[player_id] for t in m['tiles']
+                     if t in dora_tiles]
+            value_tag = f", 自家宝牌: {' '.join(held) if held else '无'}"
         state += (
             f"私有 (Private)： 自风: {WINDS_ZH[(player_id - self.dealer) % 4]}, "
             f"点数: {self.points[player_id]}, "
-            f"手牌: {' '.join(self.hands[player_id])}, 副露: {own_melds}{riichi_tag}\n"
+            f"手牌: {' '.join(self.hands[player_id])}, 副露: {own_melds}{riichi_tag}{value_tag}\n"
         )
         state += "公共 (Public)：\n"
         for i in range(4):

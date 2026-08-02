@@ -1,0 +1,20 @@
+{
+    "config": "configs/baseline.json",
+    "model_name": "Qwen/Qwen2.5-0.5B-Instruct",
+    "peft_model_path": "experiments/config_test_run/checkpoints_sft_warmup_mahjong",
+    "task": "mahjong",
+    "learning_rate": 1e-06,
+    "num_episodes": 5,
+    "epochs": 100,
+    "batch_size": 4,
+    "use_qlora": true,
+    "debug": false,
+    "training_phase": 2,
+    "sft_epochs": 0,
+    "sft_data": "data/sft_mahjong.jsonl",
+    "sft_batch_size": 2,
+    "sft_max_samples": 500,
+    "sft_learning_rate": 0.0001,
+    "exp_name": "baseline_local_run_20260517_034738",
+    "resume": false
+}

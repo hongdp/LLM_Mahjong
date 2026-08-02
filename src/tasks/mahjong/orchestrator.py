@@ -25,6 +25,7 @@ class MahjongState(TypedDict):
     last_player: int
     needs_interrupt: bool
     exp_dir: str
+    capture_logprobs: bool
 
 
 def _extract_action(raw_output: str) -> Optional[str]:
@@ -36,11 +37,16 @@ def _extract_action(raw_output: str) -> Optional[str]:
 
 def _query(state: MahjongState, player_id: int, legal_actions: List[str]):
     """Asks the LLM (or a random fallback policy) for an action.
-    Returns (prompt_text, raw_output, parsed_action_or_None)."""
+    Returns (prompt_text, raw_output, parsed_action_or_None, gen_ids, old_lp).
+    gen_ids/old_lp are None unless state['capture_logprobs'] is set (PPO):
+    then they hold the sampled token ids and the behavior policy's
+    raw-logit logprobs for them."""
     table = state['table']
     model, tokenizer = state.get('model'), state.get('tokenizer')
+    capture = state.get('capture_logprobs', False)
     obs = table._format_state(player_id)
     user_content = build_user_content(obs, legal_actions)
+    gen_ids, old_lp = None, None
 
     if model and tokenizer:
         messages = [
@@ -49,22 +55,39 @@ def _query(state: MahjongState, player_id: int, legal_actions: List[str]):
         ]
         prompt = render_generation_prompt(tokenizer, messages)
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        gen_kwargs = dict(
+            max_new_tokens=256,
+            do_sample=True, temperature=0.9, top_p=0.95,
+            pad_token_id=tokenizer.eos_token_id,
+        )
         with torch.no_grad():
             # Sampling (not greedy) is essential: policy-gradient RL can only
             # reinforce actions the policy actually explores.
-            outputs = model.generate(
-                **inputs, max_new_tokens=256,
-                do_sample=True, temperature=0.9, top_p=0.95,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-        generated = outputs[0][inputs.input_ids.shape[-1]:]
+            if capture:
+                out = model.generate(
+                    **inputs, **gen_kwargs,
+                    return_dict_in_generate=True, output_logits=True,
+                )
+                generated = out.sequences[0][inputs.input_ids.shape[-1]:]
+                # output_logits = RAW pre-warp logits: old/new logprobs share
+                # the same (untempered) convention, as PPO requires.
+                step_logits = torch.stack(out.logits, dim=0).squeeze(1).float()
+                logprobs = torch.log_softmax(step_logits, dim=-1)
+                tok_lp = logprobs[torch.arange(generated.shape[0],
+                                               device=generated.device),
+                                  generated]
+                gen_ids = generated.tolist()
+                old_lp = tok_lp.cpu().tolist()
+            else:
+                outputs = model.generate(**inputs, **gen_kwargs)
+                generated = outputs[0][inputs.input_ids.shape[-1]:]
         raw_output = tokenizer.decode(generated, skip_special_tokens=True).strip()
         parsed = _extract_action(raw_output)
     else:
         prompt = f"System: {SYSTEM_PROMPT}\nUser: {user_content}"
         parsed = random.choice(legal_actions)
         raw_output = parsed
-    return prompt, raw_output, parsed
+    return prompt, raw_output, parsed, gen_ids, old_lp
 
 
 def _log_live(state: MahjongState, header: str, prompt: str, raw: str, parsed: str):
@@ -92,7 +115,8 @@ def turn_node(state: MahjongState):
     player_id = table.turn
     legal_actions = table.get_legal_actions(player_id)
 
-    prompt, raw_output, parsed = _query(state, player_id, legal_actions)
+    prompt, raw_output, parsed, gen_ids, old_lp = _query(
+        state, player_id, legal_actions)
     action_for_engine = parsed or ""
     _log_live(state, f"[Player {player_id}]", prompt, raw_output,
               parsed or "(no action tag)")
@@ -107,6 +131,8 @@ def turn_node(state: MahjongState):
         action_text=raw_output,
         reward=rewards[player_id],
         is_terminal=done,
+        gen_token_ids=gen_ids,
+        old_logprobs=old_lp,
     ))
     if done:
         _log_result(state, table)
@@ -124,7 +150,8 @@ def interrupt_node(state: MahjongState):
         options = table.get_interrupt_actions(player_id)
         if len(options) == 1:  # skip-only: don't bother the LLM
             continue
-        prompt, raw_output, parsed = _query(state, player_id, options)
+        prompt, raw_output, parsed, gen_ids, old_lp = _query(
+            state, player_id, options)
         _log_live(state, f"[Player {player_id} (Interrupt)]", prompt,
                   raw_output, parsed or "(no action tag)")
         a_type = None
@@ -134,6 +161,7 @@ def interrupt_node(state: MahjongState):
         candidates.append({
             "player_id": player_id, "prompt": prompt, "raw": raw_output,
             "parsed": parsed, "type": a_type, "reward": 0.0,
+            "gen_ids": gen_ids, "old_lp": old_lp,
         })
 
     # Phase 2: resolve by priority (ron > kan > pon > chi); collection
@@ -163,6 +191,8 @@ def interrupt_node(state: MahjongState):
             action_text=cand["raw"],
             reward=cand["reward"],
             is_terminal=done and executed is cand,
+            gen_token_ids=cand["gen_ids"],
+            old_logprobs=cand["old_lp"],
         ))
 
     if executed is not None:
@@ -205,14 +235,18 @@ def build_mahjong_graph():
 
 
 def run_rollout(num_games: int, model=None, tokenizer=None,
-                exp_dir: str = None) -> List[List[TrajectoryStep]]:
+                exp_dir: str = None,
+                capture_logprobs: bool = False,
+                value_facts: bool = False) -> List[List[TrajectoryStep]]:
     """Runs self-play games and returns one trajectory per player per game,
-    with terminal settlement rewards distributed to all four players."""
+    with terminal settlement rewards distributed to all four players.
+    capture_logprobs=True additionally records sampled token ids + behavior
+    logprobs on every step (required for PPO)."""
     graph = build_mahjong_graph()
     all_episodes = []
 
     for game_idx in range(num_games):
-        table = PyMahjongTable()
+        table = PyMahjongTable(value_facts=value_facts)
         trajectories = {i: [] for i in range(4)}
 
         live_log_dir = exp_dir or "./logs"
@@ -231,6 +265,7 @@ def run_rollout(num_games: int, model=None, tokenizer=None,
             "last_player": -1,
             "needs_interrupt": False,
             "exp_dir": exp_dir,
+            "capture_logprobs": capture_logprobs,
         })
         final_state = graph.invoke(
             initial_state, config={"recursion_limit": 1000}
