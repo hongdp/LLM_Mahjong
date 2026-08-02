@@ -1,6 +1,6 @@
 # v2_engine_ppo_run_20260802_054914
 
-- **Date**: 2026-08-01 22:49 (05:49 UTC 08-02)  **Status**: running
+- **Date**: 2026-08-01 22:49 (05:49 UTC 08-02)  **Status**: stopped by user at epoch 24/50 (2026-08-02 ~11:30 local) — style migration already pronounced (riichi halved, melds +75% fleet-wide); arena evaluation prioritized over completing 50 epochs. All checkpoints + logs preserved to GCS. Final checkpoint = checkpoint_epoch_24.
 - **Arm**: A — PPO algorithm ablation. Single variable vs the concurrently running PBRS restart run `v2_engine_pbrs_run_20260802_054918` (REINFORCE): the RL update rule. Everything else identical — PBRS potential reward, same SFT adapter (from `v2_engine_full_run_20260802_005918`, loaded verbatim, sft_epochs=0), seed 42, 50 epochs × 12 games, lr 1e-6, temp 0.9/top_p 0.95.
 - **Algorithm**: PPO clipped surrogate (eps 0.2), 3 inner passes per rollout batch with approx-KL early stop at 0.03. Behavior logprobs recorded at rollout from RAW pre-warp logits (`output_logits=True`); sequences rebuilt from stored token ids (no retokenization drift). At old==new the gradient equals the REINFORCE gradient (unit-tested). No critic: advantages remain buffer-normalized MC return-to-go clipped ±5 (GRPO-flavored).
 - **Env**: VM `mahjong-a100-e` (a2-highgpu-1g, A100-SXM4-40GB), zone us-east1-b, same image family/pinned venv as prior runs.

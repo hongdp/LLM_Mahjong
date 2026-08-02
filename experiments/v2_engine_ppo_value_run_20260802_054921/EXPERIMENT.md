@@ -1,6 +1,6 @@
 # v2_engine_ppo_value_run_20260802_054921
 
-- **Date**: 2026-08-01 22:49 (05:49 UTC 08-02)  **Status**: running
+- **Date**: 2026-08-01 22:49 (05:49 UTC 08-02)  **Status**: stopped by user at epoch 25/50 (2026-08-02 ~11:30 local) — style migration already pronounced (riichi halved, melds +75% fleet-wide); arena evaluation prioritized over completing 50 epochs. All checkpoints + logs preserved to GCS. Final checkpoint = checkpoint_epoch_25.
 - **Arm**: B — PPO + value bundle. Deliberately multi-variable vs arm A (`v2_engine_ppo_run`): adds the full value iteration on top of PPO. Deltas: (1) reward_model=potential_value — PBRS energy gains +0.3·(#dora held); (2) prompt template gains a computed `自家宝牌:` line (value_facts=true); (3) fresh SFT corpus regenerated with the value-aware teacher (dora-keeping tie-break, faithful CoT mentions it) — SFT reused from predecessor 041051 (value-template adapter, 3×2000, final loss 0.0877) — loaded verbatim, sft_epochs=0.
 - **Reward math note**: the dora term is a potential term — telescoping to −Φ(s₀) still exact (unit-tested), so consistency/anti-farming guarantees carry over; it only redirects credit toward keeping value tiles.
 - **Algorithm**: PPO identical to arm A (eps 0.2, 3 passes, target_kl 0.03).
