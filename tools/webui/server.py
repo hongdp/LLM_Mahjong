@@ -174,8 +174,8 @@ def parse_rollout_file(path):
 
 # ---------------------------------------------------------------- live rollout
 
-LIVE_HDR_RE = re.compile(r'^=== \[(?:game \d+ \| )?Player (\d)(?: \(Interrupt\))?\] ===$')
-LIVE_END_RE = re.compile(r'^=== 对局结束(?: \(game \d+\))?: (.*) ===$')
+LIVE_HDR_RE = re.compile(r'^=== \[(?:game (\d+) \| )?Player (\d)(?: \(Interrupt\))?\] ===$')
+LIVE_END_RE = re.compile(r'^=== 对局结束(?: \(game (\d+)\))?: (.*) ===$')
 
 
 def parse_live_file(path):
@@ -195,48 +195,59 @@ def parse_live_file(path):
     Returns [{"result": str|None, "episodes": [{episode, steps}]}]; the last
     game has result=None while still in progress.
     """
-    games = []
-    players = {}            # pid -> [steps] for the game under construction
+    finished = []           # completed games, in completion order
+    open_games = {}         # gid -> {pid: [steps]} still in progress
+    order = []              # gid first-seen order (for stable in-progress output)
+    seq_gid = 0             # implicit id for legacy (sequential) logs
+    cur_gid = None          # game of the block under construction
     pid = None              # player of the block under construction
     mode = None             # None | 'prompt' | 'raw'
     prompt_lines, raw_lines = [], []
 
     def close_block():
-        nonlocal pid, mode, prompt_lines, raw_lines
+        nonlocal pid, cur_gid, mode, prompt_lines, raw_lines
         if pid is not None and prompt_lines and raw_lines:
             state = _parse_prompt("\n".join(prompt_lines))
             think, a_type, a_tile, a_with, bad = _parse_response(
                 "\n".join(raw_lines))
-            steps = players.setdefault(pid, [])
+            if cur_gid not in open_games:
+                open_games[cur_gid] = {}
+                order.append(cur_gid)
+            steps = open_games[cur_gid].setdefault(pid, [])
             step = {"step": len(steps), "reward": 0.0, "terminal": False}
             step.update(state)
             step["think"] = think
             step["action"] = {"type": a_type, "tile": a_tile, "with": a_with,
                               "bad_format": bad}
             steps.append(step)
-        pid, mode = None, None
+        pid, cur_gid, mode = None, None, None
         prompt_lines, raw_lines = [], []
 
-    def close_game(result):
-        nonlocal players
+    def finish_game(gid, result):
+        players = open_games.pop(gid, None)
+        if gid in order:
+            order.remove(gid)
         if players:
             for steps in players.values():
                 steps[-1]["terminal"] = result is not None
-            base = 4 * len(games)
-            games.append({"result": result, "episodes": [
-                {"episode": base + p, "steps": players[p]}
-                for p in sorted(players)]})
-        players = {}
+            finished.append({"result": result, "players": players})
 
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.rstrip("\n")
             if m := LIVE_HDR_RE.match(line):
                 close_block()
-                pid = int(m.group(1))
+                # batched logs tag every block with its game; legacy logs
+                # have a single implicit game at a time
+                cur_gid = int(m.group(1)) if m.group(1) is not None else ("seq", seq_gid)
+                pid = int(m.group(2))
             elif m := LIVE_END_RE.match(line):
                 close_block()
-                close_game(m.group(1))
+                if m.group(1) is not None:
+                    finish_game(int(m.group(1)), m.group(2))
+                else:
+                    finish_game(("seq", seq_gid), m.group(2))
+                    seq_gid += 1
             elif pid is not None:
                 if line.startswith("[INPUT PROMPT]:"):
                     mode = "prompt"
@@ -249,7 +260,14 @@ def parse_live_file(path):
                 elif mode == "raw":
                     raw_lines.append(line)
     close_block()
-    close_game(None)        # in-progress game, if any
+
+    games = []
+    for entry in finished + [{"result": None, "players": open_games[g]}
+                             for g in order if open_games.get(g)]:
+        base = 4 * len(games)
+        games.append({"result": entry["result"], "episodes": [
+            {"episode": base + p, "steps": entry["players"][p]}
+            for p in sorted(entry["players"])]})
     return games
 
 
