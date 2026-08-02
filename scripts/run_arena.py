@@ -23,6 +23,8 @@ def main():
     ap.add_argument("--parallel", type=int, default=12)
     ap.add_argument("--value_facts", action="store_true")
     ap.add_argument("--out", default="arena_result.json")
+    ap.add_argument("--transcript", default=None,
+                    help="write replayable game transcripts (rollout format)")
     args = ap.parse_args()
 
     from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -38,8 +40,13 @@ def main():
     print(f"A = {args.adapter_a}\nB = {args.adapter_b}")
 
     seeds = [args.seed0 + i for i in range(args.deals)]
+    if args.transcript:
+        import os
+        os.makedirs(os.path.dirname(args.transcript), exist_ok=True)
+        open(args.transcript, "w").close()
     rows = run_match(model, tok, seeds, value_facts=args.value_facts,
-                     parallel=args.parallel, log_path=args.out + ".log")
+                     parallel=args.parallel, log_path=args.out + ".log",
+                     transcript_path=args.transcript)
 
     diffs = [r["diff"] for r in rows]
     wa = sum(r["wins_a"] for r in rows)

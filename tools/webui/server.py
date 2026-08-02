@@ -35,6 +35,9 @@ VM_HOSTS = {
     "v2_engine_ppo_value_run": "mahjong-a100-b.europe-west4-a.workstation-185016",
     "v2_engine_ppo_run": "mahjong-a100-e.us-east1-b.workstation-185016",
     "tune_": "mahjong-a100-e.us-east1-b.workstation-185016",
+    "arena_base": "mahjong-a100.us-central1-b.workstation-185016",
+    "arena_ppo": "mahjong-a100-e.us-east1-b.workstation-185016",
+    "arena_value": "mahjong-a100-b.europe-west4-a.workstation-185016",
 }
 
 

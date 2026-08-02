@@ -198,14 +198,24 @@
   details summary { cursor:pointer; font-size:12px; color:var(--muted); }
   .legalrow { margin-top:10px; }
   .empty { color:var(--muted); padding:30px 0; text-align:center; }
+
+  /* ---- tabs ---- */
+  .tabbar { display:flex; gap:6px; margin:16px 0 4px; border-bottom:1px solid var(--grid); }
+  .tabbtn { border:none; background:none; padding:9px 16px; font-size:14px;
+            color:var(--ink2); cursor:pointer; border-bottom:2px solid transparent;
+            border-radius:8px 8px 0 0; }
+  .tabbtn:hover { background:var(--surface); border-color:var(--grid); }
+  .tabbtn.active { color:var(--ink); font-weight:650; border-bottom:2px solid var(--series); }
+  .tabpane { display:none; } .tabpane.active { display:block; }
+  body.tab-arena .exp-scope { display:none; }
 </style>
 </head>
 <body>
 <header>
   <h1>🀄 LLM Mahjong 训练检视台</h1>
-  <select id="expSel" title="experiment"></select>
-  <button id="syncBtn" title="rsync 该实验的日志/曲线（从 GCP VM）">⟳ 从 VM 同步</button>
-  <label class="hint"><input type="checkbox" id="autoRef"> 每
+  <select id="expSel" class="exp-scope" title="作用于 训练监控/牌局复盘 两个页签"></select>
+  <button id="syncBtn" class="exp-scope" title="rsync 所选实验的日志/曲线（从 GCP VM）">⟳ 从 VM 同步</button>
+  <label class="hint exp-scope"><input type="checkbox" id="autoRef"> 每
     <input type="number" id="refSec" value="60" min="5" max="3600" step="5"
            style="width:56px;font:inherit;color:var(--ink);background:var(--surface);
                   border:1px solid var(--border);border-radius:6px;padding:2px 6px;">
@@ -214,14 +224,29 @@
   <button id="themeBtn" title="theme">◐</button>
 </header>
 
-<div class="kpis" id="kpis"></div>
+<div class="tabbar">
+  <button class="tabbtn" data-tab="arena">🏆 竞技场</button>
+  <button class="tabbtn" data-tab="monitor">📈 训练监控</button>
+  <button class="tabbtn" data-tab="replay">🀄 牌局复盘</button>
+</div>
 
-<h2>训练曲线</h2>
-<div class="charts" id="charts"></div>
 
-<h2>竞技场 <span class="hint" id="arenaState"></span></h2>
-<div class="kpis" id="arenaCards"></div>
+<div class="tabpane" id="tab-arena">
+  <h2>三场对战 <span class="hint" id="arenaState"></span></h2>
+  <div class="kpis" id="arenaCards"></div>
+  <div class="controls" style="margin-top:12px">
+    <button id="arenaSyncBtn">⟳ 同步战报牌谱</button>
+    <span class="hint">牌谱同步后，去「牌局复盘」页签选 arena_base / arena_ppo / arena_value 逐局回看（A 方座位见每局标头）</span>
+  </div>
+</div>
 
+<div class="tabpane" id="tab-monitor">
+  <div class="kpis" id="kpis"></div>
+  <h2>训练曲线</h2>
+  <div class="charts" id="charts"></div>
+</div>
+
+<div class="tabpane" id="tab-replay">
 <h2>牌局检视</h2>
 <div class="controls">
   <label>epoch <select id="epochSel"></select></label>
@@ -234,6 +259,7 @@
   <span class="hint" id="trajSummary"></span>
 </div>
 <div id="inspector"></div>
+</div><!-- /tab-replay -->
 
 <script>
 "use strict";
@@ -1130,6 +1156,27 @@ async function loadArena(){
   $("#arenaState").textContent = running ? `（配对点差 = RL方总点数−50000，双向合计；${running} 场进行中）`
                                          : "（全部完赛）";
 }
+
+
+/* ------------------------------------------------ tabs */
+function setTab(name){
+  document.querySelectorAll(".tabbtn").forEach(b=>b.classList.toggle("active", b.dataset.tab===name));
+  document.querySelectorAll(".tabpane").forEach(p=>p.classList.toggle("active", p.id==="tab-"+name));
+  document.body.className = "tab-" + name;
+  localStorage.setItem("mj_tab", name);
+}
+document.querySelectorAll(".tabbtn").forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+setTab(localStorage.getItem("mj_tab") || "arena");
+
+$("#arenaSyncBtn").onclick = async ()=>{
+  const b=$("#arenaSyncBtn"); b.disabled=true; b.textContent="同步中…";
+  try {
+    for (const e of ["arena_base","arena_ppo","arena_value"]){
+      await fetch("/api/sync?exp="+e, {method:"POST"});
+    }
+    await loadExperiments();
+  } finally { b.disabled=false; b.textContent="⟳ 同步战报牌谱"; }
+};
 
 /* ------------------------------------------------ sync + refresh */
 $("#syncBtn").onclick = async ()=>{

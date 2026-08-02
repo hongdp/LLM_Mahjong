@@ -29,7 +29,8 @@ from src.tasks.mahjong.batch_rollout import _drive_game, _batch_generate, _Req
 
 def run_match(model, tokenizer, deal_seeds: List[int],
               value_facts: bool = False, parallel: int = 12,
-              policy_names=("A", "B"), log_path: Optional[str] = None):
+              policy_names=("A", "B"), log_path: Optional[str] = None,
+              transcript_path: Optional[str] = None):
     """Returns per-deal paired results:
     [{"seed": s, "diff": paired_point_diff, "wins_a": int, "wins_b": int,
       "orient": [{"a_seats": [...], "points": [...], "result": str}, ...]}]
@@ -56,7 +57,10 @@ def run_match(model, tokenizer, deal_seeds: List[int],
             pending = next(gen)
         except StopIteration:
             pending = []
-        active[job] = {"gen": gen, "table": table, "pending": pending}
+        active[job] = {"gen": gen, "table": table, "pending": pending,
+                       "traj": trajectories}
+
+    n_written = [0]
 
     def finalize(job):
         st = active.pop(job)
@@ -67,6 +71,42 @@ def run_match(model, tokenizer, deal_seeds: List[int],
             "result": table.result_summary,
             "a_seats": list(a_seats(orient)),
         }
+        if transcript_path:
+            traj = st["traj"]
+            # distribute settlement (raw engine rewards; no shaping in arena)
+            if table.final_rewards:
+                for pid in range(4):
+                    if traj[pid]:
+                        last = traj[pid][-1]
+                        last.reward += table.final_rewards[pid]
+                        last.is_terminal = True
+                        last.settlement = table.final_rewards[pid]
+                        last.final_points = table.points[pid]
+                        last.rank_bonus = (table.final_rewards[pid]
+                                           - (table.points[pid] - 25000)
+                                           * table.REWARD_SCALE)
+                        last.game_result = table.result_summary
+            with open(transcript_path, "a", encoding="utf-8") as f:
+                f.write(f"=== ARENA seed={seed} orient={orient} "
+                        f"A_seats={list(a_seats(orient))} "
+                        f"result={table.result_summary} ===\n")
+                base = 4 * n_written[0]
+                for pid in range(4):
+                    ep = traj[pid]
+                    f.write(f"--- Episode {base + pid} (Total Steps: {len(ep)}) ---\n")
+                    for i, stp in enumerate(ep):
+                        f.write(f"[Step {i}] Reward: {stp.reward:.2f} | Terminal: {stp.is_terminal}\n")
+                        f.write(f"PROMPT:\n{stp.prompt_text.strip()}\n")
+                        f.write(f"ACTION: {stp.action_text}\n")
+                        if stp.settlement is not None:
+                            delta = (stp.final_points or 25000) - 25000
+                            f.write(f"[SETTLEMENT] final_points={stp.final_points} | "
+                                    f"point_reward={delta * 0.001:+.3f} | "
+                                    f"rank_bonus={stp.rank_bonus:+.2f} | "
+                                    f"settlement={stp.settlement:+.3f} | "
+                                    f"result={stp.game_result}\n")
+                        f.write("-" * 40 + "\n")
+                n_written[0] += 1
 
     while next_job < len(jobs) or active:
         while next_job < len(jobs) and len(active) < parallel:
