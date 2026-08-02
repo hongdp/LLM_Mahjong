@@ -131,7 +131,7 @@ def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
 
 
 def _batch_generate(model, tokenizer, reqs: List[_Req],
-                    capture: bool, max_batch: int = 8):
+                    capture: bool, max_batch: int = 24):
     """Fills raw/parsed(/gen_ids/old_lp) on every request, batching the
     LLM calls. Falls back to the random policy without a model."""
     if model is None or tokenizer is None:
@@ -244,7 +244,8 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
         flat: List[_Req] = []
         for st in active.values():
             flat.extend(st["pending"])
-        _batch_generate(model, tokenizer, flat, capture_logprobs)
+        _batch_generate(model, tokenizer, flat, capture_logprobs,
+                        max_batch=max(24, parallel))
 
         for gid in list(active.keys()):
             st = active[gid]

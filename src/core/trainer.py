@@ -30,6 +30,11 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--use_qlora", action="store_true")
+    parser.add_argument(
+        "--bf16_lora", action="store_true",
+        help="LoRA on unquantized bf16 base weights (mutually exclusive with "
+             "--use_qlora; for GPUs with VRAM headroom — ~55%% faster decode)."
+    )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument(
         "--training_phase", type=int, default=1, choices=[1, 2],
@@ -115,7 +120,10 @@ def parse_args():
             for k, v in config_data.items():
                 if hasattr(args, k) and k != "config":
                     setattr(args, k, v)
-                    
+
+    if args.use_qlora and args.bf16_lora:
+        raise SystemExit("--use_qlora and --bf16_lora are mutually exclusive")
+
     return args
 
 def save_trajectory_log(buffer: ReplayBuffer, epoch: int, task_name: str, exp_dir: str):
@@ -305,11 +313,13 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         quantization_config=quantization_config,
-        device_map="auto" if args.use_qlora else None
+        torch_dtype=torch.bfloat16 if args.bf16_lora else None,
+        device_map="auto" if (args.use_qlora or args.bf16_lora) else None
     )
 
-    if args.use_qlora:
-        model = prepare_model_for_kbit_training(model)
+    if args.use_qlora or args.bf16_lora:
+        if args.use_qlora:
+            model = prepare_model_for_kbit_training(model)
         if args.peft_model_path and os.path.exists(args.peft_model_path):
             from peft import PeftModel
             print(f"Loading PEFT adapter from {args.peft_model_path}...")
@@ -325,6 +335,9 @@ def main():
                                 "gate_proj", "up_proj", "down_proj"],
             )
             model = get_peft_model(model, peft_config)
+        if args.bf16_lora:
+            print("🔷 bf16 LoRA mode: unquantized base weights (decode ~55% "
+                  "faster than nf4 on A100; needs ~5GB VRAM headroom)")
     else:
         model.to(device)
 
