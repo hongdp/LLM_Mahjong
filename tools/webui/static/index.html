@@ -870,7 +870,6 @@ function renderPlayback(i){
   if (!host||!e) return;
   host.innerHTML="";
   const st=e.st, g=st.global||{};
-  const W2I={"东":0,"南":1,"西":2,"北":3};
 
   /* player idx -> seat data at this moment (actor's prompt covers the
      other three; the actor's own river is rebuilt from its past actions) */
@@ -888,21 +887,11 @@ function renderPlayback(i){
   });
 
   const V=CUR.player;
-  const vw=W2I[info[V]?.seat]??0;
   const board=el("div","board");
   const tbl=el("div","card");
   const mb=el("div","mboard");
-  const RELNAME={1:"下家",2:"对面",3:"上家"};
-  [2,3,1].forEach(rel=>{
-    const p=Object.keys(info).map(Number)
-      .find(q=>q!==V && ((W2I[info[q].seat]??0)-vw+4)%4===rel);
-    if (p===undefined) return;
-    const d=info[p];
-    const blk=seatBlock(`${RELNAME[rel]}·${d.seat}`,d.points,d.riichi,d.melds,d.river,false);
-    if (p===e.pi) blk.querySelector(".schip").classList.add("acting");
-    mb.append(blk);
-  });
 
+  /* center info strip on top */
   const c=el("div","mcenter");
   c.append(el("div","kyoku",`${g.kyoku||"?"}`));
   const dr=el("div","crow"); dr.append(el("span","","宝牌指示"));
@@ -911,11 +900,6 @@ function renderPlayback(i){
   c.append(el("div","crow",`供托 ${g.kyotaku??"?"}`));
   c.append(el("div","crow",`▶ ${i+1}/${PLAY.tl.length}`));
   mb.append(c);
-
-  const dv=info[V]||{};
-  const vblk=seatBlock(`自家·${dv.seat||"?"}`,dv.points??"?",!!dv.riichi,dv.melds,dv.river,true);
-  if (e.pi===V) vblk.querySelector(".schip").classList.add("acting");
-  mb.append(vblk);
 
   /* viewer's hand: exact on their own steps, last-known otherwise */
   const hand=el("div","shand");
@@ -933,7 +917,21 @@ function renderPlayback(i){
     if (hl && !hlDone && t===hl){ te.classList.add("chosen"); hlDone=true; }
     hand.append(te);
   });
-  mb.append(hand);
+
+  /* seat rows top→bottom in turn order 东→南→西→北 (dealer first), so the
+     acting highlight sweeps straight down each 巡; viewer's hand sits
+     directly under their own row */
+  ["东","南","西","北"].forEach(w=>{
+    const p=Object.keys(info).map(Number).find(q=>info[q]?.seat===w);
+    if (p===undefined) return;
+    const d=info[p];
+    const isV=p===V;
+    const blk=seatBlock(`${w}家·P${p}${isV?"·自家":""}`,d.points,d.riichi,
+      d.melds,d.river,isV);
+    if (p===e.pi) blk.querySelector(".schip").classList.add("acting");
+    mb.append(blk);
+    if (isV) mb.append(hand);
+  });
   tbl.append(mb); board.append(tbl);
 
   /* right: acting player's output */
