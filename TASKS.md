@@ -35,6 +35,7 @@
 5. Vine 定点探针（立直宣言/攻防抉择的逐动作 Q 值）
 6. 模板迭代：自家牌河进 prompt（与 v3 或价值事实合并做）
 7. duplicate-deal 复式赛制 → checkpoint 评测工具（非训练用）
+8. 赤宝牌规则（引擎缺失已确认，见 engine_known_issues.md；与 v3 模板迭代捆绑）
 
 ## 💰 资源状态
 
