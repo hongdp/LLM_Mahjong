@@ -7,7 +7,7 @@
 - **Input artifacts**: SFT adapter `checkpoints_sft_warmup_mahjong` pulled from `gs://llm-mahjong-experiments/v2_engine_full_run_20260802_005918/`; `data/sft_mahjong.jsonl` sha256 `b3eefd6d…becf6` verified on VM.
 - **Results sink**: `gs://llm-mahjong-experiments/v2_engine_ppo_run_20260802_054914/`; auto-shutdown on exit.
 
-- **Infra rev2→3 (see rev3 note)** (shared by all three concurrent runs): torch 2.12.1+cu129, fast-path kernels active, batched parallel rollout parallel_games=4 (6-9× measured decode scaling). Non-semantic.
+- **Infra rev2→3** (shared by all three concurrent runs): torch 2.12.1+cu129, fast-path kernels active, batched parallel rollout parallel_games=4 (6-9× measured decode scaling). Non-semantic.
 
 - **Infra rev3** (all three arms, measured in perf_tuning_east_20260802): bf16_lora (unquantized base, +55% decode), 12 games/epoch at parallel_games=12 (~3x data per epoch at ~equal wall-clock vs 4 games), update batch_size 4, [SETTLEMENT] breakdown logging. Success criteria unchanged (scale-free). Predecessor 0410xx runs aborted in epoch 1 with no completed epochs.
 
@@ -45,9 +45,9 @@ config_launch.json · tensorboard/ (adds rl/approx_kl, rl/clip_frac, rl/ppo_pass
 
 ## Final Results（2026-08-02 竞技场裁决）
 - 竞技场（复式32副×双向,vs SFT 锚,原始点数）: **+331 ± 1320（24:19）** — 不显著
-- 完整三臂分析: docs/report_rev3_threearm_20260802.md
+- 完整三臂分析: docs/report_exp1_shaping_arms_20260802.md
 
 ## Conclusion
 ~600 局 RL 未产生统计可辨强度变化;PBRS 密集塑形主导了行为迁移(立直↓副露↑)。
 成功标准: #1 格式 ✅/边缘(见侵蚀记录) | #2 奖励趋势(已注记为强度盲指标) | #3 和牌局 ✅ 远超10% | #4 checkpoint 规则 ✅。
-后继: rev4 settlement-vs-potential 对决(docs/report_rev3_threearm_20260802.md 提案)。
+后继: exp2 settlement-vs-PBRS 对决(docs/report_exp1_shaping_arms_20260802.md 提案)。

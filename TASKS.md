@@ -11,7 +11,7 @@
 
 | 提案 | 依据 |
 |---|---|
-| **Rev4：settlement vs potential 双臂对决** | 塑形主导学习方向的完整证据链（总报告）；settlement 模式已实现测试 |
+| **exp2「settlement vs PBRS」双臂对决** | 塑形主导学习方向的完整证据链（总报告）；settlement 模式已实现测试 |
 | Ref-KL 锚 | PPO 臂格式侵蚀实证 |
 | Critic value head | 方差分解：起手仅解释 2%，98% 在中盘状态 |
 | v3 模板捆绑（真值表/自家牌河/短think） | think 审计 6-11% vs 教师 100% |

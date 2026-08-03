@@ -8,7 +8,7 @@
 - **Input artifacts**: `data/sft_mahjong_value.jsonl` — value-aware regeneration, 300 games, seed 42, line-shuffled seed 42; sha256 `4133fa33284c2be7f07b76477ef21f9b3fbefc7e5905e96928e48b9eca47a76f` (verified on VM after sync).
 - **Results sink**: `gs://llm-mahjong-experiments/v2_engine_ppo_value_run_20260802_054921/`; auto-shutdown on exit.
 
-- **Infra rev2→3 (see rev3 note)** (shared by all three concurrent runs): torch 2.12.1+cu129, fast-path kernels active, batched parallel rollout parallel_games=4 (6-9× measured decode scaling). Non-semantic.
+- **Infra rev2→3** (shared by all three concurrent runs): torch 2.12.1+cu129, fast-path kernels active, batched parallel rollout parallel_games=4 (6-9× measured decode scaling). Non-semantic.
 
 - **Infra rev3** (all three arms, measured in perf_tuning_east_20260802): bf16_lora (unquantized base, +55% decode), 12 games/epoch at parallel_games=12 (~3x data per epoch at ~equal wall-clock vs 4 games), update batch_size 4, [SETTLEMENT] breakdown logging. Success criteria unchanged (scale-free). Predecessor 0410xx runs aborted in epoch 1 with no completed epochs.
 
@@ -33,7 +33,7 @@
 
 ## Progress
 - [2026-08-02 ~10:30 UTC, ep10] 轻度格式侵蚀观察：100%→98.6%/10ep。失败形态=短而完整的 think 后直接 EOS（非截断，中位 12-34 字符 vs 正常 58），高发于「宣告立直」类结论句尾。approx_kl 稳定 ~0.001（无过度更新）。不干预（距 95% 标准余量大，-10 压制在场）；此为 ref-KL 锚的首个实证依据（TASKS 背景队列 #10）。
-- [2026-08-02 ~12:40 UTC, ep20] 侵蚀低点缓降：格式低点 98.6(ep10)→98.4(ep15)→97.9(ep20)，≈0.07%/epoch；奖励低点首次转负（−1.50，罚分拖累 ≈−7）。线性外推 ep50 ≈95.8%，标准 #1（≥45/50 epoch ≥95%）大概率仍可达成。BASE(REINFORCE 单遍)始终 100% ⇒ 支持「PPO 复用放大生成漂移」假说。维持不干预阈值（<95% 告警）；rev4 首选处置 = ref-KL 锚。
+- [2026-08-02 ~12:40 UTC, ep20] 侵蚀低点缓降：格式低点 98.6(ep10)→98.4(ep15)→97.9(ep20)，≈0.07%/epoch；奖励低点首次转负（−1.50，罚分拖累 ≈−7）。线性外推 ep50 ≈95.8%，标准 #1（≥45/50 epoch ≥95%）大概率仍可达成。BASE(REINFORCE 单遍)始终 100% ⇒ 支持「PPO 复用放大生成漂移」假说。维持不干预阈值（<95% 告警）；exp2 首选处置 = ref-KL 锚。
 - [22:49 (05:49 UTC 08-02)] Launched (RL-only; value-template adapter reused from 041051).
 
 ## Results
@@ -48,9 +48,9 @@ config_launch.json · checkpoints_sft_warmup_mahjong/ (value-template adapter) �
 
 ## Final Results（2026-08-02 竞技场裁决）
 - 竞技场（复式32副×双向,vs SFT 锚,原始点数）: **−1475 ± 1652（25:21）** — 方向负但不显著；打点 +18% 至 4424（价值方向真实）
-- 完整三臂分析: docs/report_rev3_threearm_20260802.md
+- 完整三臂分析: docs/report_exp1_shaping_arms_20260802.md
 
 ## Conclusion
 ~600 局 RL 未产生统计可辨强度变化;PBRS 密集塑形主导了行为迁移(立直↓副露↑)。
 成功标准: #1 格式 ✅/边缘(见侵蚀记录) | #2 奖励趋势(已注记为强度盲指标) | #3 和牌局 ✅ 远超10% | #4 checkpoint 规则 ✅。
-后继: rev4 settlement-vs-potential 对决(docs/report_rev3_threearm_20260802.md 提案)。
+后继: exp2 settlement-vs-PBRS 对决(docs/report_exp1_shaping_arms_20260802.md 提案)。

@@ -27,12 +27,15 @@ src/
     ├── shanten.py           # 向听/受入/宝牌映射
     ├── orchestrator.py      # LangGraph 顺序 rollout（legacy，parallel_games=1）
     ├── batch_rollout.py     # N 局并发批量 rollout（生成器协议 + 批量 generate）
-    ├── rewards.py           # 奖励注册表：step / potential / potential_value + 协变量
+    ├── rewards.py           # 奖励注册表：step / potential / potential_value / settlement
+    ├── arena.py             # 2v2 复式对战（按座位路由 adapter，原始点数评分）
     └── task.py              # MahjongTask（collect_rollouts 入口）
 
 scripts/
 ├── generate_sft_data.py     # 忠实 CoT 教师语料（--value_facts 价值感知模式）
 ├── analyze_defense_probe.py # 防守探针：对手立直后弃和率/放铳率
+├── audit_think_accuracy.py  # think 声明忠实度审计（vs 真实向听/受入计算器）
+├── run_arena.py             # 竞技场：两 adapter 复式对战 + 配对点差裁决
 ├── phase1_ce/               # GCP 单卡 VM 工作流（start_vm / sync_code / run_training）
 └── phase2_vertex/           # Vertex AI（未启用）
 
@@ -48,6 +51,7 @@ experiments/<name>_<ts>/     # 每次训练的输出（记录入 git，重产物
 | `step` | 旧版绝对分塑形（可刷分，仅为历史复现保留） |
 | `potential` | **势函数塑形（PBRS）**：Φ=−2·向听+0.05·受入；折扣和 telescoping 到发牌常数——与终局结算严格一致、不可刷分、最优策略不变 |
 | `potential_value` | PBRS + 0.3×宝牌持有项（引导价值探索，保证不变） |
+| `settlement` | **纯目标**：零塑形，只保留格式 −10 / 幽灵牌 −5 合法性护栏（exp1 结论催生）|
 
 终局结算 = 真实点差×0.001 + 顺位奖 ±2/±0.5（四家轨迹全部分发）；流局听牌费（场 3000）已实现。
 可选 `--covariate_baseline`：按起手质量回归消除发牌运气方差（默认关）。
@@ -96,7 +100,8 @@ conda run -n rlhf_mahjong python tools/webui/server.py --port 8642
 
 ## 当前状态（2026-08-02）
 
-- **三臂 rev3 对照运行中**（各 ~17h）：基线 / PPO 消融 / PPO+价值 bundle，
-  预注册成功标准：格式 ≥0.95 达 45/50 epoch、末10均值 > 首10、和牌局 ≥10%、PPO 健康。
-- 完赛后自动：GCS 归档 → VM 关机 → 三臂对比 + 防守探针 + 方差分解（critic vs 重放决策依据）。
-- 实验记录制度：启动前 EXPERIMENT.md 预注册，`experiments/INDEX.md` 总账（ml-experiment-tracking skill）。
+- **exp1「塑形三臂」已完成**（基线 PBRS+REINFORCE / +PPO / PPO+价值 bundle，infra rev3，ep24-26 停跑）：
+  竞技场裁决三臂均与各自 SFT 起点无显著差异，但行为风格大幅迁移 → 密集塑形主导学习方向。
+  完整结论见 [docs/report_exp1_shaping_arms_20260802.md](docs/report_exp1_shaping_arms_20260802.md)。
+- **exp2「settlement vs PBRS」提案中**（待批准）：纯结算奖励 vs 现行塑形，竞技场 64 副裁决。
+- 命名规范：实验用描述性名字（exp1/exp2…），`infra revN` 只指训练栈配置版本。

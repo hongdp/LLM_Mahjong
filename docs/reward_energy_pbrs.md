@@ -68,7 +68,7 @@ CLAUDE.md 模块化红线）。实现：`MahjongPotentialReward`；
 
 ## 状态（2026-08-02 更新）
 
-- **已是现役奖励**：rev3 三臂全部使用势函数系（基线/Arm A 用 `potential`，
+- **已是现役奖励**：exp1 三臂全部使用势函数系（基线/Arm A 用 `potential`，
   Arm B 用 `potential_value` = +0.3×宝牌持有项，PBRS 保证不变，见单测）。
 - `step` 仅为历史复现保留。
 - 相关扩展：起手质量协变量基线（`--covariate_baseline`，已实现默认关）、

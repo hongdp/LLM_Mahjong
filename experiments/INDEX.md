@@ -4,12 +4,12 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
-| 2026-08-01 | `v2_engine_pbrs_run_20260802_054918` | 基线（rev3）：PBRS+REINFORCE，bf16，50×12，central | ⏹ ep26 用户停跑转竞技场：格式100%全程,和牌~62%,风格迁移(立直6.6→3.1,副露49→86) | 竞技场:+1038±1876 不显著;总报告 docs/report_rev3_threearm_20260802.md |
-| 2026-08-01 | `v2_engine_ppo_run_20260802_054914` | Arm A（rev3）：PPO 消融，同基线仅换算法，east | ⏹ ep24 停跑 | 竞技场:+331±1320 不显著;打点+18% |
-| 2026-08-01 | `v2_engine_ppo_value_run_20260802_054921` | Arm B（rev3）：PPO+价值 bundle，复用 041051 价值 adapter，europe | ⏹ ep25 停跑 | 竞技场:−1475±1652 不显著;打点4424 但漏点;详见总报告 |
-| 2026-08-01 | `v2_engine_pbrs_run_20260802_041048` | PBRS+REINFORCE 基线（022840 的 infra rev2 重启，设计不变，central A100） | ⏹ epoch 1 内暂停调优，无产出；设计迁移 rev3 重启 | 见 perf_tuning_east_20260802 |
-| 2026-08-01 | `v2_engine_ppo_run_20260802_041049` | Arm A：PPO 消融——对 041048 仅换更新算法（同 adapter/奖励/seed，east A100） | ⏹ epoch 1 内暂停调优，无产出；设计迁移 rev3 重启 | 见 perf_tuning_east_20260802 |
-| 2026-08-01 | `v2_engine_ppo_value_run_20260802_041051` | Arm B：PPO+价值 bundle（Φ宝牌项 + prompt 价值事实 + 价值教师新 SFT，europe A100） | ⏹ SFT 完成(loss 0.0877, adapter 存续复用)，RL epoch 1 内暂停 | 设计迁移 rev3 重启 |
+| 2026-08-01 | `v2_engine_pbrs_run_20260802_054918` | exp1 基线：PBRS+REINFORCE，bf16，50×12，central | ⏹ ep26 用户停跑转竞技场：格式100%全程,和牌~62%,风格迁移(立直6.6→3.1,副露49→86) | 竞技场:+1038±1876 不显著;总报告 docs/report_exp1_shaping_arms_20260802.md |
+| 2026-08-01 | `v2_engine_ppo_run_20260802_054914` | exp1 Arm A：PPO 消融，同基线仅换算法，east | ⏹ ep24 停跑 | 竞技场:+331±1320 不显著;打点+18% |
+| 2026-08-01 | `v2_engine_ppo_value_run_20260802_054921` | exp1 Arm B：PPO+价值 bundle，复用 041051 价值 adapter，europe | ⏹ ep25 停跑 | 竞技场:−1475±1652 不显著;打点4424 但漏点;详见总报告 |
+| 2026-08-01 | `v2_engine_pbrs_run_20260802_041048` | PBRS+REINFORCE 基线（022840 的 infra rev2 重启，设计不变，central A100） | ⏹ epoch 1 内暂停调优，无产出；设计迁移 infra rev3 重启 | 见 perf_tuning_east_20260802 |
+| 2026-08-01 | `v2_engine_ppo_run_20260802_041049` | Arm A：PPO 消融——对 041048 仅换更新算法（同 adapter/奖励/seed，east A100） | ⏹ epoch 1 内暂停调优，无产出；设计迁移 infra rev3 重启 | 见 perf_tuning_east_20260802 |
+| 2026-08-01 | `v2_engine_ppo_value_run_20260802_041051` | Arm B：PPO+价值 bundle（Φ宝牌项 + prompt 价值事实 + 价值教师新 SFT，europe A100） | ⏹ SFT 完成(loss 0.0877, adapter 存续复用)，RL epoch 1 内暂停 | 设计迁移 infra rev3 重启 |
 | 2026-08-01 | `v2_engine_pbrs_run_20260802_022840` | PBRS 奖励 RL run（复用 005918 SFT adapter） | ⏹ epoch 1 中止（无产出）：诊断出 rollout host-launch-bound（A100 11 tok/s，GPU 18%），预计 50h/$180 | 设计原样迁移到 infra rev2 重启（fast-path 内核 + 4 局并发批量 rollout）；教训见 SKILLS.md 性能诊断节 |
 | 2026-08-01 | `v2_engine_full_run_20260802_005918` | 原实验设计迁移 GCP A100；实际只完成 SFT 阶段 | SFT 3×2000 完成，final epoch loss ≈0.105，adapter 产出 | ⏹ RL 开跑前用户叫停：step 奖励可刷分且与结算不自洽，RL 阶段改用 PBRS 奖励另起新实验（复用本次 SFT adapter，单变量对照） |
 | 2026-08-01 | `v2_engine_full_run_20260801_165312` | v2 引擎首次完整训练：忠实 CoT SFT (3ep×2000) + 50 epoch RL，Qwen3.5-2B | ⏸ 用户在 SFT 阶段主动暂停（无 checkpoint） | 实验设计迁移至 GCP VM 继续（见 docs/handoff_gcp_phase1.md），成功标准原样继承 |

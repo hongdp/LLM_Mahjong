@@ -1,7 +1,7 @@
 # v2_engine_pbrs_run_20260802_054918
 
 - **Date**: 2026-08-01 22:49 (05:49 UTC 08-02)  **Status**: stopped by user at epoch 26/50 (2026-08-02 ~11:30 local) — style migration already pronounced (riichi halved, melds +75% fleet-wide); arena evaluation prioritized over completing 50 epochs. All checkpoints + logs preserved to GCS. Final checkpoint = checkpoint_epoch_26.
-- **Infra rev2→3 (see rev3 note)** (non-semantic, all three concurrent runs share it): torch 2.12.1+cu129, Qwen3.5 fast-path kernels ACTIVE (flash-linear-attention 0.5.2 + causal-conv1d 1.6.2 source-built), batched parallel rollout `parallel_games=4` (scheduler unit-tested; measured aggregate decode scaling 6-9× on A100). Game semantics identical to the sequential path.
+- **Infra rev2→3** (non-semantic, all three concurrent runs share it): torch 2.12.1+cu129, Qwen3.5 fast-path kernels ACTIVE (flash-linear-attention 0.5.2 + causal-conv1d 1.6.2 source-built), batched parallel rollout `parallel_games=4` (scheduler unit-tested; measured aggregate decode scaling 6-9× on A100). Game semantics identical to the sequential path.
 - **Design change vs v2_engine_full_run**: single variable — RL step shaping switched from `MahjongStepReward` (absolute scores, farmable, inconsistent with settlement) to **`MahjongPotentialReward`** (energy-consistent PBRS; see docs/reward_energy_pbrs.md). User-approved mid-flight switch: the predecessor run `v2_engine_full_run_20260802_005918` was stopped at SFT-complete/RL-not-started, and its SFT adapter is loaded verbatim (`peft_model_path` + `sft_epochs=0`), so the SFT stage is bit-identical by construction.
 - **Reward math**: Φ(h) = −2.0·shanten + 0.05·|ukeire|; F_i = γψ_i − ψ_{i−1}; terminal energy := 0. Discounted shaping telescopes to −Φ(initial hand) ⇒ shaped return = settlement return + deal constant: cannot be farmed, optimal policy invariant (Ng et al. 1999). Format −10 / ghost-tile −5 stay as constraint terms. 6 unit tests green (`tests/test_potential_reward.py`).
 - **Git**: local commit pending (rewards/task/trainer + configs/v2_pbrs_run.json); code rsynced to VM and import-verified before launch.
@@ -71,9 +71,9 @@ the SFT stage only. This run becomes the PBRS baseline.
 
 ## Final Results（2026-08-02 竞技场裁决）
 - 竞技场（复式32副×双向,vs SFT 锚,原始点数）: **+1038 ± 1876（27:18）** — 方向正但不显著
-- 完整三臂分析: docs/report_rev3_threearm_20260802.md
+- 完整三臂分析: docs/report_exp1_shaping_arms_20260802.md
 
 ## Conclusion
 ~600 局 RL 未产生统计可辨强度变化;PBRS 密集塑形主导了行为迁移(立直↓副露↑)。
 成功标准: #1 格式 ✅ 全程100% | #2 奖励趋势(已注记为强度盲指标) | #3 和牌局 ✅ 远超10% | #4 checkpoint 规则 ✅。
-后继: rev4 settlement-vs-potential 对决(docs/report_rev3_threearm_20260802.md 提案)。
+后继: exp2 settlement-vs-PBRS 对决(docs/report_exp1_shaping_arms_20260802.md 提案)。
