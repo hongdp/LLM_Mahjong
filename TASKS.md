@@ -1,18 +1,20 @@
 # 任务看板
 
 > 由 Claude 在每个里程碑同步。会话内的实时状态在 Claude Code 任务面板；本文件是持久快照。
-> 最后更新：2026-08-02 00:20（本地）
+> 最后更新：2026-08-07（本地）
 
 ## 🏃 进行中
 
-（无——全部计划任务完成，三台 VM 已按常设指令关闭）
+| 任务 | 状态 |
+|---|---|
+| **exp2_settlement_vs_pbrs 双臂**（settlement vs PBRS，单变量；PPO + ref-KL 0.05 + γ0.995，50×12，seed 42） | 两台 DWS flex-start 临时机（mahjong-flex-s/us-central1-b、mahjong-flex-p/us-east1-b）epoch 16/50，格式 100%，~30min/epoch；结束后自动上传 GCS + 自毁 |
+| 赛后自主流水线 | 已编排：双臂完成 → 短时 GPU 跑竞技场 ×3（S vs P 主判据、各 vs SFT 锚点，64 副复式）→ 报告 → 通知 → 全关 |
 
 ## ⏳ 待命（等用户拍板）
 
 | 提案 | 依据 |
 |---|---|
-| **exp2「settlement vs PBRS」双臂对决** | 塑形主导学习方向的完整证据链（总报告）；settlement 模式已实现测试 |
-| Ref-KL 锚 | PPO 臂格式侵蚀实证 |
+| ~~exp2「settlement vs PBRS」双臂对决~~ → **已立项开跑**（2026-08-07，含 ref-KL 锚） | 见「进行中」 |
 | Critic value head | 方差分解：起手仅解释 2%，98% 在中盘状态 |
 | v3 模板捆绑（真值表/自家牌河/短think） | think 审计 6-11% vs 教师 100% |
 
