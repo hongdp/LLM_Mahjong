@@ -16,7 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 from src.core.registry import get_task
 from src.core.rollout import ReplayBuffer
 from src.core.chat_format import visible_text, render_sft_texts
-from src.core.ppo import ppo_clip_loss
+from src.core.ppo import ppo_clip_loss, kl_ref_penalty
 import src.tasks.mahjong.task
 
 def parse_args():
@@ -107,6 +107,16 @@ def parse_args():
         "--parallel_games", type=int, default=1,
         help="Concurrent games per rollout with batched generation "
              "(1 = legacy sequential path)."
+    )
+    parser.add_argument(
+        "--ref_kl_coef", type=float, default=0.0,
+        help="PPO only: k3 KL penalty toward the frozen SFT reference "
+             "adapter (loaded as adapter 'ref' from --peft_model_path). "
+             "0 disables. Bounds cumulative generation-style drift (exp1)."
+    )
+    parser.add_argument(
+        "--gamma", type=float, default=0.99,
+        help="Discount for return-to-go AND the PBRS potential chain."
     )
     parser.add_argument(
         "--covariate_baseline", action="store_true",
@@ -216,7 +226,7 @@ def ppo_update(model, tokenizer, samples, optimizer, device, args):
             "adv": max(-5.0, min(5.0, s["advantage"])),
         })
 
-    losses, advs, clip_fracs = [], [], []
+    losses, advs, clip_fracs, ref_kls = [], [], [], []
     last_kl, passes = 0.0, 0
     order = list(range(len(encoded)))
     stop = False
@@ -258,6 +268,19 @@ def ppo_update(model, tokenizer, samples, optimizer, device, args):
 
             loss, stats = ppo_clip_loss(new_lp, old_lp, advantages, mask,
                                         clip_eps=args.clip_eps)
+            if args.ref_kl_coef > 0:
+                with torch.no_grad():
+                    model.set_adapter("ref")
+                    ref_logits = model(input_ids=input_ids,
+                                       attention_mask=attn).logits[:, :-1, :]
+                    model.set_adapter("default")
+                    ref_ce = torch.nn.functional.cross_entropy(
+                        ref_logits.reshape(-1, ref_logits.size(-1)),
+                        labels.reshape(-1), reduction="none")
+                    ref_lp = -ref_ce.view(labels.shape).float()
+                refkl = kl_ref_penalty(new_lp, ref_lp, mask)
+                loss = loss + args.ref_kl_coef * refkl
+                stats["ref_kl"] = refkl.item()
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -267,6 +290,8 @@ def ppo_update(model, tokenizer, samples, optimizer, device, args):
             advs.append(advantages.mean().item())
             clip_fracs.append(stats["clip_frac"])
             pass_kls.append(stats["approx_kl"])
+            if "ref_kl" in stats:
+                ref_kls.append(stats["ref_kl"])
 
         passes += 1
         last_kl = sum(pass_kls) / max(len(pass_kls), 1)
@@ -283,6 +308,7 @@ def ppo_update(model, tokenizer, samples, optimizer, device, args):
         "approx_kl": last_kl,
         "clip_frac": sum(clip_fracs) / max(len(clip_fracs), 1),
         "passes": passes,
+        "ref_kl": sum(ref_kls) / max(len(ref_kls), 1) if ref_kls else 0.0,
     }
 
 
@@ -338,6 +364,10 @@ def main():
             from peft import PeftModel
             print(f"Loading PEFT adapter from {args.peft_model_path}...")
             model = PeftModel.from_pretrained(model, args.peft_model_path, is_trainable=True)
+            if args.ref_kl_coef > 0:
+                model.load_adapter(args.peft_model_path, adapter_name="ref")
+                model.set_adapter("default")
+                print(f"⚓ ref-KL anchor: frozen SFT reference loaded (coef {args.ref_kl_coef})")
         else:
             # Explicit target_modules: new architectures (e.g. qwen3_5) have
             # no default mapping in peft yet; these names cover all Qwen
@@ -360,6 +390,7 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     task = get_task(args.task, device=device, reward_model=args.reward_model,
+                    gamma=args.gamma,
                     value_facts=args.value_facts,
                     parallel_games=args.parallel_games,
                     covariate_baseline=args.covariate_baseline)
@@ -603,6 +634,8 @@ def main():
             writer.add_scalar("rl/approx_kl", ppo_stats["approx_kl"], epoch)
             writer.add_scalar("rl/clip_frac", ppo_stats["clip_frac"], epoch)
             writer.add_scalar("rl/ppo_passes", ppo_stats["passes"], epoch)
+            if ppo_stats.get("ref_kl"):
+                writer.add_scalar("rl/ref_kl", ppo_stats["ref_kl"], epoch)
             epoch_losses.append(avg_loss)
             epoch_advs.append(avg_adv)
 

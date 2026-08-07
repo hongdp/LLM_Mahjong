@@ -20,7 +20,9 @@ class MahjongTask(BaseTask):
         if name not in REWARD_MODELS:
             raise ValueError(f"Unknown reward_model '{name}'. "
                              f"Available: {list(REWARD_MODELS)}")
-        self.step_reward_model = REWARD_MODELS[name](device=self.device)
+        self.gamma = float(kwargs.get('gamma', 0.99))
+        self.step_reward_model = REWARD_MODELS[name](device=self.device,
+                                                     gamma=self.gamma)
         print(f"🏅 Reward model: {name} ({type(self.step_reward_model).__name__})")
         # Prompt template variant: computed value facts (自家宝牌 line).
         # Must match the template the SFT adapter was trained on.
@@ -65,7 +67,7 @@ class MahjongTask(BaseTask):
                                    value_facts=self.value_facts,
                                    randomize_round=self.randomize_round)
         
-        buffer = ReplayBuffer(gamma=0.99)
+        buffer = ReplayBuffer(gamma=self.gamma)
         
         # We need to apply our Step-level heuristic rewards to the raw trajectory steps 
         # (since table engine only gave sparse rewards or basic XML validation)

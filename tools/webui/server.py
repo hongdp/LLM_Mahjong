@@ -32,6 +32,8 @@ VM_EXP_ROOT = "LLM_Mahjong/experiments"
 # Experiment-name prefix -> ssh host alias (longest prefix wins; VM_HOST is
 # the fallback). Three concurrent A100 runs live on three VMs.
 VM_HOSTS = {
+    "exp2_settlement": "mahjong-flex-s.us-central1-b.workstation-185016",
+    "exp2_pbrs": "mahjong-flex-p.us-east1-b.workstation-185016",
     "v2_engine_ppo_value_run": "mahjong-a100-b.europe-west4-a.workstation-185016",
     "v2_engine_ppo_run": "mahjong-a100-e.us-east1-b.workstation-185016",
     "tune_": "mahjong-a100-e.us-east1-b.workstation-185016",

@@ -7,17 +7,28 @@
 #     'nohup bash LLM_Mahjong/scripts/phase1_ce/run_training.sh > train_nohup.log 2>&1 & disown'
 set -uo pipefail
 
-# Belt-and-braces: whatever path exits this script (bootstrap failure, crash,
-# normal completion), the VM powers off so it never idles on the meter.
-trap 'echo "[shutdown] EXIT trap — powering off"; sudo shutdown -h now' EXIT
-
 REPO="$HOME/LLM_Mahjong"
 CONFIG="${1:-configs/v2_full_run.json}"   # pass a config path as $1 to override
 export PYTHONUNBUFFERED=1   # stream prints to the nohup log in real time
 VENV="$HOME/venvs/rlhf"
 GCS_BUCKET="gs://llm-mahjong-experiments"
 
+# Belt-and-braces: whatever path exits this script (bootstrap failure, crash,
+# normal completion), the VM powers off so it never idles on the meter.
+# On flex-start VMs poweroff => DELETE, so salvage the log to GCS first —
+# a bootstrap failure would otherwise vanish without a trace.
+trap 'echo "[shutdown] EXIT trap — salvaging log, powering off";
+      gsutil cp "$HOME/train_nohup.log" "$GCS_BUCKET/orphan_logs/$(hostname)_train_nohup.log" 2>/dev/null || true;
+      sudo shutdown -h now' EXIT
+
 cd "$REPO"
+
+# --- wait for the NVIDIA driver (first boot installs it asynchronously) ---
+for i in $(seq 1 60); do
+    nvidia-smi &>/dev/null && break
+    echo "[bootstrap] waiting for NVIDIA driver ($i/60)..."; sleep 20
+done
+nvidia-smi &>/dev/null || { echo "[bootstrap] FATAL: driver never came up"; exit 1; }
 
 # --- one-time environment bootstrap (idempotent) -------------------------
 if [ ! -f "$VENV/bin/activate" ]; then
@@ -29,6 +40,21 @@ if [ ! -f "$VENV/bin/activate" ]; then
     pip install --no-cache-dir -r scripts/phase1_ce/requirements_pinned.txt || exit 1
 else
     source "$VENV/bin/activate"
+fi
+# Fast-path kernel: prebuilt causal-conv1d (matches torch 2.12.1+cu129, py3.10);
+# untar into site-packages — avoids a ~10min source build on every ephemeral VM.
+if ! python -c "import causal_conv1d" 2>/dev/null; then
+    SITE=$(python -c "import site; print(site.getsitepackages()[0])")
+    gsutil cp "$GCS_BUCKET/_infra/cc1d_pkg_torch2121cu129_py310.tgz" /tmp/cc1d.tgz \
+        && tar xzf /tmp/cc1d.tgz -C "$SITE" && rm /tmp/cc1d.tgz
+    python -c "import causal_conv1d; print('causal-conv1d OK')" || echo "[bootstrap] WARN: cc1d unavailable, falling back to eager path"
+fi
+# SFT anchor: RL-only configs load a frozen adapter; pull it from GCS if absent.
+ANCHOR="experiments/v2_engine_full_run_20260802_005918/checkpoints_sft_warmup_mahjong"
+if [ ! -f "$ANCHOR/adapter_model.safetensors" ]; then
+    echo "[bootstrap] pulling SFT anchor from GCS..."
+    mkdir -p "$ANCHOR"
+    gsutil -m rsync -r "$GCS_BUCKET/v2_engine_full_run_20260802_005918/checkpoints_sft_warmup_mahjong" "$ANCHOR" || exit 1
 fi
 python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'; print('GPU:', torch.cuda.get_device_name(0))" || exit 1
 

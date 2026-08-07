@@ -4,8 +4,11 @@
 set -euo pipefail
 
 # Overridable for multi-VM experiments: VM_NAME=mahjong-a100-e ZONE=us-east1-b bash start_vm.sh
-# NOTE: A100 quota is 1 GPU per REGION — concurrent runs need different regions.
+# PROVISIONING=flex (default per docs/gcp_compute_cost_and_quota.md): DWS flex-start,
+#   -45% cost, no preemption within max-run-duration, DELETE on termination (ephemeral!).
+# PROVISIONING=ondemand: legacy standard VM (1 A100/region quota cap).
 PROJECT_ID="workstation-185016"
+PROVISIONING="${PROVISIONING:-flex}"
 ZONE="${ZONE:-us-central1-b}"   # -a was STOCKOUT on 2026-08-01; capacity reported in -b, -f
 VM_NAME="${VM_NAME:-mahjong-a100}"
 MACHINE_TYPE="a2-highgpu-1g"
@@ -28,6 +31,7 @@ else
         --boot-disk-type=pd-balanced \
         --maintenance-policy=TERMINATE \
         --scopes=storage-rw,logging-write,monitoring-write,pubsub,trace \
+        $( [ "$PROVISIONING" = flex ] && echo "--provisioning-model=FLEX_START --instance-termination-action=DELETE --max-run-duration=36h --request-valid-for-duration=2h" ) \
         --metadata="install-nvidia-driver=True"
 fi
 

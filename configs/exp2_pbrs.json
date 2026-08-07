@@ -1,0 +1,23 @@
+{
+    "model_name": "Qwen/Qwen3.5-2B",
+    "task": "mahjong",
+    "use_qlora": false,
+    "bf16_lora": true,
+    "batch_size": 4,
+    "num_episodes": 12,
+    "epochs": 50,
+    "learning_rate": 1e-06,
+    "training_phase": 2,
+    "sft_epochs": 0,
+    "peft_model_path": "experiments/v2_engine_full_run_20260802_005918/checkpoints_sft_warmup_mahjong",
+    "rl_algo": "ppo",
+    "clip_eps": 0.2,
+    "ppo_epochs": 3,
+    "target_kl": 0.03,
+    "ref_kl_coef": 0.05,
+    "gamma": 0.995,
+    "min_format_rate": 0.3,
+    "parallel_games": 12,
+    "reward_model": "potential",
+    "exp_name": "exp2_pbrs"
+}

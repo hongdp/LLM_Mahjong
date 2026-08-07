@@ -46,3 +46,16 @@ def ppo_clip_loss(new_logprobs: torch.Tensor,
         clip_frac = ((torch.abs(ratio - 1.0) > clip_eps).float() * mask).sum() / denom
 
     return loss, {"approx_kl": approx_kl.item(), "clip_frac": clip_frac.item()}
+
+
+def kl_ref_penalty(new_logprobs: torch.Tensor,
+                   ref_logprobs: torch.Tensor,
+                   mask: torch.Tensor) -> torch.Tensor:
+    """k3 estimator of KL(pi_new || pi_ref) on the taken tokens:
+        k3 = exp(ref - new) - (ref - new) - 1  >= 0, unbiased, low-variance.
+    Returns the token-mean over the mask (differentiable through new_logprobs).
+    Motivation (exp1): PPO sample reuse slowly erodes format via generation-
+    style drift; anchoring to the SFT reference bounds cumulative drift."""
+    d = (ref_logprobs - new_logprobs) * mask
+    k3 = (torch.exp(d) - d - 1.0) * mask
+    return k3.sum() / mask.sum().clamp(min=1.0)
