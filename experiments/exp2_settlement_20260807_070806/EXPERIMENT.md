@@ -1,6 +1,6 @@
 # exp2_settlement_20260807_070806
 
-- **Date**: 2026-08-06  **Status**: running
+- **Date**: 2026-08-07 启动  **Status**: training complete（2026-08-08 09:33 UTC, exit 0）；竞技场判据执行中（exp2_arena_20260808_1050）
 - **Series**: exp2_settlement_vs_pbrs, Arm S（本臂）。对照臂：exp2_pbrs（另一台 VM，同日启动）。
 - **单变量设计**: 两臂唯一差异 = `reward_model`（S: `settlement`，P: `potential`）。其余完全一致：PPO(ε0.2/3passes/target_kl 0.03) + **ref-KL 锚 k3, coef 0.05**（exp1 新发现的 PPO 格式侵蚀 100%→97.5% 的对策）+ γ=0.995 + 50 epochs × 12 局并行 rollout + batch 4 + lr 1e-6 + seed 42 + 同一 SFT 锚点。
 - **动机（exp1 报告 docs/report_exp1_shaping_arms_20260802.md）**: PBRS 的策略不变性是渐近保证；有限样本下稠密塑形通道支配学习方向 → 全舰队风格迁移（立直减半、副露 +75%）而竞技场强度零显著增益。本实验检验：去掉稠密通道、只留诚实的稀疏结算信号，PPO 能否学到竞技场可测的强度。
@@ -31,10 +31,18 @@ RL-only PPO：50 epochs × 12 并行自对弈局；行为对数概率取自 raw 
 5. **Checkpoint 规则**: top-3 保留照旧；**竞技场用最终 epoch checkpoint**（Arm S 的 avg_episode_reward 零和无意义，"best-by-reward" 不适用）。
 
 ## Progress
-- [2026-08-07 07:08 UTC] Launched on flex-start VM mahjong-flex-s（us-central1-b）。
+- [2026-08-07 07:08 UTC] Launched on flex-start VM mahjong-flex-s（us-central1-b）。flex 队列几乎即时给容量。
+- [2026-08-08 09:33 UTC] 50/50 epochs 完成，exit 0；GCS 全量归档后 VM 自动关机，实例已删除。
+- [2026-08-08 ~10:55 UTC] 竞技场三连在 mahjong-flex-a 启动（exp2_arena_20260808_1050）。
 
-## Results
-(pending)
+## Results（训练侧；竞技场 pending）
+| 预注册判据 | 结果 |
+|---|---|
+| #1 格式 ≥0.95 达 45/50 | ✅ **50/50 epochs**，min 99.89%，last10 均值 100%；H2（ref-KL 钉 ≥0.99）成立 |
+| #4 风格探针 | 初值（粗计，末 5 epochs 60 局）：riichi 453 / meld 590 / 和牌局占比 ~72%；精算入总报告 |
+| #2/#3 竞技场 | pending（exp2_arena_20260808_1050） |
+
+训练动力学：rl/approx_kl ~0.0007 恒低（PPO 3 passes 从未早停）；rl/clip_frac ~0.3%；**rl/ref_kl 末 10 epochs 均值 0.023（max 0.030）** —— 对照 P 臂 0.102（5×），稀疏结算下策略贴着参考走。avg_episode_reward 全程 ≈0（−0.30→−0.13，零和 + 少量约束罚），与预注册的「非学习信号」声明一致。
 
 ## Conclusion
 (pending)

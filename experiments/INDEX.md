@@ -23,3 +23,4 @@
 | 2026-08-06 | `exp2_smoke_20260806_232343` | exp2 发射前基建冒烟：settlement reward + PPO + ref-KL 锚 + γ0.995 端到端 | ref_kl 0.0016 / ppo_passes 3 / format 100% / 退出码 0 | ✅ 通过；4080 需 batch 1（bf16 PPO 更新 OOM 边界）；产物不复用 |
 | 2026-08-07 | `exp2_settlement_20260807_070806` | exp2 双臂主臂：纯结算奖励 + PPO + ref-KL 0.05 + γ0.995，50×12，flex-start 临时机 | running（判据=竞技场 S vs P） | — |
 | 2026-08-07 | `exp2_pbrs_20260807_065729` | exp2 对照臂：PBRS 奖励，其余与主臂全同（单变量） | running | — |
+| 2026-08-08 | `exp2_arena_20260808_1050` | exp2 主判据执行：S vs P / S vs 锚 / P vs 锚，各 64 副复式（seed0 同 exp1） | running | — |
