@@ -146,3 +146,15 @@ CPU 配额时，Spot VM 直接消耗标准配额（`CPUS`=200、`A2_CPUS`=12）�
 - [Create flex-start VMs](https://docs.cloud.google.com/compute/docs/instances/create-flex-start-vm)
 - [DWS 概念（GKE 文档，折扣说明最完整）](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/dws)
 - 价格数据：Cloud Billing Catalog API，service `6F81-5844-456A`，2026-08-02 拉取
+
+
+## 配额提升（2026-08-09，Cloud Quotas API 即时批准）
+| 配额 | us-central1 | us-east1 | europe-west4 |
+|---|---|---|---|
+| A2_CPUS | 12→**48** | 12→**48** | 12→**24** |
+| NVIDIA_A100_GPUS（按需） | 1→**4** | 1→**4** | 1→**2** |
+
+- 效果：每个美区可并发 **4 台** a2-highgpu-1g（原 1 台），三区合计上限 10 台；多臂实验不再被迫跨区分布。
+- PREEMPTIBLE_NVIDIA_A100_GPUS 维持 16/区（flex-start 抽此额度，A2_CPUS 才是真闸门——现已放宽）。
+- A100 80GB 配额仍为 0；若未来大 batch SFT 需要（40GB 上 batch 8 OOM 实录见 exp3），另行申请 `NVIDIA-A100-80GB-GPUS-per-project-region`。
+- 申请方式：`gcloud alpha quotas preferences create --service=compute.googleapis.com --quota-id=... --preferred-value=N --dimensions=region=...`（不带位置参数名；本次全部秒批）。
