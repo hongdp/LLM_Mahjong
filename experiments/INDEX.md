@@ -25,3 +25,5 @@
 | 2026-08-07 | `exp2_pbrs_20260807_065729` | exp2 对照臂：PBRS 奖励，其余与主臂全同（单变量） | 50/50 clean；vs 锚 +511±1774 无差异；ref_kl 5× S 臂 | ✅ 完成；PBRS 奖励曲线与强度脱钩再确认 |
 | 2026-08-08 | `exp2_arena_20260808_1050` | exp2 主判据执行：S vs P / S vs 锚 / P vs 锚，各 64 副复式（seed0 同 exp1） | 三场全 null（CI ±1500-1800） | ✅ 完成；报告 docs/report_exp2_settlement_vs_pbrs_20260809.md |
 | 2026-08-09 | `exp3_nothink`（预注册总纲 exp3_nothink_PREREG.md） | think 消融：配对语料（教师动作 100% 一致）双 SFT + 同 seed 48 局速度/质量对比 | pre-registered | 判据：≥2× 提速且质量差 <10pp → no-think 成 v3 默认 |
+| 2026-08-09 | `exp3_sft_think_20260809_072304` / `exp3_sft_nothink_20260809_073440` | 配对语料双 SFT（post-audit 引擎，11390×2，教师动作一致） | loss 0.080 / 0.070，锚点各产出 | ✅ exp3 阶段 1-2 |
+| 2026-08-09 | `exp3_probe_think_20260809_074227` / `exp3_probe_nothink_20260809_084310` | 同 seed 48 局 ×24 并发速度/质量探针 | 60.7 vs 63.2min；质量完全一致 | ✅ exp3 判定：速度不达标 → 保留 think；风格 5× 敏感度副产品 |
