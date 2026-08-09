@@ -94,5 +94,7 @@
 *(End of SKILLS.md. Append new learnings below this line in the future.)*
 
 ## 运维教训（Ops Lessons）
+- **老机退役标准流程（2026-08-09 三台 8-01 on-demand 机执行）**：停机不删 = 每台 200GB 盘 ~$20/月白烧 + 名字占坑（曾致创建静默失败）+ flex 机停机即废（不可重启）。退役流程：卸引导盘 → 同区临时 e2 只读挂载（`mount -o ro,noload`，选**最大**分区——云镜像有 BIOS/EFI 小分区，取「最后一个」会挂错）→ 盘上 experiments+日志 tar 流式上传 `_salvage/` → **回读 manifest 非空才放行删除** → 删临时机/实例/盘。三台共抢救 725MB（$0.015/月）换掉 $60/月。
+
 - **临时机（DELETE-on-termination）把每个脚本错误都放大成整机自毁**：exp2 竞技场两次「启动即死」（① `gsutil rsync` 不自动创建本地目标子目录，与 `cp -r` 不同；② `python scripts/xxx.py` 的 sys.path[0] 是脚本目录，`import src` 必须 `PYTHONPATH=仓库根`——训练用 `python -m` 从未暴露）。对策已固化：EXIT trap 先抢救日志到 GCS orphan_logs 再关机；发射脚本内置 preflight import/CUDA 检查，败在第一场比赛之前；发射后必须亲眼确认第一步实质进展（preflight OK + 首场开打），不能只看进程存在。
 - **多步脚本禁止无条件成功标记**：旧竞技场脚本三场全败仍打 ARENA_ALL_DONE。成功标记必须由每步退出码聚合决定（FAILED 标志位），否则监控把失败当完赛。
