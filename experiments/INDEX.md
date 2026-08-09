@@ -27,3 +27,4 @@
 | 2026-08-09 | `exp3_nothink`（预注册总纲 exp3_nothink_PREREG.md） | think 消融：配对语料（教师动作 100% 一致）双 SFT + 同 seed 48 局速度/质量对比 | pre-registered | 判据：≥2× 提速且质量差 <10pp → no-think 成 v3 默认 |
 | 2026-08-09 | `exp3_sft_think_20260809_072304` / `exp3_sft_nothink_20260809_073440` | 配对语料双 SFT（post-audit 引擎，11390×2，教师动作一致） | loss 0.080 / 0.070，锚点各产出 | ✅ exp3 阶段 1-2 |
 | 2026-08-09 | `exp3_probe_think_20260809_074227` / `exp3_probe_nothink_20260809_084310` | 同 seed 48 局 ×24 并发速度/质量探针 | 60.7 vs 63.2min；质量完全一致 | ✅ exp3 判定：速度不达标 → 保留 think；风格 5× 敏感度副产品 |
+| 2026-08-09 | `exp4_critic_20260809_103720` | critic value head vs exp2-S 对照（单变量 use_critic；checkpoint_every 10 阶梯赛） | running | 判据：explained_var>0.2 门槛 / 方差降幅 / 竞技场 |
