@@ -1,6 +1,6 @@
 # exp2_arena_20260808_1050
 
-- **Date**: 2026-08-08  **Status**: running  **类型**: 评估 run（exp2_settlement_vs_pbrs 的预注册主判据执行）
+- **Date**: 2026-08-08  **Status**: complete（三场 exit 0，2026-08-09）  **类型**: 评估 run（exp2_settlement_vs_pbrs 的预注册主判据执行）
 - **判据出处**: 两臂 EXPERIMENT.md（exp2_settlement_20260807_070806 / exp2_pbrs_20260807_065729）Success Criteria #2/#3 —— 本 run 只是执行，不新增判据。
 - **对局**: 3 场，各 64 副复式对局牌（duplicate deals，seed0=20260802 与 exp1 竞技场同一副牌集）× 双方向 2v2 对角座位，RAW 终局点数配对差分 + 95% CI：
   1. **s_vs_p**（主判据）：S 臂 checkpoint_epoch_50 vs P 臂 checkpoint_epoch_50
@@ -17,7 +17,18 @@
 - [2026-08-08 ~10:50 UTC] 预注册完成，VM 创建中。
 
 ## Results
-(pending)
+| 对局 | 配对差分 | 95% CI | 局数比 | 判定 |
+|---|---|---|---|---|
+| S vs P（主） | −183 | ±1591 | 54:45 | 无显著差异 |
+| S vs 锚点 | −27 | ±1480 | 44:46 | 无显著差异 |
+| P vs 锚点 | +511 | ±1774 | 59:42 | 无显著差异 |
 
 ## Conclusion
-(pending)
+三场全 null（预注册判定表的「含 0 → 无差异」分支）：奖励设计在当前方差水平下不可区分，
+证据链（方差分解 2% + CI ±1500-1800）指向 critic value head。报告：
+docs/report_exp2_settlement_vs_pbrs_20260809.md。第三次发射一次通过（preflight 机制生效）。
+
+## Retry 记录
+- 第一次发射（~10:55 UTC）在 adapter 拉取阶段失败自毁：`gsutil rsync` 要求本地目标子目录预先存在，脚本只 mkdir 了父目录 → exit 2 → EXIT trap 关机。日志经 orphan_logs 抢救确认根因。工件无损，浪费一次 VM 启动（分钟级计费）。
+- 修复（mkdir 精确目标子目录）后重建 flex-a 重发成功。教训：**gsutil rsync 的本地目的地不会自动创建**——与 `cp -r` 行为不同。
+- 第二次发射同样自毁：`python scripts/run_arena.py` 的 `sys.path[0]` 是 scripts/ 而非仓库根 → `import src` 失败（训练路径用 `python -m src.core.trainer`，从未暴露此问题）。且旧脚本在三场全败后仍打印 ARENA_ALL_DONE（假成功）。修复：`export PYTHONPATH=$HOME/LLM_Mahjong` + 发射前 preflight import 检查 + 任一场失败改打 ARENA_FAILED。第三次发射 preflight OK，s_vs_p 正常开场。

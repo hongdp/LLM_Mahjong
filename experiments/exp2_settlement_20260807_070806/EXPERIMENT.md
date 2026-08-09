@@ -1,6 +1,6 @@
 # exp2_settlement_20260807_070806
 
-- **Date**: 2026-08-07 启动  **Status**: training complete（2026-08-08 09:33 UTC, exit 0）；竞技场判据执行中（exp2_arena_20260808_1050）
+- **Date**: 2026-08-07 启动  **Status**: complete（竞技场三场全 null，2026-08-09 判定；见 Conclusion）
 - **Series**: exp2_settlement_vs_pbrs, Arm S（本臂）。对照臂：exp2_pbrs（另一台 VM，同日启动）。
 - **单变量设计**: 两臂唯一差异 = `reward_model`（S: `settlement`，P: `potential`）。其余完全一致：PPO(ε0.2/3passes/target_kl 0.03) + **ref-KL 锚 k3, coef 0.05**（exp1 新发现的 PPO 格式侵蚀 100%→97.5% 的对策）+ γ=0.995 + 50 epochs × 12 局并行 rollout + batch 4 + lr 1e-6 + seed 42 + 同一 SFT 锚点。
 - **动机（exp1 报告 docs/report_exp1_shaping_arms_20260802.md）**: PBRS 的策略不变性是渐近保证；有限样本下稠密塑形通道支配学习方向 → 全舰队风格迁移（立直减半、副露 +75%）而竞技场强度零显著增益。本实验检验：去掉稠密通道、只留诚实的稀疏结算信号，PPO 能否学到竞技场可测的强度。
@@ -45,7 +45,11 @@ RL-only PPO：50 epochs × 12 并行自对弈局；行为对数概率取自 raw 
 训练动力学：rl/approx_kl ~0.0007 恒低（PPO 3 passes 从未早停）；rl/clip_frac ~0.3%；**rl/ref_kl 末 10 epochs 均值 0.023（max 0.030）** —— 对照 P 臂 0.102（5×），稀疏结算下策略贴着参考走。avg_episode_reward 全程 ≈0（−0.30→−0.13，零和 + 少量约束罚），与预注册的「非学习信号」声明一致。
 
 ## Conclusion
-(pending)
+竞技场判定（预注册判据）：S vs P 无显著差异（−183±1591），S vs 锚点无显著差异（−27±1480）。
+H1 部分成立（不弱于 PBRS）但无绝对强度增益；H2 成立（格式 100%）；H3 证伪——S 臂在稀疏信号下
+反而长出极端副露风格（6.02 副露/局 vs P 臂 1.90），且 token 级 ref-KL 极低（0.023）说明该锚
+不约束行为分布。完整分析见 docs/report_exp2_settlement_vs_pbrs_20260809.md。结论：奖励设计
+不是当前瓶颈，转投 critic value head。
 
 ## Next Steps
 - 竞技场 ×3（S vs P 主判据；各 vs 锚点）— flex 机自毁后另起短时 GPU 跑。

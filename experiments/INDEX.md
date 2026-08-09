@@ -21,7 +21,7 @@
 | 2026-05-17 | `baseline_local_run_20260517_034738`（补录） | 加载已有 SFT adapter 跳过 warm-up 直接 RL | rollout 中 ~91% 输出无 action 标签（122/134 fallback 为 skip），RL 在垃圾数据上训练 | ❌ 失败：`peft_model_path` 误指向 config_test_run 的 1-epoch 弱 adapter；2026-08 已修正配置 |
 | 2026-05-17 | `config_test_run`（补录，无时间戳） | 配置系统冒烟测试（1 epoch，1 episode，1 SFT epoch） | 管线可跑通；产出的 1-epoch SFT adapter 格式能力不足 | 冒烟通过；其 adapter 不可用于正式 RL（教训：冒烟产物勿当训练资产复用） |
 | 2026-08-06 | `exp2_smoke_20260806_232343` | exp2 发射前基建冒烟：settlement reward + PPO + ref-KL 锚 + γ0.995 端到端 | ref_kl 0.0016 / ppo_passes 3 / format 100% / 退出码 0 | ✅ 通过；4080 需 batch 1（bf16 PPO 更新 OOM 边界）；产物不复用 |
-| 2026-08-07 | `exp2_settlement_20260807_070806` | exp2 双臂主臂：纯结算奖励 + PPO + ref-KL 0.05 + γ0.995，50×12，flex-start 临时机 | running（判据=竞技场 S vs P） | — |
-| 2026-08-07 | `exp2_pbrs_20260807_065729` | exp2 对照臂：PBRS 奖励，其余与主臂全同（单变量） | running | — |
-| 2026-08-08 | `exp2_arena_20260808_1050` | exp2 主判据执行：S vs P / S vs 锚 / P vs 锚，各 64 副复式（seed0 同 exp1） | running | — |
+| 2026-08-07 | `exp2_settlement_20260807_070806` | exp2 双臂主臂：纯结算奖励 + PPO + ref-KL 0.05 + γ0.995，50×12，flex-start 临时机 | 50/50 clean；竞技场 S vs P 无差异（−183±1591） | ✅ 完成；H3 证伪：稀疏信号下副露 6.02/局 极端迁移 |
+| 2026-08-07 | `exp2_pbrs_20260807_065729` | exp2 对照臂：PBRS 奖励，其余与主臂全同（单变量） | 50/50 clean；vs 锚 +511±1774 无差异；ref_kl 5× S 臂 | ✅ 完成；PBRS 奖励曲线与强度脱钩再确认 |
+| 2026-08-08 | `exp2_arena_20260808_1050` | exp2 主判据执行：S vs P / S vs 锚 / P vs 锚，各 64 副复式（seed0 同 exp1） | 三场全 null（CI ±1500-1800） | ✅ 完成；报告 docs/report_exp2_settlement_vs_pbrs_20260809.md |
 | 2026-08-09 | `exp3_nothink`（预注册总纲 exp3_nothink_PREREG.md） | think 消融：配对语料（教师动作 100% 一致）双 SFT + 同 seed 48 局速度/质量对比 | pre-registered | 判据：≥2× 提速且质量差 <10pp → no-think 成 v3 默认 |
