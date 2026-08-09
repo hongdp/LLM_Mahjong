@@ -6,7 +6,7 @@
     "seed": 42,
     "sft_epochs": 3,
     "sft_max_samples": 2000,
-    "sft_batch_size": 8,
+    "sft_batch_size": 4,
     "sft_learning_rate": 0.0001,
     "epochs": 0,
     "training_phase": 2,
