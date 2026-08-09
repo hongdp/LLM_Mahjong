@@ -27,6 +27,7 @@ class MahjongTask(BaseTask):
         # Prompt template variant: computed value facts (自家宝牌 line).
         # Must match the template the SFT adapter was trained on.
         self.value_facts = bool(kwargs.get('value_facts', False))
+        self.no_think = bool(kwargs.get('no_think', False))
         if self.value_facts:
             print("💠 Prompt value facts: ON (自家宝牌 line in private state)")
         # >1 routes rollouts through the batched scheduler (near-linear
@@ -59,12 +60,14 @@ class MahjongTask(BaseTask):
                 num_episodes, model, tokenizer, exp_dir,
                 capture_logprobs=capture_logprobs,
                 value_facts=self.value_facts,
+                no_think=self.no_think,
                 parallel=self.parallel_games,
                 randomize_round=self.randomize_round)
         else:
             episodes = run_rollout(num_episodes, model, tokenizer, exp_dir,
                                    capture_logprobs=capture_logprobs,
                                    value_facts=self.value_facts,
+                                   no_think=self.no_think,
                                    randomize_round=self.randomize_round)
         
         buffer = ReplayBuffer(gamma=self.gamma)

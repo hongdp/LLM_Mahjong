@@ -1,0 +1,20 @@
+{
+    "model_name": "Qwen/Qwen3.5-2B",
+    "task": "mahjong",
+    "use_qlora": false,
+    "bf16_lora": true,
+    "seed": 42,
+    "sft_epochs": 0,
+    "epochs": 1,
+    "num_episodes": 48,
+    "parallel_games": 24,
+    "learning_rate": 0.0,
+    "rl_algo": "reinforce",
+    "reward_model": "settlement",
+    "gamma": 0.995,
+    "batch_size": 4,
+    "training_phase": 2,
+    "min_format_rate": 0.0,
+    "exp_name": "exp3_probe_nothink",
+    "no_think": true
+}

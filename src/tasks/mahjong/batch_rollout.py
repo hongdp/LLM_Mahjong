@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
-from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content
+from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content, get_system_prompt
 from src.core.chat_format import visible_text, render_generation_prompt
 from src.core.rollout import TrajectoryStep
 from src.tasks.mahjong.orchestrator import _resolve_claims, _extract_action
@@ -38,29 +38,30 @@ class _Req:
     old_lp: Optional[list] = None
 
 
-def _mk_request(table, player_id, legal, model, tokenizer) -> _Req:
+def _mk_request(table, player_id, legal, model, tokenizer,
+                sys_prompt=SYSTEM_PROMPT) -> _Req:
     obs = table._format_state(player_id)
     user_content = build_user_content(obs, legal)
     if model and tokenizer:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_content},
         ]
         prompt = render_generation_prompt(tokenizer, messages)
     else:
-        prompt = f"System: {SYSTEM_PROMPT}\nUser: {user_content}"
+        prompt = f"System: {sys_prompt}\nUser: {user_content}"
     return _Req(player_id=player_id, prompt=prompt, legal=legal)
 
 
 def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
-                model, tokenizer):
+                model, tokenizer, sys_prompt=SYSTEM_PROMPT):
     """Generator: yields [_Req, ...]; expects the same list back with
     raw/parsed/gen_ids/old_lp filled. Mirrors orchestrator node logic."""
     while True:
         # ---- turn phase (orchestrator.turn_node) ----
         player_id = table.turn
         legal = table.get_legal_actions(player_id)
-        req = _mk_request(table, player_id, legal, model, tokenizer)
+        req = _mk_request(table, player_id, legal, model, tokenizer, sys_prompt)
         (req,) = yield [req]
 
         _, rewards, done, info = table.step(player_id, req.parsed or "")
@@ -83,7 +84,7 @@ def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
             options = table.get_interrupt_actions(pid)
             if len(options) == 1:   # skip-only: don't bother the LLM
                 continue
-            reqs.append(_mk_request(table, pid, options, model, tokenizer))
+            reqs.append(_mk_request(table, pid, options, model, tokenizer, sys_prompt))
 
         candidates = []
         if reqs:
@@ -182,6 +183,7 @@ def _log_batch(exp_dir, game_idx, reqs: List[_Req]):
 def run_rollout_batched(num_games: int, model=None, tokenizer=None,
                         exp_dir: str = None, capture_logprobs: bool = False,
                         value_facts: bool = False,
+                        no_think: bool = False,
                         parallel: int = 4,
                         randomize_round: bool = False
                         ) -> List[List[TrajectoryStep]]:
@@ -225,7 +227,8 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
             table = PyMahjongTable(value_facts=value_facts,
                                    randomize_round=randomize_round)
             trajectories = {i: [] for i in range(4)}
-            gen = _drive_game(table, trajectories, model, tokenizer)
+            gen = _drive_game(table, trajectories, model, tokenizer,
+                              get_system_prompt(no_think))
             gid = next_game
             next_game += 1
             try:

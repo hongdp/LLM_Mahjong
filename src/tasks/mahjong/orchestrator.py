@@ -7,7 +7,7 @@ import torch
 from langgraph.graph import StateGraph, END
 
 from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
-from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content
+from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content, get_system_prompt
 from src.core.chat_format import visible_text, render_generation_prompt
 from src.core.rollout import TrajectoryStep
 
@@ -45,13 +45,14 @@ def _query(state: MahjongState, player_id: int, legal_actions: List[str]):
     table = state['table']
     model, tokenizer = state.get('model'), state.get('tokenizer')
     capture = state.get('capture_logprobs', False)
+    sys_prompt = get_system_prompt(state.get('no_think', False))
     obs = table._format_state(player_id)
     user_content = build_user_content(obs, legal_actions)
     gen_ids, old_lp = None, None
 
     if model and tokenizer:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_content},
         ]
         prompt = render_generation_prompt(tokenizer, messages)
@@ -85,7 +86,7 @@ def _query(state: MahjongState, player_id: int, legal_actions: List[str]):
         raw_output = tokenizer.decode(generated, skip_special_tokens=True).strip()
         parsed = _extract_action(raw_output)
     else:
-        prompt = f"System: {SYSTEM_PROMPT}\nUser: {user_content}"
+        prompt = f"System: {sys_prompt}\nUser: {user_content}"
         parsed = random.choice(legal_actions)
         raw_output = parsed
     return prompt, raw_output, parsed, gen_ids, old_lp
@@ -269,6 +270,7 @@ def run_rollout(num_games: int, model=None, tokenizer=None,
                 exp_dir: str = None,
                 capture_logprobs: bool = False,
                 value_facts: bool = False,
+                no_think: bool = False,
                 randomize_round: bool = False) -> List[List[TrajectoryStep]]:
     """Runs self-play games and returns one trajectory per player per game,
     with terminal settlement rewards distributed to all four players.
@@ -299,6 +301,7 @@ def run_rollout(num_games: int, model=None, tokenizer=None,
             "needs_interrupt": False,
             "exp_dir": exp_dir,
             "capture_logprobs": capture_logprobs,
+            "no_think": no_think,
         })
         final_state = graph.invoke(
             initial_state, config={"recursion_limit": 1000}

@@ -32,7 +32,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
-from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content
+from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content, get_system_prompt
 from src.tasks.mahjong.shanten import (TileEfficiency, pad_for_melds,
                                        dora_from_indicator)
 
@@ -160,7 +160,12 @@ def meld_shanten_delta(table, pid: int, action_xml: str):
 MELD_NAME = {"pon": "碰", "kan": "杠", "chi": "吃"}
 
 
+NO_THINK = False   # set from --no_think in main()
+
+
 def make_response(think: str, action_xml: str) -> str:
+    if NO_THINK:
+        return action_xml
     return f"<think>\n{think}\n</think>\n{action_xml}"
 
 
@@ -168,13 +173,14 @@ def make_sample(game_id: int, player_id: int, obs: str,
                 legal_actions: list, action_xml: str, think: str) -> dict:
     user_content = build_user_content(obs, legal_actions)
     response = make_response(think, action_xml)
+    sys_prompt = get_system_prompt(NO_THINK)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": sys_prompt},
         {"role": "user", "content": user_content},
         {"role": "assistant", "content": response},
     ]
     flat_text = (
-        f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+        f"<|im_start|>system\n{sys_prompt}<|im_end|>\n"
         f"<|im_start|>user\n{user_content}<|im_end|>\n"
         f"<|im_start|>assistant\n{response}<|im_end|>"
     )
@@ -335,10 +341,14 @@ def main():
     parser.add_argument("--value_facts", action="store_true",
                         help="Value-aware template + teacher: 自家宝牌 line "
                              "in prompts, dora-keeping tie-break in CoT.")
+    parser.add_argument("--no_think", action="store_true",
+                        help="exp3 ablation corpus: responses are the bare "
+                             "action tag; system prompt forbids thinking.")
     args = parser.parse_args()
 
-    global VALUE_AWARE
+    global VALUE_AWARE, NO_THINK
     VALUE_AWARE = args.value_facts
+    NO_THINK = args.no_think
     random.seed(args.seed)
     out_dir = os.path.dirname(args.out)
     if out_dir:

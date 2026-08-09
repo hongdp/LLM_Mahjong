@@ -109,6 +109,11 @@ def parse_args():
              "(1 = legacy sequential path)."
     )
     parser.add_argument(
+        "--no_think", action="store_true",
+        help="Use the no-think prompt template (exp3 ablation): the model "
+             "outputs the action tag directly. Requires a no-think SFT anchor."
+    )
+    parser.add_argument(
         "--ref_kl_coef", type=float, default=0.0,
         help="PPO only: k3 KL penalty toward the frozen SFT reference "
              "adapter (loaded as adapter 'ref' from --peft_model_path). "
@@ -269,15 +274,27 @@ def ppo_update(model, tokenizer, samples, optimizer, device, args):
             loss, stats = ppo_clip_loss(new_lp, old_lp, advantages, mask,
                                         clip_eps=args.clip_eps)
             if args.ref_kl_coef > 0:
-                with torch.no_grad():
-                    model.set_adapter("ref")
-                    ref_logits = model(input_ids=input_ids,
-                                       attention_mask=attn).logits[:, :-1, :]
-                    model.set_adapter("default")
-                    ref_ce = torch.nn.functional.cross_entropy(
-                        ref_logits.reshape(-1, ref_logits.size(-1)),
-                        labels.reshape(-1), reduction="none")
-                    ref_lp = -ref_ce.view(labels.shape).float()
+                # ref adapter is frozen and token ids are fixed for the epoch,
+                # so each sample's ref logprobs are computed once (pass 1) and
+                # cached on the sample; passes 2..N skip the ref forward.
+                if any("ref_lp" not in b for b in batch):
+                    with torch.no_grad():
+                        model.set_adapter("ref")
+                        ref_logits = model(input_ids=input_ids,
+                                           attention_mask=attn).logits[:, :-1, :]
+                        model.set_adapter("default")
+                        ref_ce = torch.nn.functional.cross_entropy(
+                            ref_logits.reshape(-1, ref_logits.size(-1)),
+                            labels.reshape(-1), reduction="none")
+                        full_ref = -ref_ce.view(labels.shape).float()
+                    for b_idx, b in enumerate(batch):
+                        if "ref_lp" not in b:
+                            lo = b["p_len"] - 1
+                            b["ref_lp"] = full_ref[b_idx, lo:lo + b["g_len"]].cpu()
+                ref_lp = torch.zeros_like(old_lp)
+                for b_idx, b in enumerate(batch):
+                    lo = b["p_len"] - 1
+                    ref_lp[b_idx, lo:lo + b["g_len"]] = b["ref_lp"].to(device)
                 refkl = kl_ref_penalty(new_lp, ref_lp, mask)
                 loss = loss + args.ref_kl_coef * refkl
                 stats["ref_kl"] = refkl.item()
@@ -392,6 +409,7 @@ def main():
     task = get_task(args.task, device=device, reward_model=args.reward_model,
                     gamma=args.gamma,
                     value_facts=args.value_facts,
+                    no_think=args.no_think,
                     parallel_games=args.parallel_games,
                     covariate_baseline=args.covariate_baseline)
 
