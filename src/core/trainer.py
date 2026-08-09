@@ -17,6 +17,8 @@ from src.core.registry import get_task
 from src.core.rollout import ReplayBuffer
 from src.core.chat_format import visible_text, render_sft_texts
 from src.core.ppo import ppo_clip_loss, kl_ref_penalty
+from src.core.value_head import (ValueHead, explained_variance,
+                                 last_prompt_hidden, save_value_head)
 import src.tasks.mahjong.task
 
 def parse_args():
@@ -124,6 +126,24 @@ def parse_args():
         help="Discount for return-to-go AND the PBRS potential chain."
     )
     parser.add_argument(
+        "--use_critic", action="store_true",
+        help="exp4: state-value head on the policy trunk's last-prompt-token "
+             "hidden state; advantages become normalize(G - V(s))."
+    )
+    parser.add_argument(
+        "--value_lr", type=float, default=1e-4,
+        help="Learning rate for the value head parameter group."
+    )
+    parser.add_argument(
+        "--value_coef", type=float, default=0.5,
+        help="Weight of the value MSE loss inside the PPO minibatch loss."
+    )
+    parser.add_argument(
+        "--checkpoint_every", type=int, default=0,
+        help="Additionally retain every Nth epoch checkpoint (0 = off) — "
+             "for post-hoc staircase arenas."
+    )
+    parser.add_argument(
         "--covariate_baseline", action="store_true",
         help="Subtract a fitted initial-hand-quality baseline from episode "
              "returns (deal-luck control variate; unbiased)."
@@ -198,7 +218,35 @@ def plot_metrics(metrics: dict, task_name: str, exp_dir: str):
     plt.savefig(plot_path)
     print(f"📊 Saved metrics visualization to {plot_path}")
 
-def ppo_update(model, tokenizer, samples, optimizer, device, args):
+def critic_value_pass(model, tokenizer, samples, value_head, device,
+                      batch_size=4):
+    """No-grad V(s) for every sample (policy adapter active). Prompt-only
+    forward; V read at the last prompt token. Returns fp32 tensor [N]."""
+    model.eval()
+    preds = []
+    pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
+    with torch.no_grad():
+        for i in range(0, len(samples), batch_size):
+            batch = samples[i:i + batch_size]
+            enc = [tokenizer(b["prompt"])["input_ids"] for b in batch]
+            max_len = max(len(e) for e in enc)
+            ids = torch.full((len(enc), max_len), pad_id, dtype=torch.long)
+            attn = torch.zeros((len(enc), max_len), dtype=torch.long)
+            for j, e in enumerate(enc):
+                ids[j, :len(e)] = torch.tensor(e)
+                attn[j, :len(e)] = 1
+            out = model(input_ids=ids.to(device),
+                        attention_mask=attn.to(device),
+                        output_hidden_states=True)
+            h = last_prompt_hidden(
+                out.hidden_states[-1],
+                torch.tensor([len(e) for e in enc], device=device))
+            preds.append(value_head(h).float().cpu())
+    return torch.cat(preds)
+
+
+def ppo_update(model, tokenizer, samples, optimizer, device, args,
+               value_head=None):
     """PPO clipped-surrogate update with sample reuse.
 
     Builds sequences from stored token ids (prompt re-tokenized + generated
@@ -229,9 +277,10 @@ def ppo_update(model, tokenizer, samples, optimizer, device, args):
             "g_len": len(s["gen_token_ids"]),
             "old_lp": s["old_logprobs"],
             "adv": max(-5.0, min(5.0, s["advantage"])),
+            "ret": s.get("return", 0.0),
         })
 
-    losses, advs, clip_fracs, ref_kls = [], [], [], []
+    losses, advs, clip_fracs, ref_kls, vlosses = [], [], [], [], []
     last_kl, passes = 0.0, 0
     order = list(range(len(encoded)))
     stop = False
@@ -261,7 +310,10 @@ def ppo_update(model, tokenizer, samples, optimizer, device, args):
             input_ids, attn = input_ids.to(device), attn.to(device)
             mask, old_lp = mask.to(device), old_lp.to(device)
 
-            logits = model(input_ids=input_ids, attention_mask=attn).logits
+            want_hidden = args.use_critic and value_head is not None
+            out = model(input_ids=input_ids, attention_mask=attn,
+                        output_hidden_states=want_hidden)
+            logits = out.logits
             shift_logits = logits[:, :-1, :]
             labels = input_ids[:, 1:]
             # Fused CE = -logprob of the label token; avoids materializing a
@@ -298,6 +350,16 @@ def ppo_update(model, tokenizer, samples, optimizer, device, args):
                 refkl = kl_ref_penalty(new_lp, ref_lp, mask)
                 loss = loss + args.ref_kl_coef * refkl
                 stats["ref_kl"] = refkl.item()
+            if args.use_critic and value_head is not None:
+                p_lens = torch.tensor([b["p_len"] for b in batch], device=device)
+                # detach: value fitting must not touch the policy trunk/LoRA
+                h_last = last_prompt_hidden(out.hidden_states[-1].detach(), p_lens)
+                v_pred = value_head(h_last)
+                rets = torch.tensor([b["ret"] for b in batch],
+                                    dtype=torch.float32, device=device)
+                vloss = torch.nn.functional.mse_loss(v_pred, rets)
+                loss = loss + args.value_coef * vloss
+                stats["value_loss"] = vloss.item()
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -309,6 +371,8 @@ def ppo_update(model, tokenizer, samples, optimizer, device, args):
             pass_kls.append(stats["approx_kl"])
             if "ref_kl" in stats:
                 ref_kls.append(stats["ref_kl"])
+            if "value_loss" in stats:
+                vlosses.append(stats["value_loss"])
 
         passes += 1
         last_kl = sum(pass_kls) / max(len(pass_kls), 1)
@@ -326,6 +390,7 @@ def ppo_update(model, tokenizer, samples, optimizer, device, args):
         "clip_frac": sum(clip_fracs) / max(len(clip_fracs), 1),
         "passes": passes,
         "ref_kl": sum(ref_kls) / max(len(ref_kls), 1) if ref_kls else 0.0,
+        "value_loss": sum(vlosses) / max(len(vlosses), 1) if vlosses else None,
     }
 
 
@@ -579,7 +644,17 @@ def main():
     # =========================================================
 
     # Re-initialize optimizer for RL with the lower RL learning rate
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    value_head = None
+    param_groups = [{"params": [p for p in model.parameters() if p.requires_grad],
+                     "lr": args.learning_rate}]
+    if args.use_critic:
+        hidden_size = model.config.hidden_size
+        value_head = ValueHead(hidden_size).to(device)
+        param_groups.append({"params": value_head.parameters(),
+                             "lr": args.value_lr})
+        print(f"🧮 Critic: ValueHead(H={hidden_size}) on last-prompt-token "
+              f"hidden state (value_lr {args.value_lr}, coef {args.value_coef})")
+    optimizer = torch.optim.AdamW(param_groups)
 
     # 2. Main RL Loop (Rollout -> Train)
     low_format_streak = 0
@@ -638,6 +713,24 @@ def main():
             
         print(f"Collected {len(samples)} state-action transitions.")
 
+        if args.use_critic and value_head is not None:
+            v_pred = critic_value_pass(model, tokenizer, samples, value_head,
+                                       device, batch_size=args.batch_size)
+            returns_t = torch.tensor([s_["return"] for s_ in samples],
+                                     dtype=torch.float32)
+            ev = explained_variance(v_pred, returns_t)
+            resid = returns_t - v_pred
+            raw_std = returns_t.std().item()
+            resid_std = resid.std().item()
+            norm = (resid - resid.mean()) / (resid.std() + 1e-8)
+            for s_, a in zip(samples, norm.tolist()):
+                s_["advantage"] = a
+            writer.add_scalar("rl/explained_variance", ev, epoch)
+            writer.add_scalar("rl/adv_std_ratio",
+                              resid_std / max(raw_std, 1e-8), epoch)
+            print(f"  [Critic] explained_var={ev:.3f} "
+                  f"adv_std {raw_std:.3f}->{resid_std:.3f}")
+
         # Compute average raw reward for tracking
         avg_raw_reward = sum([sum([step.reward for step in ep]) for ep in buffer.episodes]) / max(len(buffer.episodes), 1)
 
@@ -648,12 +741,15 @@ def main():
 
         if args.rl_algo == "ppo":
             avg_loss, avg_adv, ppo_stats = ppo_update(
-                model, tokenizer, samples, optimizer, device, args)
+                model, tokenizer, samples, optimizer, device, args,
+                value_head=value_head)
             writer.add_scalar("rl/approx_kl", ppo_stats["approx_kl"], epoch)
             writer.add_scalar("rl/clip_frac", ppo_stats["clip_frac"], epoch)
             writer.add_scalar("rl/ppo_passes", ppo_stats["passes"], epoch)
             if ppo_stats.get("ref_kl"):
                 writer.add_scalar("rl/ref_kl", ppo_stats["ref_kl"], epoch)
+            if ppo_stats.get("value_loss") is not None and args.use_critic:
+                writer.add_scalar("rl/value_loss", ppo_stats["value_loss"], epoch)
             epoch_losses.append(avg_loss)
             epoch_advs.append(avg_adv)
 
@@ -719,6 +815,9 @@ def main():
         epoch_checkpoint_path = os.path.join(exp_dir, f"checkpoint_epoch_{epoch+1}")
         model.save_pretrained(epoch_checkpoint_path)
         tokenizer.save_pretrained(epoch_checkpoint_path)
+        if args.use_critic and value_head is not None:
+            save_value_head(value_head,
+                            os.path.join(epoch_checkpoint_path, "value_head.pt"))
         
         if "checkpoints" not in history:
             history["checkpoints"] = []
@@ -735,6 +834,8 @@ def main():
         
         import shutil
         for c in list(history["checkpoints"]):
+            if args.checkpoint_every and c["epoch"] % args.checkpoint_every == 0:
+                continue   # staircase-arena checkpoints are permanent
             if c["path"] not in top_3_paths and c["path"] != latest_path:
                 if os.path.exists(c["path"]):
                     shutil.rmtree(c["path"])
