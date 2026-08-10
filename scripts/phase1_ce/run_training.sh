@@ -62,10 +62,21 @@ python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available';
 nvidia-smi > "$HOME/gpu_info.txt" 2>&1 || true
 pip freeze > "$HOME/pip_freeze.txt" 2>&1 || true
 
+# --- periodic incremental sync: bounds data loss to ~10 min if the VM is
+# --- terminated by GCE (host event / max-run-duration) before the EXIT path
+( while true; do
+      sleep 600
+      L=$(ls -td experiments/*/ 2>/dev/null | head -1)
+      [ -n "$L" ] && gsutil -m -q rsync -r "$L" "$GCS_BUCKET/$(basename "$L")/" 2>/dev/null
+      gsutil -q cp "$HOME/train_nohup.log" "$GCS_BUCKET/$(basename "${L:-orphan}")/" 2>/dev/null
+  done ) &
+SYNC_PID=$!
+
 # --- training -------------------------------------------------------------
 echo "[train] starting: python -m src.core.trainer --config $CONFIG"
 python -m src.core.trainer --config "$CONFIG"
 TRAIN_EXIT_CODE=$?
+kill "$SYNC_PID" 2>/dev/null
 echo "[train] finished with exit code $TRAIN_EXIT_CODE"
 
 # --- persist results to GCS (success OR failure) ---------------------------

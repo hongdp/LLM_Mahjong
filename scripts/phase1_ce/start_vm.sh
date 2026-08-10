@@ -5,7 +5,10 @@ set -euo pipefail
 
 # Overridable for multi-VM experiments: VM_NAME=mahjong-a100-e ZONE=us-east1-b bash start_vm.sh
 # PROVISIONING=flex (default per docs/gcp_compute_cost_and_quota.md): DWS flex-start,
-#   -45% cost, no preemption within max-run-duration, DELETE on termination (ephemeral!).
+#   -45% cost, no preemption within max-run-duration. Termination action STOP
+#   (NOT DELETE): a host event mid-run then only stops the VM — disk survives
+#   for salvage (2026-08-10 incident: DELETE vaporized a 17h run's disk).
+#   Flex VMs cannot restart after stop; delete manually after salvage.
 # PROVISIONING=ondemand: legacy standard VM (1 A100/region quota cap).
 PROJECT_ID="workstation-185016"
 PROVISIONING="${PROVISIONING:-flex}"
@@ -31,7 +34,7 @@ else
         --boot-disk-type=pd-balanced \
         --maintenance-policy=TERMINATE \
         --scopes=storage-rw,logging-write,monitoring-write,pubsub,trace \
-        $( [ "$PROVISIONING" = flex ] && echo "--provisioning-model=FLEX_START --instance-termination-action=DELETE --max-run-duration=36h --request-valid-for-duration=2h" ) \
+        $( [ "$PROVISIONING" = flex ] && echo "--provisioning-model=FLEX_START --instance-termination-action=STOP --max-run-duration=${MAX_RUN_DURATION:-48h} --request-valid-for-duration=2h" ) \
         --metadata="install-nvidia-driver=True"
 fi
 
