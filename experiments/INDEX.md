@@ -28,3 +28,4 @@
 | 2026-08-09 | `exp3_sft_think_20260809_072304` / `exp3_sft_nothink_20260809_073440` | 配对语料双 SFT（post-audit 引擎，11390×2，教师动作一致） | loss 0.080 / 0.070，锚点各产出 | ✅ exp3 阶段 1-2 |
 | 2026-08-09 | `exp3_probe_think_20260809_074227` / `exp3_probe_nothink_20260809_084310` | 同 seed 48 局 ×24 并发速度/质量探针 | 60.7 vs 63.2min；质量完全一致 | ✅ exp3 判定：速度不达标 → 保留 think；风格 5× 敏感度副产品 |
 | 2026-08-09 | `exp4_critic_20260809_103720` | critic value head vs exp2-S 对照（单变量 use_critic；checkpoint_every 10 阶梯赛） | running | 判据：explained_var>0.2 门槛 / 方差降幅 / 竞技场 |
+| 2026-08-10 | `exp4_critic_20260810_062927` | exp4 重发（run-1 全损事故后，加固 infra：STOP 终止 + 增量同步） | running | 判据同 exp4 预注册 |
