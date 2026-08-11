@@ -94,6 +94,9 @@
 *(End of SKILLS.md. Append new learnings below this line in the future.)*
 
 ## 运维教训（Ops Lessons）
+- **监控的「VM 不见了」必须二次确认**：`gcloud describe` 偶发瞬时失败会返回空串，单次空值当关机会误报完赛（2026-08-11 exp4 竞技场误报，实际 VM 正常运行）。判定关机需连续 2 次确认，且要把「查询失败」与「资源不存在」区分开。
+- **在别的脚本还在 bootstrap 时挂第二个任务，venv 可能尚不存在**：`source ~/venvs/rlhf/bin/activate` 静默失败 → 退化到系统 python → ModuleNotFoundError。并行加挂任务时用**绝对路径的解释器**（`$HOME/venvs/rlhf/bin/python`），不要依赖 activate。
+
 - **（2026-08-10 事故）flex 机 DELETE 终止动作 + 只在结束时上传 = 任何 GCE 发起的终止都全损**：宿主机事件在 36h 死线前 18h 终止了 exp4 训练机，DELETE 动作连盘蒸发 17h 状态。「不抢占」承诺不覆盖宿主故障。修复已固化：①终止动作改 STOP（盘活下来可走退役取证流程）；②run_training.sh 内置 10 分钟增量 GCS rsync（损失上界 = 10 分钟）；③max-run-duration 给 1.8× 余量（48h）。
 
 - **老机退役标准流程（2026-08-09 三台 8-01 on-demand 机执行）**：停机不删 = 每台 200GB 盘 ~$20/月白烧 + 名字占坑（曾致创建静默失败）+ flex 机停机即废（不可重启）。退役流程：卸引导盘 → 同区临时 e2 只读挂载（`mount -o ro,noload`，选**最大**分区——云镜像有 BIOS/EFI 小分区，取「最后一个」会挂错）→ 盘上 experiments+日志 tar 流式上传 `_salvage/` → **回读 manifest 非空才放行删除** → 删临时机/实例/盘。三台共抢救 725MB（$0.015/月）换掉 $60/月。
