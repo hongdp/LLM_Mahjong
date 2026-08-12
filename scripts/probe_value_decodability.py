@@ -53,6 +53,43 @@ def collect(model, tokenizer, task, games, exp_dir, gamma):
     return prompts, torch.tensor(returns), torch.tensor(ep_ids)
 
 
+def collect_from_logs(paths, gamma):
+    """Parse episodes out of saved rollout logs (free, and 10x the sample
+    size of a fresh rollout). Format written by trainer.save_trajectory_log:
+        --- Episode N (Total Steps: K) ---
+        [Step i] Reward: R | Terminal: T
+        PROMPT:
+        <prompt text ...>
+        ACTION: <action text ...>
+    Caveat: states come from the policy at that epoch, not exactly the
+    checkpoint being probed — fine for a decodability question when the
+    policies are near-identical (exp4 ref_kl 0.0066), noted in the report.
+    """
+    import glob as _glob
+    import re as _re
+    prompts, returns, ep_ids = [], [], []
+    ep_counter = 0
+    for path in sorted(sum([_glob.glob(p) for p in paths], [])):
+        txt = open(path, encoding="utf-8", errors="replace").read()
+        for ep_block in _re.split(r"^--- Episode \d+ .*?---$", txt, flags=_re.M)[1:]:
+            steps = _re.findall(
+                r"^\[Step \d+\] Reward: (-?[\d.]+) \| Terminal: \w+\nPROMPT:\n(.*?)\nACTION:",
+                ep_block, flags=_re.M | _re.S)
+            if not steps:
+                continue
+            rewards = [float(r) for r, _ in steps]
+            R, rets = 0.0, []
+            for r in reversed(rewards):
+                R = r + gamma * R
+                rets.insert(0, R)
+            for (_, pr), ret in zip(steps, rets):
+                prompts.append(pr.strip())
+                returns.append(ret)
+                ep_ids.append(ep_counter)
+            ep_counter += 1
+    return prompts, torch.tensor(returns), torch.tensor(ep_ids)
+
+
 def hidden_states(model, tokenizer, prompts, device, batch_size=4):
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
     out = []
@@ -99,6 +136,14 @@ def main():
     ap.add_argument("--test_frac", type=float, default=0.3)
     ap.add_argument("--out", default="value_probe.json")
     ap.add_argument("--exp_dir", default="/tmp/value_probe")
+    ap.add_argument("--control", action="store_true",
+                    help="POSITIVE CONTROL: also decode a quantity that is "
+                         "literally written in the prompt (own points). If "
+                         "this scores high while the return scores ~0, the "
+                         "probe works and the RETURN is what is unpredictable.")
+    ap.add_argument("--from_logs", nargs="*", default=None,
+                    help="glob(s) of saved rollout logs to parse instead of "
+                         "rolling out fresh games (free, larger sample)")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -110,11 +155,15 @@ def main():
     model = PeftModel.from_pretrained(base, args.adapter)
     os.makedirs(args.exp_dir, exist_ok=True)
 
-    task = get_task("mahjong", device=device, reward_model="settlement",
-                    gamma=args.gamma, parallel_games=args.parallel)
-    print(f"[probe] rolling out {args.games} fresh games...")
-    prompts, returns, ep_ids = collect(model, tokenizer, task, args.games,
-                                       args.exp_dir, args.gamma)
+    if args.from_logs:
+        print(f"[probe] parsing episodes from logs: {args.from_logs}")
+        prompts, returns, ep_ids = collect_from_logs(args.from_logs, args.gamma)
+    else:
+        task = get_task("mahjong", device=device, reward_model="settlement",
+                        gamma=args.gamma, parallel_games=args.parallel)
+        print(f"[probe] rolling out {args.games} fresh games...")
+        prompts, returns, ep_ids = collect(model, tokenizer, task, args.games,
+                                           args.exp_dir, args.gamma)
     print(f"[probe] {len(prompts)} states from {int(ep_ids.max()) + 1} episodes; "
           f"return std {returns.std():.3f}")
 
@@ -140,15 +189,59 @@ def main():
     print(f"[probe] split: {int(tr_mask.sum())} train / {int(te_mask.sum())} test "
           f"states ({n_ep - n_te}/{n_te} episodes)")
 
-    result["ridge"] = {}
-    for alpha in (1.0, 10.0, 100.0, 1000.0, 10000.0):
-        te_ev, tr_ev = ridge_fit_score(H[tr_mask], returns[tr_mask],
-                                       H[te_mask], returns[te_mask], alpha)
-        result["ridge"][str(alpha)] = {"test_ev": te_ev, "train_ev": tr_ev}
-        print(f"[probe] ridge alpha={alpha:<8g} train_EV={tr_ev:+.4f} test_EV={te_ev:+.4f}")
-
-    best = max(result["ridge"].values(), key=lambda r: r["test_ev"])["test_ev"]
+    # alpha selected by K-fold CV *inside the train split* (episode-level
+    # folds). Picking alpha by test EV would be test-set peeking and would
+    # bias the diagnosis optimistically.
+    ALPHAS = (1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0)
+    tr_eps = sorted({int(e) for e in ep_ids[tr_mask]})
+    K = min(5, len(tr_eps))
+    folds = [set(tr_eps[i::K]) for i in range(K)]
+    cv_scores = {}
+    for alpha in ALPHAS:
+        evs = []
+        for f in folds:
+            va = torch.tensor([int(e) in f for e in ep_ids]) & tr_mask
+            tr = tr_mask & ~va
+            if va.sum() < 5 or tr.sum() < 20:
+                continue
+            ev, _ = ridge_fit_score(H[tr], returns[tr], H[va], returns[va], alpha)
+            evs.append(ev)
+        cv_scores[alpha] = sum(evs) / max(len(evs), 1) if evs else float("-inf")
+        print(f"[probe] ridge alpha={alpha:<9g} CV_EV(train folds)={cv_scores[alpha]:+.4f}")
+    best_alpha = max(cv_scores, key=cv_scores.get)
+    te_ev, tr_ev = ridge_fit_score(H[tr_mask], returns[tr_mask],
+                                   H[te_mask], returns[te_mask], best_alpha)
+    result["ridge"] = {"cv_scores": {str(k): v for k, v in cv_scores.items()},
+                       "selected_alpha": best_alpha,
+                       "train_ev": tr_ev, "test_ev": te_ev}
+    print(f"[probe] selected alpha={best_alpha:g} (by train-fold CV) -> "
+          f"train_EV={tr_ev:+.4f}  HELD-OUT test_EV={te_ev:+.4f}")
+    best = te_ev
     result["best_ridge_test_ev"] = best
+
+    if args.control:
+        import re as _re
+        pts_re = _re.compile(r'私有[^\n]*?点数: (\d+)')
+        y_ctrl, keep = [], []
+        for i, pr in enumerate(prompts):
+            m = pts_re.search(pr)
+            if m:
+                y_ctrl.append(float(m.group(1)) / 1000.0)
+                keep.append(i)
+        if len(keep) > 100:
+            k = torch.tensor(keep)
+            Hc, yc, ec = H[k], torch.tensor(y_ctrl), ep_ids[k]
+            tec = torch.tensor([int(e) in te_eps for e in ec])
+            ctrl_ev, ctrl_tr = ridge_fit_score(Hc[~tec], yc[~tec],
+                                               Hc[tec], yc[tec], best_alpha)
+            result["control_own_points"] = {"test_ev": ctrl_ev,
+                                            "train_ev": ctrl_tr,
+                                            "n": len(keep)}
+            print(f"[probe] CONTROL decode own-points from the same hidden "
+                  f"states (n={len(keep)}): train_EV={ctrl_tr:+.4f} "
+                  f"test_EV={ctrl_ev:+.4f}")
+            print("[probe]   -> high control EV + near-zero return EV means "
+                  "the probe is sound and the RETURN is the unpredictable part")
     result["diagnosis"] = ("features_insufficient (need richer context)"
                            if best < 0.10 else
                            "head_or_optimization (features do carry signal)")
