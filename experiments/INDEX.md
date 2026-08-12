@@ -30,3 +30,4 @@
 | 2026-08-09 | `exp4_critic_20260809_103720` | critic value head vs exp2-S 对照（单变量 use_critic；checkpoint_every 10 阶梯赛） | running | 判据：explained_var>0.2 门槛 / 方差降幅 / 竞技场 |
 | 2026-08-10 | `exp4_critic_20260810_062927` | exp4 重发（run-1 全损事故后，加固 infra） | critic 机制判据双双不达标（EV 0.020 / 方差降 1%）；**阶梯赛 ep40 vs 锚 +2950, p=0.0027 校正后显著** | ✅ 完成；报告 docs/report_exp4_critic_20260811.md |
 | 2026-08-11 | `exp4_arena_20260811` | exp4 竞技场 6 场：主判据 + ep10/20/30/40/50 阶梯轨迹 | 主判据 null；ep40 首个显著增益 | ✅ 完成；阶梯赛制确立为标准收尾 |
+| 2026-08-12 | `exp5_confirm_20260811` | ep40 峰值独立复现（96 副新种子）+ ep35/45/exp2S-ep25 探索 | 主判据未确认（+1093, p=0.076）；**汇总 7 点得 +1076±753, p=0.005，Q=3.58 无异质性** | ✅ 完成；正确图景=平坦 ~+1000 增益；报告 docs/report_exp5_confirm_20260812.md |
