@@ -29,6 +29,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.core.registry import get_task                     # noqa: E402
 from src.core.value_head import (explained_variance,       # noqa: E402
                                  last_prompt_hidden, load_value_head)
+import src.tasks.mahjong.task                              # noqa: E402,F401
+# ^ importing the module is what REGISTERS "mahjong" in the task registry;
+#   without it get_task() raises "Task 'mahjong' not found" (trainer.py does
+#   the same import for the same reason).
 
 
 def collect(model, tokenizer, task, games, exp_dir, gamma):
