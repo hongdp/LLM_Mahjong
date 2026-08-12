@@ -184,6 +184,7 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
                         exp_dir: str = None, capture_logprobs: bool = False,
                         value_facts: bool = False,
                         no_think: bool = False,
+                        deal_seeds=None,
                         parallel: int = 4,
                         randomize_round: bool = False
                         ) -> List[List[TrajectoryStep]]:
@@ -195,6 +196,7 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
         f"=== BATCHED ROLLOUT: {num_games} games, parallel={parallel} ===\n")
 
     all_episodes: List[List[TrajectoryStep]] = []
+    episode_groups: List = []      # (deal_seed, seat) per episode, when duplicating
     next_game = 0
     active: Dict[int, dict] = {}
 
@@ -216,6 +218,8 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
         for pid in range(4):
             if trajectories[pid]:
                 all_episodes.append(trajectories[pid])
+                if deal_seeds is not None:
+                    episode_groups.append((deal_seeds[gid % len(deal_seeds)], pid))
         if table.result_summary:
             with open(os.path.join(log_dir, "live_rollout.txt"), "a",
                       encoding="utf-8") as f:
@@ -224,6 +228,10 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
     while next_game < num_games or active:
         # top up the pool
         while next_game < num_games and len(active) < parallel:
+            if deal_seeds is not None:
+                # Common random numbers: identical wall for every replica of
+                # this deal, so a group baseline can cancel deal luck.
+                random.seed(deal_seeds[next_game % len(deal_seeds)])
             table = PyMahjongTable(value_facts=value_facts,
                                    randomize_round=randomize_round)
             trajectories = {i: [] for i in range(4)}
@@ -258,4 +266,4 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
             except StopIteration:
                 finalize(gid)
 
-    return all_episodes
+    return all_episodes, episode_groups

@@ -111,6 +111,13 @@ def parse_args():
              "(1 = legacy sequential path)."
     )
     parser.add_argument(
+        "--duplicate_deals", type=int, default=1,
+        help="Replay each wall K times per rollout (common random numbers). "
+             "The buffer then cancels deal luck with a leave-one-out group "
+             "baseline — an EMPIRICAL substitute for the critic that exp4's "
+             "probe showed cannot work here."
+    )
+    parser.add_argument(
         "--no_think", action="store_true",
         help="Use the no-think prompt template (exp3 ablation): the model "
              "outputs the action tag directly. Requires a no-think SFT anchor."
@@ -475,6 +482,7 @@ def main():
                     gamma=args.gamma,
                     value_facts=args.value_facts,
                     no_think=args.no_think,
+                    duplicate_deals=args.duplicate_deals,
                     parallel_games=args.parallel_games,
                     covariate_baseline=args.covariate_baseline)
 
