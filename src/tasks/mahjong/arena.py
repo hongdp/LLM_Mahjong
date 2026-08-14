@@ -27,10 +27,33 @@ from src.tasks.mahjong.table import PyMahjongTable
 from src.tasks.mahjong.batch_rollout import _drive_game, _batch_generate, _Req
 
 
+def _fill_with_dnn(net, pairs, device="cpu", temperature: float = 1.0):
+    """Fill (table, _Req) pairs using a conventional DNN policy.
+
+    Same seat, same legal-action list and same engine as the LLM side —
+    only the function picking the action differs, which is exactly the
+    comparison this supports.
+    """
+    from src.agents.dnn.encoder import encode_state, legal_mask
+    import torch as _t
+    for table, r in pairs:
+        mask, lookup = legal_mask(r.legal)
+        planes, scalars = encode_state(table, r.player_id)
+        idx, _ = net.act(planes[None].to(device), scalars[None].to(device),
+                         mask[None].to(device), temperature=temperature)
+        action = lookup.get(int(idx))
+        if action is None:                     # cannot happen with masking
+            action = r.legal[0]
+        r.raw = action
+        r.parsed = action
+
+
 def run_match(model, tokenizer, deal_seeds: List[int],
               value_facts: bool = False, parallel: int = 12,
               policy_names=("A", "B"), log_path: Optional[str] = None,
-              transcript_path: Optional[str] = None):
+              transcript_path: Optional[str] = None,
+              dnn_policies: Optional[dict] = None,
+              dnn_device: str = "cpu", dnn_temperature: float = 1.0):
     """Returns per-deal paired results:
     [{"seed": s, "diff": paired_point_diff, "wins_a": int, "wins_b": int,
       "orient": [{"a_seats": [...], "points": [...], "result": str}, ...]}]
@@ -115,23 +138,28 @@ def run_match(model, tokenizer, deal_seeds: List[int],
         if not active:
             break
 
-        # group pending requests by policy
-        by_policy: Dict[str, List[_Req]] = {policy_names[0]: [],
-                                            policy_names[1]: []}
+        # group pending requests by policy (keep each request's table so a
+        # DNN policy can read the board state directly)
+        by_policy: Dict[str, List[tuple]] = {policy_names[0]: [],
+                                             policy_names[1]: []}
         for job, st in active.items():
             _, orient = job
             aset = set(a_seats(orient))
             for r in st["pending"]:
                 pol = policy_names[0] if r.player_id in aset else policy_names[1]
-                by_policy[pol].append(r)
+                by_policy[pol].append((st["table"], r))
 
-        for pol, reqs in by_policy.items():
-            if not reqs:
+        for pol, pairs in by_policy.items():
+            if not pairs:
+                continue
+            net = (dnn_policies or {}).get(pol)
+            if net is not None:
+                _fill_with_dnn(net, pairs, dnn_device, dnn_temperature)
                 continue
             if model is not None:
                 model.set_adapter(pol)
-            _batch_generate(model, tokenizer, reqs, capture=False,
-                            max_batch=max(24, parallel))
+            _batch_generate(model, tokenizer, [r for _, r in pairs],
+                            capture=False, max_batch=max(24, parallel))
 
         for job in list(active.keys()):
             st = active[job]
