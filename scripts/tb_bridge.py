@@ -3,8 +3,12 @@
 The DNN trainers log JSON rows (one per iteration) rather than TB events.
 Rather than restart running jobs to add native logging, this bridge polls
 those files and appends any new rows as scalars, so TensorBoard can watch
-live training. It is idempotent: it remembers how many rows it has already
-written per run and only appends the new ones.
+live training. Idempotent BY CONSTRUCTION: the JSON is the single source of truth, so on
+start the bridge wipes its own output dir and rewrites every row. An
+earlier version tracked counts in memory only, so restarting it wrote a
+SECOND event file with the same steps — TensorBoard merged both and the
+x-axis folded back on itself. Writing into a dedicated `tb_bridge/`
+subdir also means it can never clobber event files a trainer wrote.
 
 Scalars are indexed by GAMES PLAYED, not iteration, because the two arms
 (REINFORCE 1 update/iter vs PPO 44) are only comparable per game.
@@ -13,6 +17,7 @@ Scalars are indexed by GAMES PLAYED, not iteration, because the two arms
 import argparse
 import json
 import os
+import shutil
 import time
 
 from torch.utils.tensorboard import SummaryWriter
@@ -33,7 +38,11 @@ def sync(run_dir: str, writers: dict, counts: dict) -> int:
     if len(rows) <= done:
         return 0
     if run_dir not in writers:
-        writers[run_dir] = SummaryWriter(os.path.join(run_dir, "tensorboard"))
+        out = os.path.join(run_dir, "tb_bridge")
+        shutil.rmtree(out, ignore_errors=True)   # rewrite from scratch
+        writers[run_dir] = SummaryWriter(out)
+        counts[run_dir] = 0
+        done = 0
     w = writers[run_dir]
     for row in rows[done:]:
         step = int(row.get("games", row.get("iter", 0)))
