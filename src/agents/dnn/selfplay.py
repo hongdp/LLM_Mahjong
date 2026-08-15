@@ -16,7 +16,35 @@ import torch
 
 from src.agents.dnn.encoder import encode_state, legal_mask
 from src.tasks.mahjong.orchestrator import _resolve_claims
+from src.tasks.mahjong.shanten import TileEfficiency, pad_for_melds
 from src.tasks.mahjong.table import PyMahjongTable
+
+_TE = TileEfficiency()
+C_SHANTEN, C_UKEIRE = 2.0, 0.05
+
+
+def potential(table, pid) -> float:
+    """Phi(s) = -2.0*shanten + 0.05*|ukeire| for this seat's hand.
+
+    Same potential the LLM runs used (rewards.MahjongPotentialReward), so
+    the two shaping setups stay comparable. Computed straight off the
+    table instead of parsing prompt text.
+    """
+    try:
+        tiles = table.hands[pid]
+        padded = pad_for_melds(tiles, len(table.melds[pid]))
+        if len(tiles) % 3 == 2:          # 14 tiles: score the best discard
+            ranked = _TE.evaluate_discards_ranked(padded)
+            cands = [(sh, len(uk)) for t, (sh, uk) in ranked.items() if t in tiles]
+            if not cands:
+                return 0.0
+            sh, uk = min(cands, key=lambda c: (c[0], -c[1]))
+        else:
+            sh = _TE.calculate_shanten(padded)
+            uk = len(_TE.calculate_ukeire(padded))
+        return -C_SHANTEN * sh + C_UKEIRE * uk
+    except Exception:
+        return 0.0
 
 ACTION_RE = re.compile(r'type="(\w+)"')
 
@@ -30,6 +58,7 @@ class DnnStep:
     logprob: float
     reward: float = 0.0
     is_terminal: bool = False
+    phi: float = 0.0          # potential at this decision point (PBRS)
 
 
 @dataclass
@@ -51,7 +80,8 @@ def _choose(net, table, pid, actions, temperature, device):
 
 def play_game(net, temperature: float = 1.0, device="cpu",
               deal_seed: Optional[int] = None,
-              randomize_round: bool = True) -> DnnGame:
+              randomize_round: bool = True,
+              shaping: bool = False) -> DnnGame:
     if deal_seed is not None:
         random.seed(deal_seed)          # common random numbers
     table = PyMahjongTable(randomize_round=randomize_round)
@@ -65,6 +95,8 @@ def play_game(net, temperature: float = 1.0, device="cpu",
         if not actions:
             break
         step, action_str = _choose(net, table, pid, actions, temperature, device)
+        if shaping:
+            step.phi = potential(table, pid)
         _, rewards, done, info = table.step(pid, action_str)
         step.reward = rewards[pid]
         step.is_terminal = done
@@ -85,6 +117,8 @@ def play_game(net, temperature: float = 1.0, device="cpu",
             if len(options) == 1:        # skip-only: no decision to make
                 continue
             s, a_str = _choose(net, table, other, options, temperature, device)
+            if shaping:
+                s.phi = potential(table, other)
             m = ACTION_RE.search(a_str)
             candidates.append({"player_id": other, "parsed": a_str,
                                "type": m.group(1) if m else None,
@@ -120,6 +154,20 @@ def play_game(net, temperature: float = 1.0, device="cpu",
     game.result = table.result_summary
     game.points = list(table.points)
     return game
+
+
+def apply_shaping(steps: List[DnnStep], gamma: float) -> None:
+    """In-place PBRS: F_t = gamma*Phi_{t+1} - Phi_t, terminal Phi := 0.
+
+    Potential-based, so the discounted shaping telescopes to -Phi(s_0) and
+    the optimal policy is unchanged (Ng et al. 1999). exp2 showed this adds
+    nothing once a teacher prior exists; the point HERE is the opposite
+    case — from scratch the sparse settlement carries no gradient at all
+    until the agent wins by accident, and this supplies one.
+    """
+    for i, s in enumerate(steps):
+        nxt = 0.0 if i + 1 >= len(steps) else steps[i + 1].phi
+        s.reward += gamma * nxt - s.phi
 
 
 def returns_to_go(steps: List[DnnStep], gamma: float) -> List[float]:

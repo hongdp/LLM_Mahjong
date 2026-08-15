@@ -1,0 +1,196 @@
+"""Does MORE self-play RL buy strength? Measure the scaling curve.
+
+Motivating question (user, 2026-08-14): "what if we just use an enormous
+number of RL games to beat the variance?" For the LLM that is unanswerable
+— 600 games cost 27 A100-hours. For the conventional DNN it is a few
+hours, so this script answers it empirically instead of by argument:
+train from a fixed init and snapshot at exponentially spaced game counts,
+so each snapshot can be played off against the init in a big arena.
+
+Reads the same reward/discount/group-baseline setup as every other run so
+the resulting points sit on the same axis as the LLM results.
+"""
+
+import argparse
+import json
+import os
+import random
+import sys
+import time
+
+import numpy as np
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.agents.dnn.net import MahjongPolicyNet                      # noqa: E402
+from src.agents.dnn.parallel_rollout import (apply_group_baseline,   # noqa: E402
+                                             collect_parallel)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--init", default=None, help="warm-start checkpoint")
+    ap.add_argument("--total_games", type=int, default=320000)
+    ap.add_argument("--games_per_iter", type=int, default=256)
+    ap.add_argument("--dup_k", type=int, default=4)
+    ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument("--gamma", type=float, default=0.995)
+    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--entropy_coef", type=float, default=0.02)
+    ap.add_argument("--channels", type=int, default=64)
+    ap.add_argument("--blocks", type=int, default=3)
+    ap.add_argument("--batch", type=int, default=4096,
+                    help="MICRO-batch for memory only. The gradient is "
+                         "accumulated over EVERY effective sample in the "
+                         "iteration, so the statistical batch size is the "
+                         "effective-sample count, not this number.")
+    ap.add_argument("--shaping", action="store_true")
+    ap.add_argument("--drop_zero_return", action="store_true",
+                    help="Skip episodes whose return is exactly 0 (an "
+                         "exhaustive draw with no point transfer). Measured: "
+                         "77%% of episodes, but only 2%% of the |advantage| "
+                         "mass — dropping them makes the few gradient steps "
+                         "per iteration land on signal-bearing data. Loss is "
+                         "renormalised by the ORIGINAL sample count so the "
+                         "gradient magnitude (and hence the effective lr) is "
+                         "unchanged.")
+    ap.add_argument("--milestones", type=str,
+                    default="5000,20000,80000,320000",
+                    help="cumulative game counts to snapshot at")
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--exp_dir", default=None)
+    args = ap.parse_args()
+
+    torch.set_num_threads(max(1, os.cpu_count() // 2))
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    exp_dir = args.exp_dir or f"experiments/dnn_scaling_{time.strftime('%Y%m%d_%H%M%S')}"
+    os.makedirs(exp_dir, exist_ok=True)
+    json.dump(vars(args), open(f"{exp_dir}/config.json", "w"), indent=2)
+    milestones = sorted(int(x) for x in args.milestones.split(","))
+
+    net = MahjongPolicyNet(channels=args.channels, blocks=args.blocks)
+    if args.init:
+        net.load_state_dict(torch.load(args.init, map_location="cpu")["state_dict"])
+        print(f"⚓ warm-start {args.init}", flush=True)
+    opt = torch.optim.Adam(net.parameters(), lr=args.lr)
+
+    def save(tag, games):
+        torch.save({"state_dict": net.state_dict(), "channels": args.channels,
+                    "blocks": args.blocks, "games": games},
+                   f"{exp_dir}/{tag}.pt")
+
+    save("games_0", 0)          # the init itself is the arena's reference
+    cfg = dict(channels=args.channels, blocks=args.blocks,
+               temperature=args.temperature, gamma=args.gamma,
+               shaping=args.shaping, seed=args.seed)
+
+    games, it, t0, log = 0, 0, time.time(), []
+    next_ms = 0
+    while games < args.total_games:
+        it += 1
+        n_deals = max(1, args.games_per_iter // args.dup_k)
+        base = 5_000_000 + it * 9973
+        seeds = [base + d for d in range(n_deals) for _ in range(args.dup_k)]
+        net.eval()
+        episodes, results = collect_parallel(net, len(seeds), cfg,
+                                             args.workers, seeds)
+        apply_group_baseline(episodes, args.gamma)
+        games += len(results)
+
+        planes = torch.from_numpy(np.concatenate([e["planes"] for e in episodes]))
+        scal = torch.from_numpy(np.concatenate([e["scalars"] for e in episodes]))
+        mask = torch.from_numpy(np.concatenate([e["mask"] for e in episodes]))
+        acts = torch.from_numpy(np.concatenate([e["actions"] for e in episodes]))
+        rets = torch.from_numpy(np.concatenate([e["returns"] for e in episodes]))
+        adv = ((rets - rets.mean()) / (rets.std() + 1e-8)).clamp(-5, 5)
+
+        with torch.no_grad():
+            # entropy of the SAMPLING policy, before any update touches it
+            probe = torch.randperm(len(acts))[:2048]
+            lp0 = torch.log_softmax(net(planes[probe], scal[probe], mask[probe]), 1)
+            safe0 = torch.where(torch.isfinite(lp0), lp0, torch.zeros_like(lp0))
+            ent_before = float(-(lp0.exp() * safe0).sum(1).mean())
+
+        net.train()
+        # --- select the EFFECTIVE samples ---------------------------------
+        # An exhaustive draw with no point transfer has return exactly 0 and
+        # therefore contributes exactly zero gradient (verified: filtered vs
+        # full-batch gradient cosine 1.000, norm ratio 1.0002). Measured on
+        # a random policy: 77% of episodes, 2% of the |advantage| mass.
+        if args.drop_zero_return:
+            lens = [len(e["returns"]) for e in episodes]
+            nonzero_ep = [bool(np.abs(e["returns"]).max() > 1e-6) for e in episodes]
+            idx_keep = torch.nonzero(
+                torch.from_numpy(np.repeat(nonzero_ep, lens)), as_tuple=True)[0]
+        else:
+            idx_keep = torch.arange(len(acts))
+        n_eff = len(idx_keep)
+        if n_eff == 0:
+            continue
+        order = idx_keep[torch.randperm(n_eff)]
+
+        # --- ONE update per iteration over ALL effective samples ----------
+        # Gradient accumulated in micro-batches; the statistical batch size
+        # is n_eff. Normalising by n_eff (not by the raw sample count) keeps
+        # the update size independent of the draw rate, which falls as the
+        # policy improves — dividing by the raw count instead would silently
+        # inflate the effective learning rate over training.
+        opt.zero_grad()
+        losses, ents = [], []
+        for lo in range(0, n_eff, args.batch):
+            sel = order[lo:lo + args.batch]
+            logits = net(planes[sel], scal[sel], mask[sel])
+            logp = torch.log_softmax(logits, dim=1)
+            chosen = logp.gather(1, acts[sel][:, None]).squeeze(1)
+            safe = torch.where(torch.isfinite(logp), logp, torch.zeros_like(logp))
+            ent = -(logp.exp() * safe).sum(1).mean()
+            w = len(sel) / n_eff                      # micro-batch weight
+            loss = (-(chosen * adv[sel]).mean() - args.entropy_coef * ent) * w
+            loss.backward()
+            losses.append(loss.item() / max(w, 1e-9)); ents.append(ent.item())
+        gnorm = float(torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0))
+        opt.step()
+
+        with torch.no_grad():
+            # measured AFTER the step, on the SAME probe rows as ent_before —
+            # during accumulation the weights never move, so the per-micro-
+            # batch entropies say nothing about the update's effect.
+            net.eval()
+            lp1 = torch.log_softmax(net(planes[probe], scal[probe], mask[probe]), 1)
+            safe1 = torch.where(torch.isfinite(lp1), lp1, torch.zeros_like(lp1))
+            ent_after = float(-(lp1.exp() * safe1).sum(1).mean())
+            net.train()
+
+        win = sum(1 for r in results if "荣和" in r or "自摸" in r) / max(len(results), 1)
+        el = time.time() - t0
+        row = {"iter": it, "games": games, "wall_s": round(el, 1),
+               "loss": float(np.mean(losses)), "entropy": ent_after,
+               "entropy_before": ent_before,
+               "win_rate": win, "mean_return": float(rets.mean()),
+               "n_effective": n_eff, "n_raw": int(len(acts)),
+               "eff_frac": n_eff / max(len(acts), 1), "grad_norm": gnorm}
+        log.append(row)
+        if it % 5 == 0 or it == 1:
+            print(f"[{it:4d}] games={games:7d} {el/60:6.1f}min "
+                  f"{games/max(el,1):5.1f}局/s loss={row['loss']:+.4f} "
+                  f"H={ent_before:.3f}->{row['entropy']:.3f} win={win:.1%} "
+                  f"eff={n_eff}/{len(acts)} ({row['eff_frac']:.0%}) "
+                  f"|g|={gnorm:.2f}", flush=True)
+            json.dump(log, open(f"{exp_dir}/train_log.json", "w"), indent=1)
+
+        while next_ms < len(milestones) and games >= milestones[next_ms]:
+            save(f"games_{milestones[next_ms]}", games)
+            print(f"📌 milestone {milestones[next_ms]} games -> checkpoint "
+                  f"(actual {games})", flush=True)
+            next_ms += 1
+
+    save("games_final", games)
+    json.dump(log, open(f"{exp_dir}/train_log.json", "w"), indent=1)
+    print(f"✅ {games} games in {(time.time()-t0)/60:.1f} min -> {exp_dir}")
+
+
+if __name__ == "__main__":
+    main()
