@@ -234,6 +234,13 @@ def main():
             ent_after = float(-(lp1.exp() * safe1).sum(1).mean())
             net.train()
 
+        # NOTE: this is the DECISIVE-GAME rate (a hand ended in ron/tsumo by
+        # anyone) = 1 - draw rate. It is NOT a per-agent win rate: all four
+        # seats share these weights, so a per-agent figure is roughly this
+        # divided by four (measured: 77.5% decisive <-> 19.4% per seat).
+        # Ceiling is 100%, not 25%. It tracks how fast the shared policy
+        # completes hands, i.e. tile efficiency — competitive strength only
+        # comes from the arena, where different policies actually meet.
         win = sum(1 for r in results if "荣和" in r or "自摸" in r) / max(len(results), 1)
         el = time.time() - t0
         row = {"iter": it, "games": games, "wall_s": round(el, 1),

@@ -23,7 +23,18 @@ def load_dnn(path, device):
     blob = torch.load(path, map_location=device)
     net = MahjongPolicyNet(channels=blob.get("channels", 64),
                            blocks=blob.get("blocks", 3)).to(device)
-    net.load_state_dict(blob["state_dict"])
+    # strict=False: checkpoints written before the critic existed have no
+    # value.* keys. The value head is unused at play time (only the policy
+    # head picks actions), so an untrained one is harmless — but report it
+    # so a genuinely mismatched checkpoint cannot pass silently.
+    missing, unexpected = net.load_state_dict(blob["state_dict"], strict=False)
+    pol_missing = [k for k in missing if not k.startswith("value.")]
+    if pol_missing or unexpected:
+        raise SystemExit(f"checkpoint {path} does not fit the network: "
+                         f"missing={pol_missing} unexpected={unexpected}")
+    if missing:
+        print(f"[load] {path}: no critic weights (pre-value-head checkpoint); "
+              f"policy loaded fully", flush=True)
     net.eval()
     return net
 
