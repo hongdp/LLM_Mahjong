@@ -15,12 +15,36 @@ from typing import List, Optional
 import torch
 
 from src.agents.dnn.encoder import encode_state, legal_mask
+from src.agents.dnn.yaku_features import hazard_features, value_distance_profile
 from src.tasks.mahjong.claims import _resolve_claims
 from src.tasks.mahjong.shanten import TileEfficiency, pad_for_melds
 from src.tasks.mahjong.table import PyMahjongTable
 
 _TE = TileEfficiency()
 C_SHANTEN, C_UKEIRE = 2.0, 0.05
+
+# Privileged CRITIC-ONLY features (exp11 A1/A2). The policy never sees them:
+# they ride in a separate tensor consumed only by the value path, so the
+# actor keeps information parity with the LLM baseline.
+CFEAT_DIM = {"none": 0, "profile": 4, "hazard": 45}   # hazard: 9 families x 5
+
+
+def critic_features(table, pid, mode: str) -> Optional[torch.Tensor]:
+    if mode == "none":
+        return None
+    hand = table.hands[pid]
+    n_melds = len(table.melds[pid])
+    closed = n_melds == 0                 # proxy: ankan also counts as open
+    try:
+        if mode == "profile":
+            vals = value_distance_profile(hand, n_melds, closed)
+        else:                             # "hazard"
+            rows = hazard_features(hand, n_melds, closed,
+                                   turns_left=len(table.wall) / 4.0)
+            vals = [x for row in rows for x in row]
+    except Exception:
+        vals = [0.0] * CFEAT_DIM[mode]
+    return torch.tensor(vals, dtype=torch.float32)
 
 
 def potential(table, pid) -> float:
@@ -59,6 +83,7 @@ class DnnStep:
     reward: float = 0.0
     is_terminal: bool = False
     phi: float = 0.0          # potential at this decision point (PBRS)
+    cfeats: Optional[torch.Tensor] = None   # privileged critic-only features
 
 
 @dataclass
@@ -68,20 +93,22 @@ class DnnGame:
     points: Optional[List[int]] = None
 
 
-def _choose(net, table, pid, actions, temperature, device):
+def _choose(net, table, pid, actions, temperature, device, cmode="none"):
     planes, scalars = encode_state(table, pid)
     mask, lookup = legal_mask(actions)
     idx, lp = net.act(planes[None].to(device), scalars[None].to(device),
                       mask[None].to(device), temperature=temperature)
     i = int(idx)
     return (DnnStep(planes=planes, scalars=scalars, mask=mask, action_idx=i,
-                    logprob=float(lp)), lookup[i])
+                    logprob=float(lp),
+                    cfeats=critic_features(table, pid, cmode)), lookup[i])
 
 
 def play_game(net, temperature: float = 1.0, device="cpu",
               deal_seed: Optional[int] = None,
               randomize_round: bool = True,
-              shaping: bool = False) -> DnnGame:
+              shaping: bool = False,
+              critic_feats: str = "none") -> DnnGame:
     if deal_seed is not None:
         random.seed(deal_seed)          # common random numbers
     table = PyMahjongTable(randomize_round=randomize_round)
@@ -94,7 +121,8 @@ def play_game(net, temperature: float = 1.0, device="cpu",
         actions = table.get_legal_actions(pid)
         if not actions:
             break
-        step, action_str = _choose(net, table, pid, actions, temperature, device)
+        step, action_str = _choose(net, table, pid, actions, temperature, device,
+                                   cmode=critic_feats)
         if shaping:
             step.phi = potential(table, pid)
         _, rewards, done, info = table.step(pid, action_str)
@@ -116,7 +144,8 @@ def play_game(net, temperature: float = 1.0, device="cpu",
             options = table.get_interrupt_actions(other)
             if len(options) == 1:        # skip-only: no decision to make
                 continue
-            s, a_str = _choose(net, table, other, options, temperature, device)
+            s, a_str = _choose(net, table, other, options, temperature, device,
+                               cmode=critic_feats)
             if shaping:
                 s.phi = potential(table, other)
             m = ACTION_RE.search(a_str)

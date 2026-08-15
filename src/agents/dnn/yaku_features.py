@@ -158,6 +158,54 @@ def suuankou_distance(hand: List[str], n_melds: int,
 HAZARD_FAMILIES = list(FAMILY_VALUE) + ["kokushi", "suuankou"]
 HAZARD_VALUE = dict(FAMILY_VALUE, kokushi=32000, suuankou=32000)
 
+# ---------------------------------------------------------------------------
+# Completion labels (exp11 A2): which hazard families did each seat actually
+# complete this game? Parsed from PyMahjongTable.result_summary, whose yaku
+# names are the scoring lib's str(yaku). These are supervised BCE targets —
+# whether a hand completed is settled fact, exempt from on-policy limits.
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_WIN_SEAT_RE = _re.compile(r"玩家(\d)\s*(?:自摸|荣和|抢杠)")
+
+# normalized (lowercase, spaces stripped) substring -> family
+_NAME_TO_FAMILY = {
+    "riichi": "riichi_menzen",       # covers Daburu Riichi too
+    "tanyao": "tanyao",
+    "yakuhai": "yakuhai",
+    "chiitoitsu": "chiitoi",
+    "toitoi": "toitoi",
+    "honitsu": "honitsu",
+    "chinitsu": "chinitsu",
+    "kokushi": "kokushi",            # "Kokushi Musou"
+    "suuankou": "suuankou",          # "Suu Ankou" / tanki variant
+}
+
+
+def completion_labels(result_summary: str) -> Dict[int, List[float]]:
+    """Per-seat binary vector over HAZARD_FAMILIES for one finished game.
+
+    Winners get 1.0 for every family named in THEIR yaku segment (double
+    ron: segments are ';'-joined, each parsed separately); losers and all
+    seats of a draw get zeros. The 放铳:玩家N mention never matches because
+    the seat regex requires a win verb right after the seat number.
+    """
+    idx = {f: i for i, f in enumerate(HAZARD_FAMILIES)}
+    out = {p: [0.0] * len(HAZARD_FAMILIES) for p in range(4)}
+    if not result_summary:
+        return out
+    for part in result_summary.split(";"):
+        m = _WIN_SEAT_RE.search(part)
+        if not m:
+            continue
+        pid = int(m.group(1))
+        norm = part.lower().replace(" ", "")
+        for pat, fam in _NAME_TO_FAMILY.items():
+            if pat in norm:
+                out[pid][idx[fam]] = 1.0
+    return out
+
 
 def hazard_features(hand: List[str], n_melds: int, closed: bool,
                     turns_left: float,

@@ -67,6 +67,17 @@ def main():
                          "penalized immediately via gamma*V(s')-V(s), without "
                          "waiting for the settlement). MC advantages reduce "
                          "the critic to variance reduction only.")
+    ap.add_argument("--critic_feats", choices=["none", "profile", "hazard"],
+                    default="none",
+                    help="Privileged CRITIC-ONLY features (exp11; the policy "
+                         "never sees them). profile = 4-dim value-distance "
+                         "profile concatenated into the value head (A1). "
+                         "hazard = 9x5 per-family dynamics rows through a "
+                         "shared completion-hazard head, V = sum P_y*value_y "
+                         "+ residual, with a supervised BCE channel on "
+                         "did-this-family-complete labels (A2).")
+    ap.add_argument("--hazard_coef", type=float, default=0.5,
+                    help="weight of the hazard head's BCE loss (A2 only)")
     ap.add_argument("--milestones", type=str, default="20000,80000,240000,600000")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--train_device",
@@ -116,22 +127,34 @@ def main():
     milestones = sorted(int(x) for x in args.milestones.split(","))
 
     dev = torch.device(args.train_device)
+    use_cf = args.critic_feats != "none"
     if args.arch:
+        if use_cf:
+            raise SystemExit("--critic_feats requires the default CNN "
+                             "(zoo nets don't carry the critic variants)")
         from src.agents.dnn.arch_zoo import ZOO
         net = ZOO[args.arch][0]().to(dev)
         print(f"🏗 arch: {args.arch}", flush=True)
     else:
-        net = MahjongPolicyNet(channels=args.channels, blocks=args.blocks).to(dev)
+        from src.agents.dnn.selfplay import CFEAT_DIM
+        net = MahjongPolicyNet(
+            channels=args.channels, blocks=args.blocks,
+            critic_feat_dim=CFEAT_DIM["profile"] if args.critic_feats == "profile" else 0,
+            hazard=args.critic_feats == "hazard").to(dev)
+        if use_cf:
+            print(f"🔭 critic_feats: {args.critic_feats}", flush=True)
     if args.init:
-        net.load_state_dict(torch.load(args.init, map_location="cpu")["state_dict"],
-                            strict=False)
-        print(f"⚓ warm-start {args.init}", flush=True)
+        from src.agents.dnn.net import load_compatible
+        skipped = load_compatible(net, torch.load(args.init,
+                                                  map_location="cpu")["state_dict"])
+        print(f"⚓ warm-start {args.init}"
+              + (f" (fresh: {skipped})" if skipped else ""), flush=True)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 
     def save(tag, games, it=0):
         torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                     "channels": args.channels, "blocks": args.blocks,
-                    "arch": args.arch,
+                    "arch": args.arch, "critic_feats": args.critic_feats,
                     "games": games, "iter": it,
                     "optimizer": opt.state_dict()}, f"{exp_dir}/{tag}.pt")
 
@@ -171,7 +194,8 @@ def main():
         save("games_0", 0)
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
                temperature=args.temperature, gamma=args.gamma,
-               shaping=False, seed=args.seed)
+               shaping=False, seed=args.seed,
+               critic_feats=args.critic_feats)
 
     games, it, t0, next_ms = start_games, start_iter, time.time(), 0
     while next_ms < len(milestones) and milestones[next_ms] <= start_games:
@@ -193,6 +217,12 @@ def main():
         acts = torch.from_numpy(cat("actions")).to(dev)
         rets = torch.from_numpy(cat("returns")).to(dev)
         old_lp = torch.from_numpy(cat("old_logprobs")).to(dev)
+        cfe = torch.from_numpy(cat("cfeats")).to(dev) if use_cf else None
+        if args.critic_feats == "hazard":
+            # per-(game,seat) settled-fact label, broadcast over the episode
+            hlab = torch.from_numpy(np.concatenate(
+                [np.repeat(e["hlabels"][None], len(e["returns"]), 0)
+                 for e in episodes])).to(dev)
 
         if args.drop_zero_return:
             lens = [len(e["returns"]) for e in episodes]
@@ -213,7 +243,8 @@ def main():
             # V(s) for the whole batch under the SAMPLING policy
             vals = torch.cat([
                 net.forward_with_value(planes[i:i + 8192], scal[i:i + 8192],
-                                       mask[i:i + 8192])[1]
+                                       mask[i:i + 8192],
+                                       cfeats=cfe[i:i + 8192] if use_cf else None)[1]
                 for i in range(0, len(acts), 8192)])
         if args.gae_lambda is not None:
             # per-episode GAE over the SAME per-step V used elsewhere
@@ -237,13 +268,15 @@ def main():
                / (adv_raw[idx_keep].std() + 1e-8)).clamp(-5, 5)
 
         net.train()
-        stop, passes, kls, closs, vloss = False, 0, [], [], []
+        stop, passes, kls, closs, vloss, hloss = False, 0, [], [], [], []
         for ep in range(args.ppo_epochs):
             order = idx_keep[torch.randperm(n_eff, device=dev)]
             pass_kl = []
             for lo in range(0, n_eff, args.batch):
                 sel = order[lo:lo + args.batch]
-                logits, v = net.forward_with_value(planes[sel], scal[sel], mask[sel])
+                logits, v = net.forward_with_value(
+                    planes[sel], scal[sel], mask[sel],
+                    cfeats=cfe[sel] if use_cf else None)
                 logp = torch.log_softmax(logits, 1)
                 chosen = logp.gather(1, acts[sel][:, None]).squeeze(1)
                 ratio = torch.exp(chosen - old_lp[sel])
@@ -255,6 +288,13 @@ def main():
                 ent = -(logp.exp() * safe).sum(1).mean()
                 vl = torch.nn.functional.mse_loss(v, rets[sel])
                 loss = pg + args.value_coef * vl - args.entropy_coef * ent
+                if args.critic_feats == "hazard":
+                    # supervised channel: completion is settled fact, so this
+                    # loss is exempt from the on-policy/reuse constraints
+                    hz = torch.nn.functional.binary_cross_entropy_with_logits(
+                        net.hazard_head(cfe[sel]), hlab[sel])
+                    loss = loss + args.hazard_coef * hz
+                    hloss.append(hz.item())
                 opt.zero_grad(); loss.backward()
                 torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
                 opt.step()
@@ -292,6 +332,8 @@ def main():
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
                "explained_var": ev, "win_rate": win,
                "n_effective": n_eff, "n_raw": int(len(acts))}
+        if hloss:
+            row["hazard_bce"] = float(np.mean(hloss))
         log.append(row)
         for k, v in row.items():
             if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):

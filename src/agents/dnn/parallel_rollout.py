@@ -24,6 +24,7 @@ import torch
 
 from src.agents.dnn.net import MahjongPolicyNet
 from src.agents.dnn.selfplay import apply_shaping, play_game, returns_to_go
+from src.agents.dnn.yaku_features import completion_labels
 
 
 def _worker(rank, n_games, seeds, state_np, cfg):
@@ -36,14 +37,17 @@ def _worker(rank, n_games, seeds, state_np, cfg):
         net = ZOO[cfg["arch"]][0]()
     else:
         net = MahjongPolicyNet(channels=cfg["channels"], blocks=cfg["blocks"])
-    net.load_state_dict({k: torch.from_numpy(v) for k, v in state_np.items()},
-                        strict=False)
+    from src.agents.dnn.net import load_compatible
+    load_compatible(net, {k: torch.from_numpy(v) for k, v in state_np.items()})
     net.eval()
+    cmode = cfg.get("critic_feats", "none")
     payload = []
     for i in range(n_games):
         seed = seeds[i] if seeds else None
         g = play_game(net, temperature=cfg["temperature"], device="cpu",
-                      deal_seed=seed, shaping=cfg["shaping"])
+                      deal_seed=seed, shaping=cfg["shaping"],
+                      critic_feats=cmode)
+        labels = completion_labels(g.result or "") if cmode == "hazard" else None
         eps = []
         for pid in range(4):
             steps = g.trajectories[pid]
@@ -56,7 +60,7 @@ def _worker(rank, n_games, seeds, state_np, cfg):
             # numpy on the wire: torch tensors travel via shared-memory
             # file descriptors, which is fragile across fork + conda run
             # (observed: SocketClient FileNotFoundError). Arrays pickle.
-            eps.append({
+            ep = {
                 "planes": torch.stack([s.planes for s in steps]).numpy(),
                 "scalars": torch.stack([s.scalars for s in steps]).numpy(),
                 "mask": torch.stack([s.mask for s in steps]).numpy(),
@@ -65,7 +69,14 @@ def _worker(rank, n_games, seeds, state_np, cfg):
                 "returns": np.array(rets, dtype=np.float32),
                 "rewards": np.array([s.reward for s in steps], dtype=np.float32),
                 "key": (seed, pid),
-            })
+            }
+            if cmode != "none":
+                ep["cfeats"] = torch.stack([s.cfeats for s in steps]).numpy()
+            if labels is not None:
+                # one settled-fact label vector per (game, seat); the trainer
+                # broadcasts it over the episode's steps for the BCE channel
+                ep["hlabels"] = np.array(labels[pid], dtype=np.float32)
+            eps.append(ep)
         payload.append({"episodes": eps, "result": g.result or ""})
     return payload
 
