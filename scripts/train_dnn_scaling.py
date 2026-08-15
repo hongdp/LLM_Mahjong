@@ -131,6 +131,10 @@ def main():
 
     from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(os.path.join(exp_dir, "tensorboard"))
+    # TB display names only. "win_rate" is the share of self-play games ANY
+    # seat wins (1 - draw rate): a style metric, not strength — it has misled
+    # twice. The JSON field keeps its old name for downstream compatibility.
+    TB_TAG = {"win_rate": "decisive_rate"}
 
     start_games, start_iter, log = 0, 0, []
     if args.resume:
@@ -156,7 +160,7 @@ def main():
         for r in log:                       # replay history into TensorBoard
             for k, v in r.items():
                 if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
-                    writer.add_scalar(k, float(v), int(r["games"]))
+                    writer.add_scalar(TB_TAG.get(k, k), float(v), int(r["games"]))
     else:
         save("games_0", 0)          # the init itself is the arena's reference
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
@@ -261,7 +265,7 @@ def main():
         log.append(row)
         for k, v in row.items():
             if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
-                writer.add_scalar(k, float(v), games)
+                writer.add_scalar(TB_TAG.get(k, k), float(v), games)
         writer.add_scalar("games_per_sec",
                           (games - start_games) / max(el, 1e-9), games)
         writer.flush()
