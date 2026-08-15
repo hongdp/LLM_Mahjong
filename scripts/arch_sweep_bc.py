@@ -134,11 +134,13 @@ def main():
     ap.add_argument("--dataset", default="experiments/arch_sweep/teacher_ds.pt")
     ap.add_argument("--out", default="experiments/arch_sweep/results.json")
     ap.add_argument("--only", nargs="*", default=None)
+    ap.add_argument("--save_dir", default=None,
+                    help="also save each trained model's weights here")
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(args.dataset), exist_ok=True)
     if os.path.exists(args.dataset):
-        data = torch.load(args.dataset)
+        data = torch.load(args.dataset, weights_only=False)  # our own cache, contains numpy arrays
         print(f"[ds] cached: {len(data['actions'])} decisions", flush=True)
     else:
         t0 = time.time()
@@ -195,6 +197,11 @@ def main():
                     hit += int((lg.argmax(1).cpu() == Y[sel]).sum())
                     tot += len(sel)
             best = max(best, hit / tot)
+        if args.save_dir:
+            os.makedirs(args.save_dir, exist_ok=True)
+            torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
+                        "arch": name},
+                       os.path.join(args.save_dir, f"{name}.pt"))
         # batch-1 CPU latency: the self-play regime
         net_cpu = factory()
         net_cpu.load_state_dict(net.state_dict())

@@ -21,8 +21,12 @@ from src.tasks.mahjong.arena import run_match            # noqa: E402
 
 def load_dnn(path, device):
     blob = torch.load(path, map_location=device)
-    net = MahjongPolicyNet(channels=blob.get("channels", 64),
-                           blocks=blob.get("blocks", 3)).to(device)
+    if "arch" in blob:                      # arch-zoo checkpoint (exp10)
+        from src.agents.dnn.arch_zoo import ZOO
+        net = ZOO[blob["arch"]][0]().to(device)
+    else:
+        net = MahjongPolicyNet(channels=blob.get("channels", 64),
+                               blocks=blob.get("blocks", 3)).to(device)
     # strict=False: checkpoints written before the critic existed have no
     # value.* keys. The value head is unused at play time (only the policy
     # head picks actions), so an untrained one is harmless — but report it
