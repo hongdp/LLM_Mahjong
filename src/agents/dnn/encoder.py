@@ -27,6 +27,10 @@ ACTION_DIM = len(ACTION_TYPES) * TILE_TYPES      # 8 * 34 = 272
 
 # 15 board planes over the 34 tile types (see class docstring for the list)
 N_PLANES = 15
+# +4 optional order planes: each seat's river with values = discard index/20
+# (later discards score higher). The LLM prompt shows rivers as ORDERED text,
+# so adding order restores information parity rather than exceeding it.
+N_PLANES_V2 = 19
 N_SCALARS = 20
 
 _ACT_RE = re.compile(r'type="(\w+)"(?:[^>]*?tile="([^"]+)")?(?:[^>]*?with="([^"]+)")?')
@@ -83,14 +87,15 @@ def _counts_plane(tiles: List[str]) -> torch.Tensor:
     return c
 
 
-def encode_state(table, player_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
+def encode_state(table, player_id: int,
+                 with_order: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
     """Returns (planes [N_PLANES, 34], scalars [N_SCALARS]).
 
     Everything is written from `player_id`'s point of view: opponents are
     indexed by seat offset 1..3 downstream of the player, so the network
     never has to learn absolute seat identities.
     """
-    planes = torch.zeros(N_PLANES, TILE_TYPES)
+    planes = torch.zeros(N_PLANES_V2 if with_order else N_PLANES, TILE_TYPES)
 
     hand = table.hands[player_id]
     counts = _counts_plane(hand)
@@ -118,6 +123,12 @@ def encode_state(table, player_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
         planes[13][tile_to_34(table.last_discard)] = 1.0
 
     planes[14] = (_counts_plane(table.furiten_river[player_id]) > 0).float()
+
+    if with_order:
+        for off in range(4):             # 15-18: rivers with discard order
+            pid = (player_id + off) % 4
+            for j, t in enumerate(table.discards[pid]):
+                planes[15 + off][tile_to_34(t)] = min((j + 1) / 20.0, 1.0)
 
     s = torch.zeros(N_SCALARS)
     for off in range(4):                     # 0-3: points, own seat first

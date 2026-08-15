@@ -1,0 +1,108 @@
+"""Architecture zoo for the mahjong policy — exp10's search space.
+
+All models share the same contract as MahjongPolicyNet.forward
+(planes, scalars, mask -> masked logits [B, ACTION_DIM]) so any of them
+can drop into self-play, BC, and the arena unchanged.
+
+Two axes explored:
+  * capacity (CNN-S/M/L; ViT tiny/small)
+  * structure  (1-D CNN over the tile axis vs tiles-as-tokens transformer;
+                binary rivers vs order-aware rivers, encoder v2)
+
+The transformer factorizes the action head naturally: token t scores the
+8 action types for tile t, giving exactly the (type, key_tile) = 272-way
+action space used everywhere else.
+"""
+
+import torch
+import torch.nn as nn
+
+from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
+                                    N_PLANES_V2, N_SCALARS, TILE_TYPES)
+from src.agents.dnn.net import MahjongPolicyNet, ResBlock
+
+
+class CnnPolicy(MahjongPolicyNet):
+    """The incumbent, parameterized by input planes for encoder v2."""
+
+    def __init__(self, channels=64, blocks=3, in_planes=N_PLANES):
+        nn.Module.__init__(self)
+        self.stem = nn.Conv1d(in_planes, channels, 3, padding=1)
+        self.blocks = nn.Sequential(*[ResBlock(channels) for _ in range(blocks)])
+        self.scalar_fc = nn.Sequential(nn.Linear(N_SCALARS, 64), nn.ReLU())
+        self.head = nn.Sequential(
+            nn.Linear(channels * TILE_TYPES + 64, 512), nn.ReLU(),
+            nn.Linear(512, ACTION_DIM),
+        )
+        self.value = nn.Sequential(
+            nn.Linear(channels * TILE_TYPES + 64, 256), nn.ReLU(),
+            nn.Linear(256, 1),
+        )
+
+
+class TilesTransformer(nn.Module):
+    """Tiles-as-tokens: 34 tile tokens + 1 global token carrying scalars.
+
+    Per-token output head scores the 8 action types for that tile, which
+    matches the (type, key_tile) action indexing exactly.
+    """
+
+    def __init__(self, d=64, layers=2, heads=4, in_planes=N_PLANES):
+        super().__init__()
+        self.in_planes = in_planes
+        self.tile_embed = nn.Embedding(TILE_TYPES, d)
+        self.feat_proj = nn.Linear(in_planes, d)
+        self.global_proj = nn.Linear(N_SCALARS, d)
+        enc = nn.TransformerEncoderLayer(
+            d_model=d, nhead=heads, dim_feedforward=4 * d,
+            batch_first=True, dropout=0.0, norm_first=True)
+        self.encoder = nn.TransformerEncoder(enc, num_layers=layers)
+        self.type_head = nn.Linear(d, len(ACTION_TYPES))
+        self.value_head = nn.Sequential(nn.Linear(d, 128), nn.ReLU(),
+                                        nn.Linear(128, 1))
+
+    def trunk(self, planes, scalars):
+        B = planes.shape[0]
+        idx = torch.arange(TILE_TYPES, device=planes.device)
+        tok = self.feat_proj(planes.transpose(1, 2)) + self.tile_embed(idx)[None]
+        g = self.global_proj(scalars)[:, None, :]
+        return self.encoder(torch.cat([g, tok], dim=1))   # [B, 1+34, d]
+
+    def forward(self, planes, scalars, mask):
+        h = self.trunk(planes, scalars)
+        per_tile = self.type_head(h[:, 1:, :])            # [B, 34, 8]
+        logits = per_tile.permute(0, 2, 1).reshape(-1, ACTION_DIM)
+        return logits.masked_fill(~mask, float("-inf"))
+
+    def forward_with_value(self, planes, scalars, mask):
+        h = self.trunk(planes, scalars)
+        per_tile = self.type_head(h[:, 1:, :])
+        logits = per_tile.permute(0, 2, 1).reshape(-1, ACTION_DIM)
+        return (logits.masked_fill(~mask, float("-inf")),
+                self.value_head(h[:, 0, :]).squeeze(-1))
+
+    @torch.no_grad()
+    def act(self, planes, scalars, mask, temperature: float = 1.0):
+        if not bool(mask.any(dim=1).all()):
+            raise ValueError("act() got a row with no legal actions")
+        logits = self.forward(planes, scalars, mask)
+        if temperature <= 0:
+            idx = logits.argmax(dim=1)
+        else:
+            probs = torch.softmax(logits / temperature, dim=1)
+            idx = torch.multinomial(probs, 1).squeeze(1)
+        lp = torch.log_softmax(logits, dim=1).gather(1, idx[:, None]).squeeze(1)
+        return idx, lp
+
+
+ZOO = {
+    # name: (factory, needs_order_planes)
+    "cnn_s":        (lambda: CnnPolicy(32, 2), False),
+    "cnn_m":        (lambda: CnnPolicy(64, 3), False),            # incumbent
+    "cnn_l":        (lambda: CnnPolicy(128, 4), False),
+    "cnn_m_order":  (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V2), True),
+    "vit_tiny":     (lambda: TilesTransformer(64, 2, 4), False),
+    "vit_small":    (lambda: TilesTransformer(128, 4, 8), False),
+    "vit_small_order": (lambda: TilesTransformer(128, 4, 8,
+                                                 in_planes=N_PLANES_V2), True),
+}
