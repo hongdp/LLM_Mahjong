@@ -39,6 +39,8 @@ def main():
     ap.add_argument("--seed0", type=int, default=20260802)
     ap.add_argument("--parallel", type=int, default=12)
     ap.add_argument("--dnn_temperature", type=float, default=1.0)
+    ap.add_argument("--llm_temperature", type=float, default=0.9,
+                    help="LLM sampling temperature in the arena. Lower = less\n                         evaluation noise AND (measured) better teacher fidelity.")
     ap.add_argument("--out", default="arena_dnn_result.json")
     ap.add_argument("--transcript", default=None)
     args = ap.parse_args()
@@ -72,7 +74,8 @@ def main():
     rows = run_match(model, tokenizer, seeds, parallel=args.parallel,
                      transcript_path=args.transcript,
                      dnn_policies=dnn_policies or None,
-                     dnn_device=device, dnn_temperature=args.dnn_temperature)
+                     dnn_device=device, dnn_temperature=args.dnn_temperature,
+                     llm_temperature=args.llm_temperature)
 
     diffs = [r["diff"] for r in rows]
     n = len(diffs)

@@ -111,7 +111,11 @@ def main():
     ap.add_argument("--games", type=int, default=40)
     ap.add_argument("--seed0", type=int, default=900000, help="HELD-OUT seeds")
     ap.add_argument("--max_states", type=int, default=600)
-    ap.add_argument("--temperature", type=float, default=0.9)
+    ap.add_argument("--temperature", type=float, default=0.9,
+                    help="LLM sampling temperature (0 = greedy)")
+    ap.add_argument("--dnn_temperature", type=float, default=0.0,
+                    help="DNN sampling temperature (0 = greedy). Must match "
+                         "the LLM's setting for a fair fidelity comparison.")
     ap.add_argument("--out", default="teacher_agreement.json")
     args = ap.parse_args()
 
@@ -136,7 +140,8 @@ def main():
             mask, lookup = legal_mask(legal)
             planes, scal = encode_state(table, pid)
             idx, _ = net.act(planes[None].to(device), scal[None].to(device),
-                             mask[None].to(device), temperature=0.0)  # greedy
+                             mask[None].to(device),
+                             temperature=args.dnn_temperature)
             hit += int(lookup.get(int(idx)) == truth)
         result["dnn_agreement"] = hit / max(len(states), 1)
         print(f"[probe] DNN greedy agreement: {result['dnn_agreement']:.1%}")

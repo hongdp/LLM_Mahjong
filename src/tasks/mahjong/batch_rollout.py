@@ -122,7 +122,8 @@ def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
 
 
 def _batch_generate(model, tokenizer, reqs: List[_Req],
-                    capture: bool, max_batch: int = 24):
+                    capture: bool, max_batch: int = 24,
+                    temperature: float = 0.9):
     """Fills raw/parsed(/gen_ids/old_lp) on every request, batching the
     LLM calls. Falls back to the random policy without a model."""
     if model is None or tokenizer is None:
@@ -139,8 +140,9 @@ def _batch_generate(model, tokenizer, reqs: List[_Req],
         enc = tokenizer([r.prompt for r in chunk], return_tensors="pt",
                         padding=True).to(model.device)
         tokenizer.padding_side = old_side
-        gen_kwargs = dict(max_new_tokens=256, do_sample=True,
-                          temperature=0.9, top_p=0.95, pad_token_id=eos)
+        gen_kwargs = dict(max_new_tokens=256, do_sample=temperature > 0,
+                          temperature=max(temperature, 1e-5), top_p=0.95,
+                          pad_token_id=eos)
         with torch.no_grad():
             if capture:
                 out = model.generate(**enc, **gen_kwargs,

@@ -53,7 +53,8 @@ def run_match(model, tokenizer, deal_seeds: List[int],
               policy_names=("A", "B"), log_path: Optional[str] = None,
               transcript_path: Optional[str] = None,
               dnn_policies: Optional[dict] = None,
-              dnn_device: str = "cpu", dnn_temperature: float = 1.0):
+              dnn_device: str = "cpu", dnn_temperature: float = 1.0,
+              llm_temperature: float = 0.9):
     """Returns per-deal paired results:
     [{"seed": s, "diff": paired_point_diff, "wins_a": int, "wins_b": int,
       "orient": [{"a_seats": [...], "points": [...], "result": str}, ...]}]
@@ -159,7 +160,8 @@ def run_match(model, tokenizer, deal_seeds: List[int],
             if model is not None:
                 model.set_adapter(pol)
             _batch_generate(model, tokenizer, [r for _, r in pairs],
-                            capture=False, max_batch=max(24, parallel))
+                            capture=False, max_batch=max(24, parallel),
+                            temperature=llm_temperature)
 
         for job in list(active.keys()):
             st = active[job]

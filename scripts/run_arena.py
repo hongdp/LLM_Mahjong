@@ -22,6 +22,8 @@ def main():
     ap.add_argument("--seed0", type=int, default=20260802)
     ap.add_argument("--parallel", type=int, default=12)
     ap.add_argument("--value_facts", action="store_true")
+    ap.add_argument("--llm_temperature", type=float, default=0.9,
+                    help="LLM sampling temperature in the arena. Lower = less\n                         evaluation noise AND (measured) better teacher fidelity.")
     ap.add_argument("--out", default="arena_result.json")
     ap.add_argument("--transcript", default=None,
                     help="write replayable game transcripts (rollout format)")
@@ -45,6 +47,7 @@ def main():
         os.makedirs(os.path.dirname(args.transcript), exist_ok=True)
         open(args.transcript, "w").close()
     rows = run_match(model, tok, seeds, value_facts=args.value_facts,
+                     llm_temperature=args.llm_temperature,
                      parallel=args.parallel, log_path=args.out + ".log",
                      transcript_path=args.transcript)
 
