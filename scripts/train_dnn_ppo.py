@@ -65,13 +65,42 @@ def main():
                          "are launch-bound, so 16 CPU processes beat one GPU. "
                          "The update is the opposite shape (batch 4-8k) and "
                          "measured 148x faster on GPU (6439ms -> 43.6ms/step).")
+    ap.add_argument("--resume", default=None,
+                    help="checkpoint to continue from; restores weights, "
+                         "optimizer moments and the games counter when the "
+                         "checkpoint carries them (older ones only have "
+                         "weights — Adam moments then rebuild in a few iters)")
+    ap.add_argument("--ckpt_every", type=int, default=25,
+                    help="also snapshot every N iterations, so a restart "
+                         "never loses more than that")
     ap.add_argument("--exp_dir", default=None)
     args = ap.parse_args()
 
     torch.set_num_threads(max(1, os.cpu_count() // 3))
     torch.manual_seed(args.seed); random.seed(args.seed)
+    exp_dir_guard = None
     exp_dir = args.exp_dir or f"experiments/dnn_ppo_{time.strftime('%Y%m%d_%H%M%S')}"
     os.makedirs(exp_dir, exist_ok=True)
+    # Single-writer lock. Two trainers sharing an exp_dir race on
+    # train_log.json, checkpoints AND event files — observed as duplicated
+    # TensorBoard steps after a launch script was run twice.
+    lock = os.path.join(exp_dir, "RUNNING.lock")
+    if os.path.exists(lock):
+        try:
+            old = int(open(lock).read().split()[0])
+            alive = os.path.exists(f"/proc/{old}")
+        except Exception:
+            old, alive = -1, False
+        if alive:
+            raise SystemExit(
+                f"refusing to start: pid {old} already writes {exp_dir} "
+                f"(remove {lock} if that process is gone)")
+        print(f"   stale lock from pid {old} removed", flush=True)
+    with open(lock, "w") as f:
+        f.write(f"{os.getpid()} {time.strftime('%F %T')}\n")
+    import atexit
+    atexit.register(lambda: os.path.exists(lock) and os.remove(lock))
+
     json.dump(vars(args), open(f"{exp_dir}/config.json", "w"), indent=2)
     milestones = sorted(int(x) for x in args.milestones.split(","))
 
@@ -83,17 +112,49 @@ def main():
         print(f"⚓ warm-start {args.init}", flush=True)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 
-    def save(tag, games):
+    def save(tag, games, it=0):
         torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
-                    "channels": args.channels,
-                    "blocks": args.blocks, "games": games}, f"{exp_dir}/{tag}.pt")
+                    "channels": args.channels, "blocks": args.blocks,
+                    "games": games, "iter": it,
+                    "optimizer": opt.state_dict()}, f"{exp_dir}/{tag}.pt")
 
-    save("games_0", 0)
+    from torch.utils.tensorboard import SummaryWriter
+    writer = SummaryWriter(os.path.join(exp_dir, "tensorboard"))
+
+    start_games, start_iter, log = 0, 0, []
+    if args.resume:
+        blob = torch.load(args.resume, map_location=dev)
+        net.load_state_dict(blob["state_dict"])
+        if "optimizer" in blob:
+            opt.load_state_dict(blob["optimizer"])
+            print("   optimizer moments restored", flush=True)
+        else:
+            print("   (checkpoint has no optimizer state; Adam moments restart)",
+                  flush=True)
+        start_games = int(blob.get("games", 0))
+        start_iter = int(blob.get("iter", 0))
+        old_log = os.path.join(exp_dir, "train_log.json")
+        if os.path.exists(old_log):
+            try:
+                log = [r for r in json.load(open(old_log))
+                       if r.get("games", 0) <= start_games]
+            except Exception:
+                log = []
+        print(f"⏩ resume from {args.resume}: {start_games} games, "
+              f"{len(log)} log rows kept", flush=True)
+        for r in log:                       # replay history into TensorBoard
+            for k, v in r.items():
+                if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
+                    writer.add_scalar(k, float(v), int(r["games"]))
+    else:
+        save("games_0", 0)
     cfg = dict(channels=args.channels, blocks=args.blocks,
                temperature=args.temperature, gamma=args.gamma,
                shaping=False, seed=args.seed)
 
-    games, it, t0, log, next_ms = 0, 0, time.time(), [], 0
+    games, it, t0, next_ms = start_games, start_iter, time.time(), 0
+    while next_ms < len(milestones) and milestones[next_ms] <= start_games:
+        next_ms += 1
     while games < args.total_games:
         it += 1
         n_deals = max(1, args.games_per_iter // args.dup_k)
@@ -187,21 +248,31 @@ def main():
                "explained_var": ev, "win_rate": win,
                "n_effective": n_eff, "n_raw": int(len(acts))}
         log.append(row)
+        for k, v in row.items():
+            if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
+                writer.add_scalar(k, float(v), games)
+        writer.add_scalar("games_per_sec",
+                          (games - start_games) / max(el, 1e-9), games)
+        writer.flush()
         if it % 5 == 0 or it == 1:
             print(f"[{it:4d}] games={games:7d} {el/60:6.1f}min "
-                  f"{games/max(el,1):5.1f}局/s pg={row['pg_loss']:+.4f} "
+                  f"{(games-start_games)/max(el,1):5.1f}局/s pg={row['pg_loss']:+.4f} "
                   f"H={ent_before:.3f}->{ent_after:.3f} win={win:.1%} "
                   f"kl={row['approx_kl']:.4f} passes={passes} EV={ev:+.3f} "
                   f"eff={n_eff}/{len(acts)}", flush=True)
             json.dump(log, open(f"{exp_dir}/train_log.json", "w"), indent=1)
 
+        if args.ckpt_every and it % args.ckpt_every == 0:
+            save("latest", games, it)
+
         while next_ms < len(milestones) and games >= milestones[next_ms]:
-            save(f"games_{milestones[next_ms]}", games)
+            save(f"games_{milestones[next_ms]}", games, it)
             print(f"📌 milestone {milestones[next_ms]} (actual {games})", flush=True)
             next_ms += 1
 
-    save("games_final", games)
+    save("games_final", games, it)
     json.dump(log, open(f"{exp_dir}/train_log.json", "w"), indent=1)
+    writer.close()
     print(f"✅ {games} games in {(time.time()-t0)/60:.1f} min -> {exp_dir}")
 
 
