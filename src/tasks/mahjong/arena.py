@@ -27,6 +27,9 @@ from src.tasks.mahjong.table import PyMahjongTable
 from src.tasks.mahjong.batch_rollout import _drive_game, _batch_generate, _Req
 
 
+_EMPTY_LEGAL = [0]      # counts states with no usable legal action
+
+
 def _fill_with_dnn(net, pairs, device="cpu", temperature: float = 1.0):
     """Fill (table, _Req) pairs using a conventional DNN policy.
 
@@ -38,6 +41,15 @@ def _fill_with_dnn(net, pairs, device="cpu", temperature: float = 1.0):
     import torch as _t
     for table, r in pairs:
         mask, lookup = legal_mask(r.legal)
+        if not lookup:
+            # No parsable legal action (the engine can hand back an empty
+            # list in rare states). The LLM side degrades to an unparsed
+            # action here; the DNN must do the same instead of feeding an
+            # all-masked row to softmax, which yields NaN and a CUDA assert.
+            r.raw = r.legal[0] if r.legal else ""
+            r.parsed = r.legal[0] if r.legal else None
+            _EMPTY_LEGAL[0] += 1
+            continue
         planes, scalars = encode_state(table, r.player_id)
         idx, _ = net.act(planes[None].to(device), scalars[None].to(device),
                          mask[None].to(device), temperature=temperature)

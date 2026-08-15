@@ -65,7 +65,15 @@ class MahjongPolicyNet(nn.Module):
 
     @torch.no_grad()
     def act(self, planes, scalars, mask, temperature: float = 1.0):
-        """Sample one legal action index per row. Returns (idx, logprob)."""
+        """Sample one legal action index per row. Returns (idx, logprob).
+
+        Every row must have at least one legal action: an all-masked row
+        makes softmax return NaN and multinomial raise a device-side
+        assert. Callers handle the no-legal-action case themselves.
+        """
+        if not bool(mask.any(dim=1).all()):
+            raise ValueError("act() got a row with no legal actions; "
+                             "the caller must handle empty legal lists")
         logits = self.forward(planes, scalars, mask)
         if temperature <= 0:
             idx = logits.argmax(dim=1)

@@ -25,10 +25,12 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.dnn.net import MahjongPolicyNet          # noqa: E402
-from src.agents.dnn.selfplay import play_game, returns_to_go   # noqa: E402
+from src.agents.dnn.selfplay import (apply_shaping, play_game,   # noqa: E402
+                                     returns_to_go)
 
 
-def collect_batch(net, n_games, gamma, temperature, device, dup_k, base_seed):
+def collect_batch(net, n_games, gamma, temperature, device, dup_k, base_seed,
+                  shaping=False):
     """Returns (steps, returns, stats). With dup_k>1 each wall is replayed
     dup_k times and the leave-one-out group mean of G0 is subtracted per
     (deal, seat) — the empirical baseline exp4's probe pointed us to."""
@@ -43,7 +45,7 @@ def collect_batch(net, n_games, gamma, temperature, device, dup_k, base_seed):
 
     for s in seeds:
         games.append((play_game(net, temperature=temperature, device=device,
-                                deal_seed=s), s))
+                                deal_seed=s, shaping=shaping), s))
 
     all_steps, all_returns, group_of = [], [], []
     per_ep = []
@@ -52,6 +54,8 @@ def collect_batch(net, n_games, gamma, temperature, device, dup_k, base_seed):
             steps = g.trajectories[pid]
             if not steps:
                 continue
+            if shaping:
+                apply_shaping(steps, gamma)
             rets = returns_to_go(steps, gamma)
             per_ep.append((steps, rets, (seed, pid)))
 
@@ -108,8 +112,18 @@ def main():
     ap.add_argument("--blocks", type=int, default=3)
     ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--entropy_coef", type=float, default=0.01)
+    ap.add_argument("--entropy_final", type=float, default=None,
+                    help="anneal entropy_coef linearly to this by the last "
+                         "iter (exploration early, exploitation late)")
+    ap.add_argument("--shaping", action="store_true",
+                    help="PBRS shanten/ukeire shaping. Policy-invariant, and "
+                         "the only dense gradient available before the agent "
+                         "ever wins a hand (the from-scratch bootstrap case).")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--init", default=None,
+                    help="warm-start from a BC checkpoint (the DNN analogue "
+                         "of the LLM's SFT->RL pipeline)")
     ap.add_argument("--exp_dir", default=None)
     ap.add_argument("--ckpt_every", type=int, default=50)
     args = ap.parse_args()
@@ -121,6 +135,10 @@ def main():
     json.dump(vars(args), open(f"{exp_dir}/config.json", "w"), indent=2)
 
     net = MahjongPolicyNet(channels=args.channels, blocks=args.blocks).to(args.device)
+    if args.init:
+        blob = torch.load(args.init, map_location=args.device)
+        net.load_state_dict(blob["state_dict"])
+        print(f"⚓ warm-start from {args.init}")
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
     print(f"📦 params={sum(p.numel() for p in net.parameters()):,}  dir={exp_dir}")
 
@@ -129,9 +147,14 @@ def main():
     log = []
     for it in range(1, args.iters + 1):
         net.eval()
+        ent_coef = args.entropy_coef
+        if args.entropy_final is not None and args.iters > 1:
+            frac = (it - 1) / (args.iters - 1)
+            ent_coef = args.entropy_coef + frac * (args.entropy_final - args.entropy_coef)
         steps, returns, stats = collect_batch(
             net, args.games_per_iter, args.gamma, args.temperature,
-            args.device, args.dup_k, base_seed=1_000_000 + it * 997)
+            args.device, args.dup_k, base_seed=1_000_000 + it * 997,
+            shaping=args.shaping)
         games_played += stats["games"]
         if not steps:
             continue
@@ -157,7 +180,7 @@ def main():
             # entropy over legal actions only (masked entries are -inf -> p=0)
             ent = -(p * torch.where(torch.isfinite(logp), logp,
                                     torch.zeros_like(logp))).sum(1).mean()
-            loss = -(chosen * a).mean() - args.entropy_coef * ent
+            loss = -(chosen * a).mean() - ent_coef * ent
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -166,6 +189,7 @@ def main():
 
         el = time.time() - t0
         row = {"iter": it, "games": games_played, "wall_s": round(el, 1),
+               "ent_coef": ent_coef,
                "loss": sum(losses) / len(losses), "entropy": sum(ents) / len(ents),
                "mean_return": returns.mean().item(), **stats}
         log.append(row)
