@@ -31,8 +31,13 @@ def _worker(rank, n_games, seeds, state_np, cfg):
     torch.manual_seed(cfg["seed"] * 1000 + rank)
     import random as _rnd
     _rnd.seed(cfg["seed"] * 7919 + rank)
-    net = MahjongPolicyNet(channels=cfg["channels"], blocks=cfg["blocks"])
-    net.load_state_dict({k: torch.from_numpy(v) for k, v in state_np.items()})
+    if cfg.get("arch"):
+        from src.agents.dnn.arch_zoo import ZOO
+        net = ZOO[cfg["arch"]][0]()
+    else:
+        net = MahjongPolicyNet(channels=cfg["channels"], blocks=cfg["blocks"])
+    net.load_state_dict({k: torch.from_numpy(v) for k, v in state_np.items()},
+                        strict=False)
     net.eval()
     payload = []
     for i in range(n_games):

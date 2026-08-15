@@ -15,7 +15,7 @@ from typing import List, Optional
 import torch
 
 from src.agents.dnn.encoder import encode_state, legal_mask
-from src.tasks.mahjong.orchestrator import _resolve_claims
+from src.tasks.mahjong.claims import _resolve_claims
 from src.tasks.mahjong.shanten import TileEfficiency, pad_for_melds
 from src.tasks.mahjong.table import PyMahjongTable
 

@@ -8,15 +8,14 @@ from langgraph.graph import StateGraph, END
 
 from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
 from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content, get_system_prompt
+from src.tasks.mahjong.claims import (_PRIORITY, _extract_action,  # noqa: F401
+                                      _resolve_claims)
 from src.core.chat_format import visible_text, render_generation_prompt
 from src.core.rollout import TrajectoryStep
 
 # Meld resolution priority (RCR 3.3/3.4: pon and kan beat chi). Ron is
 # resolved separately and beats every meld — and per RCR 3.11 EVERY player
 # who declares a legal ron wins, so it is not part of this race.
-_PRIORITY = {"kan": 1, "pon": 2, "chi": 3}
-
-
 class MahjongState(TypedDict):
     table: PyMahjongTable
     trajectories: Dict[int, List[TrajectoryStep]]
@@ -29,11 +28,6 @@ class MahjongState(TypedDict):
     capture_logprobs: bool
 
 
-def _extract_action(raw_output: str) -> Optional[str]:
-    """Extracts the action tag from OUTSIDE the think block only —
-    actions merely mentioned while reasoning must not be executed."""
-    m = ACTION_RE.search(visible_text(raw_output))
-    return m.group(0) if m else None
 
 
 def _query(state: MahjongState, player_id: int, legal_actions: List[str]):
@@ -112,42 +106,6 @@ def _log_result(state: MahjongState, table: PyMahjongTable):
         f.write(f"=== 对局结束: {table.result_summary} ===\n")
 
 
-def _resolve_claims(table: PyMahjongTable, candidates: List[dict]):
-    """Applies one interrupt window's declarations to the table.
-
-    `candidates` must be in seat order starting from the discarder — that
-    order decides who collects the riichi sticks on a multiple ron.
-    Returns (executed_candidates, game_over). Writes each candidate's
-    engine reward into cand["reward"].
-    """
-    for cand in candidates:
-        if cand["parsed"] is None:
-            cand["reward"] = table.FORMAT_PENALTY
-
-    actionable = [c for c in candidates
-                  if c["parsed"] is not None and c["type"] not in (None, "skip")]
-
-    # RCR 3.11: all declared rons are settled in one call; illegal ones
-    # (furiten / no yaku) are penalized there and the melds play on.
-    rons = [c for c in actionable if c["type"] == "ron"]
-    if rons:
-        _, rewards, done, info = table.step_ron([c["player_id"] for c in rons])
-        for cand in rons:
-            cand["reward"] = rewards[cand["player_id"]]
-        winners = set(info.get("winners", []))
-        if winners:
-            return [c for c in rons if c["player_id"] in winners], done
-
-    executed = []
-    for cand in sorted([c for c in actionable if c["type"] != "ron"],
-                       key=lambda c: _PRIORITY.get(c["type"], 9)):
-        if executed:
-            continue  # lost the priority race: action not applied, no penalty
-        _, rewards, _, info = table.step_interrupt(cand["player_id"], cand["parsed"])
-        cand["reward"] = rewards[cand["player_id"]]
-        if info.get("interrupt", False):
-            executed = [cand]
-    return executed, False
 
 
 def turn_node(state: MahjongState):

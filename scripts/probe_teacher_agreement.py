@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.dnn.encoder import action_to_index, encode_state, legal_mask  # noqa: E402
 from src.core.chat_format import render_generation_prompt, visible_text        # noqa: E402
-from src.tasks.mahjong.orchestrator import _resolve_claims                     # noqa: E402
+from src.tasks.mahjong.claims import _resolve_claims                     # noqa: E402
 from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content        # noqa: E402
 from src.tasks.mahjong.table import PyMahjongTable                             # noqa: E402
 import scripts.generate_sft_data as teacher                                    # noqa: E402

@@ -39,6 +39,9 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--entropy_coef", type=float, default=0.02)
+    ap.add_argument("--arch", default=None,
+                    help="arch-zoo model name (e.g. vit_small); overrides "
+                         "channels/blocks")
     ap.add_argument("--channels", type=int, default=64)
     ap.add_argument("--blocks", type=int, default=3)
     ap.add_argument("--batch", type=int, default=4096,
@@ -108,7 +111,12 @@ def main():
     milestones = sorted(int(x) for x in args.milestones.split(","))
 
     dev = torch.device(args.train_device)
-    net = MahjongPolicyNet(channels=args.channels, blocks=args.blocks).to(dev)
+    if args.arch:
+        from src.agents.dnn.arch_zoo import ZOO
+        net = ZOO[args.arch][0]().to(dev)
+        print(f"🏗 arch: {args.arch}", flush=True)
+    else:
+        net = MahjongPolicyNet(channels=args.channels, blocks=args.blocks).to(dev)
     if args.init:
         net.load_state_dict(torch.load(args.init, map_location="cpu")["state_dict"])
         print(f"⚓ warm-start {args.init}", flush=True)
@@ -117,6 +125,7 @@ def main():
     def save(tag, games, it=0):
         torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                     "channels": args.channels, "blocks": args.blocks,
+                    "arch": args.arch,
                     "games": games, "iter": it,
                     "optimizer": opt.state_dict()}, f"{exp_dir}/{tag}.pt")
 
@@ -150,7 +159,7 @@ def main():
                     writer.add_scalar(k, float(v), int(r["games"]))
     else:
         save("games_0", 0)          # the init itself is the arena's reference
-    cfg = dict(channels=args.channels, blocks=args.blocks,
+    cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
                temperature=args.temperature, gamma=args.gamma,
                shaping=args.shaping, seed=args.seed)
 

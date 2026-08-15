@@ -23,7 +23,7 @@ from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
 from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content, get_system_prompt
 from src.core.chat_format import visible_text, render_generation_prompt
 from src.core.rollout import TrajectoryStep
-from src.tasks.mahjong.orchestrator import _resolve_claims, _extract_action
+from src.tasks.mahjong.claims import _resolve_claims, _extract_action
 
 
 @dataclass
