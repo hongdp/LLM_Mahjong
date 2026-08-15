@@ -14,7 +14,7 @@ as such. Values are rough average completed-hand points for the family
 alone; dora is not modelled.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from src.tasks.mahjong.shanten import TileEfficiency, pad_for_melds
 
@@ -91,3 +91,99 @@ def value_distance_profile(hand: List[str], n_melds: int,
                 best = min(best, dists[fam])
         out.append(min(best, MAX_D) / MAX_D)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Hazard-critic feature extractors (exp11+): per-family EXACT distance and
+# ukeire, so a SHARED completion-hazard head can generalize across families
+# by dynamics (d, u, resources) instead of identity. Kokushi and suuankou are
+# both worth 32000 — what tells them apart is the SHAPE of (d, u): kokushi
+# runs on a narrow fixed set of missing orphan types; suuankou runs on
+# pairs-to-concealed-triplets conversion.
+# ---------------------------------------------------------------------------
+
+ORPHANS = sorted(TERMINAL_HONOR)          # the 13 kokushi tile types
+
+
+def kokushi_distance(hand: List[str],
+                     visible_counts: Dict[str, int] = None) -> Tuple[float, float]:
+    """(shanten, ukeire_tiles) for kokushi musou.
+
+    shanten = 13 - distinct_orphan_types - (1 if any orphan pair) ; -1 = win.
+    ukeire counts REMAINING copies of missing orphan types (4 minus what we
+    hold and what is visible elsewhere), plus pair-forming copies when no
+    pair is held yet.
+    """
+    counts: Dict[str, int] = {}
+    for t in hand:
+        counts[t] = counts.get(t, 0) + 1
+    vis = visible_counts or {}
+    types = [t for t in ORPHANS if counts.get(t, 0) >= 1]
+    has_pair = any(counts.get(t, 0) >= 2 for t in ORPHANS)
+    shanten = 13 - len(types) - (1 if has_pair else 0)
+    missing = [t for t in ORPHANS if counts.get(t, 0) == 0]
+    ukeire = sum(max(4 - vis.get(t, 0), 0) for t in missing)
+    if not has_pair:
+        ukeire += sum(max(4 - counts.get(t, 0) - vis.get(t, 0), 0)
+                      for t in types)
+    return float(shanten), float(ukeire)
+
+
+def suuankou_distance(hand: List[str], n_melds: int,
+                      visible_counts: Dict[str, int] = None) -> Tuple[float, float]:
+    """(distance, ukeire_tiles) for suuankou (four CONCEALED triplets).
+
+    Any open meld kills the family (returns MAX_D, 0): the categorical
+    "call -> this yakuman dies instantly" fact lives HERE as a feature,
+    which is what lets gamma*V(s')-V(s) punish the call immediately.
+    distance = 4 - concealed_triplets - min(pairs,needed) heuristic on the
+    standard toitoi-like ladder; ukeire = third copies of held pairs.
+    """
+    if n_melds > 0:
+        return MAX_D, 0.0
+    counts: Dict[str, int] = {}
+    for t in hand:
+        counts[t] = counts.get(t, 0) + 1
+    vis = visible_counts or {}
+    trips = sum(1 for v in counts.values() if v >= 3)
+    pairs = sum(1 for v in counts.values() if v == 2)
+    need = 4 - trips
+    # each missing triplet must come from upgrading a pair (or drawing pairs)
+    dist = float(max(need - pairs, 0) + need)
+    ukeire = sum(max(2 - vis.get(t, 0), 0)
+                 for t, v in counts.items() if v == 2)
+    return dist, float(ukeire)
+
+
+HAZARD_FAMILIES = list(FAMILY_VALUE) + ["kokushi", "suuankou"]
+HAZARD_VALUE = dict(FAMILY_VALUE, kokushi=32000, suuankou=32000)
+
+
+def hazard_features(hand: List[str], n_melds: int, closed: bool,
+                    turns_left: float,
+                    visible_counts: Dict[str, int] = None) -> List[List[float]]:
+    """Per-family [d/MAX_D, u/40, closed_ok, value/32000, turns_left/18].
+
+    One row per family, all through the SAME hazard head downstream. The
+    family's VALUE is an injected feature (rule knowledge), never a
+    regression target — a yakuman's 32000 never has to survive advantage
+    clipping to reach the critic.
+    """
+    base = family_distances(hand, n_melds, closed)
+    kd, ku = kokushi_distance(hand, visible_counts)
+    sd, su = suuankou_distance(hand, n_melds, visible_counts)
+    rows = []
+    for fam in HAZARD_FAMILIES:
+        if fam == "kokushi":
+            d, u, ok = kd, ku, closed and n_melds == 0
+        elif fam == "suuankou":
+            d, u, ok = sd, su, closed and n_melds == 0
+        else:
+            d, ok = base[fam], base[fam] < MAX_D
+            u = 8.0        # generic families: ukeire proxy TBD, constant
+        rows.append([min(max(d, -1.0), MAX_D) / MAX_D,
+                     min(u, 40.0) / 40.0,
+                     1.0 if ok else 0.0,
+                     HAZARD_VALUE[fam] / 32000.0,
+                     min(turns_left, 18.0) / 18.0])
+    return rows
