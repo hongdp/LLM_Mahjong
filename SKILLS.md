@@ -113,4 +113,10 @@
 
 - **（2026-08-15 a0 事故）重复并发发射会让 bootstrap 自我竞态**：pgrep 误判时代对同一 VM 多次发射 runner，两份 bootstrap 并发——崩掉的那份在兄弟进程 pip 装完 mahjong 之前就 `import`，报 ModuleNotFoundError 后 EXIT trap 自关机；事后验尸 venv 却是完整的（另一份装完了）。这类「事发时缺、验尸时在」的幻影缺包，先怀疑并发发射而不是网络。修复已固化：runner 起跑前**硬校验依赖闭包**（在将要执行 run 的同一解释器里 import 全家，失败打印 `which python`/pip list 后大声退出）；发射永远单次、以 GCS artifact 验证而非进程列表。参见上文 venv bootstrap 竞态条目——同族，成因不同（他挂 vs 自挂）。
 
+- **（2026-08-16 exp12 确认）PPO 后期平台 = 熵奖励均衡，不是噪声也不是步长**：恒定 entropy_coef
+  （0.03）在策略梯度信号萎缩的末段变成主动约束，把策略钉在人工高熵位（H~1.18）。三臂单变量消融：
+  熵 0.03→0.01 臂 +1073±594（发现+独立确认合并，p≈0.0004，新冠军 E-700k）；4× 批量臂 null
+  （点估计 −841，反证"优势噪声地板"假说）；lr↓ 臂 null。**训练配方**：熵系数要退火——前期 0.03
+  探索，决出率饱和/pg_loss 萎缩后降至 0.01；进一步退火待测。档案：experiments/exp12_plateau_prereg。
+
 - **（2026-08-15 决策）自对弈 `win_rate` 更名 `decisive_rate`（仅 TB 展示层）**：该指标 = 有人和牌的对局比例（1−流局率，四座同网，上限 100%），是**风格**指标不是强度指标，曾两次误导分析（人类顶级对局参照：流局率 13-16%）。强度排名只认复式牌配对竞技场。实现：trainer 写 TB 时经 `TB_TAG` 映射；train_log.json 字段名**不动**（下游报告/探针/resume 兼容）；历史已完成 run 用 `scripts/rebuild_tb_from_log.py` 重建到 `tensorboard_r/`（原目录保留），正在跑的 run 于下次自然重启时切换。
