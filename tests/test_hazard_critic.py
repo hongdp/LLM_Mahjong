@@ -144,6 +144,24 @@ class TestLoadCompatible(unittest.TestCase):
             load_compatible(small, big.state_dict())
 
 
+class TestTrainerCallCompat(unittest.TestCase):
+    """Every net the PPO trainer can construct must accept the cfeats kwarg
+    (None included) — the trainer passes it unconditionally. The vit-r3
+    cloud run died on exactly this (TypeError at startup)."""
+
+    def test_all_zoo_nets_accept_cfeats_kwarg(self):
+        from src.agents.dnn.arch_zoo import ZOO
+        from src.agents.dnn.encoder import (ACTION_DIM, N_PLANES, N_PLANES_V2,
+                                            N_SCALARS, TILE_TYPES)
+        for name, (factory, order) in ZOO.items():
+            net = factory().eval()
+            p = torch.rand(2, N_PLANES_V2 if order else N_PLANES, TILE_TYPES)
+            s = torch.rand(2, N_SCALARS)
+            m = torch.ones(2, ACTION_DIM, dtype=torch.bool)
+            logits, v = net.forward_with_value(p, s, m, cfeats=None)
+            self.assertEqual(v.shape, (2,), name)
+
+
 class TestRolloutCarriesFeatures(unittest.TestCase):
 
     def test_play_game_hazard_features_shape(self):

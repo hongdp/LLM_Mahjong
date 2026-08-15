@@ -27,6 +27,11 @@ class CnnPolicy(MahjongPolicyNet):
 
     def __init__(self, channels=64, blocks=3, in_planes=N_PLANES):
         nn.Module.__init__(self)
+        # bypasses MahjongPolicyNet.__init__, so the exp11 critic-variant
+        # attributes its inherited forward_with_value reads must exist here
+        self.critic_feat_dim = 0
+        self.hazard = False
+        self.hazard_head = None
         self.stem = nn.Conv1d(in_planes, channels, 3, padding=1)
         self.blocks = nn.Sequential(*[ResBlock(channels) for _ in range(blocks)])
         self.scalar_fc = nn.Sequential(nn.Linear(N_SCALARS, 64), nn.ReLU())
@@ -74,7 +79,12 @@ class TilesTransformer(nn.Module):
         logits = per_tile.permute(0, 2, 1).reshape(-1, ACTION_DIM)
         return logits.masked_fill(~mask, float("-inf"))
 
-    def forward_with_value(self, planes, scalars, mask):
+    def forward_with_value(self, planes, scalars, mask, cfeats=None):
+        # cfeats accepted-and-ignored for trainer call compatibility: the PPO
+        # trainer passes the kwarg unconditionally (None when --critic_feats
+        # none); zoo nets don't implement critic variants and the trainer
+        # refuses --arch + --critic_feats up front. Missing this parameter
+        # killed the vit-r3 cloud run at startup (TypeError).
         h = self.trunk(planes, scalars)
         per_tile = self.type_head(h[:, 1:, :])
         logits = per_tile.permute(0, 2, 1).reshape(-1, ACTION_DIM)
