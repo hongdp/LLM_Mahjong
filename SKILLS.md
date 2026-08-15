@@ -78,6 +78,8 @@
 - **Old "generation is fast (~1.5s/128tok)" note above is superseded** — with sampling + adapter + fallback path the real number is ~7s/128tok locally.
 - Headroom beyond kernels: parallel-game batched rollout (GPU util has 5-8× slack), bf16 rollout weights, torch.compile/static cache. Cost math that motivated all this: at 11 tok/s an A100 run = ~50h ≈ $180.
 
+- **DNN rollout 时间构成与 GPU 批量推理决策（2026-08-15，已定，触发条件见末尾）**：DNN 自对弈 rollout 全在 CPU（fork worker、batch-1 推理），GPU 只做更新步。实测 batch-1 CPU 延迟：cnn_m 0.64ms、vit_small 2.31ms（3.6×），但整体吞吐只差 1.6×（25.4 vs 15.8 局/s，G2 30 workers）——反推每局 ~430 次网络调用，时间构成：**cnn 网络 23%/引擎 77%；vit 网络 52%/引擎 48%**。结论：①逐次调用发 GPU 是负收益（kernel 启动+PCIe > 0.64ms）；②中心化批量推理（并行对局状态凑 batch）受 Amdahl 封顶——cnn 上限 1.3× 不值得，vit_small 实际 ~1.6-1.8×，需重构对局循环为协程/状态机（鸣牌/打断窗口是易错区），当前不做。**触发条件（用户已拍板：未来探索更大 transformer 时做）**：batch-1 延迟 ≥10ms 级的架构（网络占比 80-90%，Amdahl 上限 5-10×）或大规模对局立项。排序提醒：引擎优化（向听缓存等）对所有架构生效且吃掉 cnn 的 77%，应排在 GPU rollout 之前。
+
 ---
 ### Rule Fidelity: EMA RCR 2016 Audit (Aug 2026)
 - **Benchmark document**: the European Mahjong Association's *Riichi — Rules for Japanese Mahjong* (2016 revision). A Chinese translation lives at `breizhmahjong.fr/wp-content/uploads/2015/11/RCR_2016_trad-chinoise.pdf` (the host 403s bare `curl` — send a browser UA). No poppler on this box; extract text with `gs -sDEVICE=txtwrite -dTextFormat=3`.
