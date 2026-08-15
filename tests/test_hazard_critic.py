@@ -143,6 +143,26 @@ class TestLoadCompatible(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             load_compatible(small, big.state_dict())
 
+    def test_arena_loader_handles_arch_none_and_critic_variants(self):
+        """The arena loader must route arch=None checkpoints (every default
+        CNN since exp10 stores the key) to MahjongPolicyNet, and consume
+        exp11 critic-variant checkpoints (mismatched value head)."""
+        import tempfile
+        from scripts.run_arena_dnn import load_dnn
+        for kw in (dict(), dict(critic_feat_dim=4), dict(hazard=True)):
+            src = MahjongPolicyNet(channels=16, blocks=1, **kw).eval()
+            blob = {"state_dict": src.state_dict(), "channels": 16,
+                    "blocks": 1, "arch": None,
+                    "critic_feats": "any", "games": 0, "iter": 0}
+            with tempfile.NamedTemporaryFile(suffix=".pt") as f:
+                torch.save(blob, f.name)
+                net = load_dnn(f.name, "cpu")
+            x = torch.rand(2, net.stem.in_channels, 34)
+            s = torch.rand(2, net.scalar_fc[0].in_features)
+            m = torch.ones(2, 272, dtype=torch.bool)
+            self.assertTrue(torch.allclose(net(x, s, m), src(x, s, m)),
+                            str(kw))
+
 
 class TestTrainerCallCompat(unittest.TestCase):
     """Every net the PPO trainer can construct must accept the cfeats kwarg

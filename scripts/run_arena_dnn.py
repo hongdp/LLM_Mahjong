@@ -15,29 +15,28 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.agents.dnn.net import MahjongPolicyNet          # noqa: E402
+from src.agents.dnn.net import MahjongPolicyNet, load_compatible  # noqa: E402
 from src.tasks.mahjong.arena import run_match            # noqa: E402
 
 
 def load_dnn(path, device):
     blob = torch.load(path, map_location=device)
-    if "arch" in blob:                      # arch-zoo checkpoint (exp10)
+    # .get(): the trainer has always written "arch" (None for the default
+    # CNN) since exp10 — `"arch" in blob` sent every post-exp10 default-CNN
+    # checkpoint into the zoo branch and KeyError'd on None (exp12 arenas).
+    if blob.get("arch"):
         from src.agents.dnn.arch_zoo import ZOO
         net = ZOO[blob["arch"]][0]().to(device)
     else:
         net = MahjongPolicyNet(channels=blob.get("channels", 64),
                                blocks=blob.get("blocks", 3)).to(device)
-    # strict=False: checkpoints written before the critic existed have no
-    # value.* keys. The value head is unused at play time (only the policy
-    # head picks actions), so an untrained one is harmless — but report it
-    # so a genuinely mismatched checkpoint cannot pass silently.
-    missing, unexpected = net.load_state_dict(blob["state_dict"], strict=False)
-    pol_missing = [k for k in missing if not k.startswith("value.")]
-    if pol_missing or unexpected:
-        raise SystemExit(f"checkpoint {path} does not fit the network: "
-                         f"missing={pol_missing} unexpected={unexpected}")
-    if missing:
-        print(f"[load] {path}: no critic weights (pre-value-head checkpoint); "
+    # Policy keys must load fully; critic keys (value*/hazard_head*) may be
+    # absent (pre-critic) or shape-mismatched (exp11 privileged variants).
+    # The value path is unused at play time, so both are harmless —
+    # load_compatible enforces exactly that split and raises otherwise.
+    skipped = load_compatible(net, blob["state_dict"])
+    if skipped:
+        print(f"[load] {path}: {len(skipped)} critic key(s) not loaded; "
               f"policy loaded fully", flush=True)
     net.eval()
     return net
