@@ -37,16 +37,31 @@ class MahjongPolicyNet(nn.Module):
             nn.Linear(channels * TILE_TYPES + 64, 512), nn.ReLU(),
             nn.Linear(512, ACTION_DIM),
         )
+        # Optional critic. Measured first (four probes, EV ~0.02-0.03), so it
+        # is NOT here for variance reduction — V's spread is only ~15% of the
+        # return's, which is what lets a 0-return draw carry a non-zero
+        # advantage instead of vanishing.
+        self.value = nn.Sequential(
+            nn.Linear(channels * TILE_TYPES + 64, 256), nn.ReLU(),
+            nn.Linear(256, 1),
+        )
+
+    def trunk(self, planes: torch.Tensor, scalars: torch.Tensor) -> torch.Tensor:
+        h = torch.relu(self.stem(planes))
+        h = self.blocks(h).flatten(1)
+        return torch.cat([h, self.scalar_fc(scalars)], dim=1)
 
     def forward(self, planes: torch.Tensor, scalars: torch.Tensor,
                 mask: torch.Tensor) -> torch.Tensor:
         """planes [B,P,34], scalars [B,S], mask [B,A] -> masked logits [B,A]."""
-        h = torch.relu(self.stem(planes))
-        h = self.blocks(h).flatten(1)
-        h = torch.cat([h, self.scalar_fc(scalars)], dim=1)
-        logits = self.head(h)
+        logits = self.head(self.trunk(planes, scalars))
         # -inf on illegal actions so softmax/sampling can never pick them
         return logits.masked_fill(~mask, float("-inf"))
+
+    def forward_with_value(self, planes, scalars, mask):
+        h = self.trunk(planes, scalars)
+        logits = self.head(h).masked_fill(~mask, float("-inf"))
+        return logits, self.value(h).squeeze(-1)
 
     @torch.no_grad()
     def act(self, planes, scalars, mask, temperature: float = 1.0):

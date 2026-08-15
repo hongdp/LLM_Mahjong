@@ -56,6 +56,7 @@ def _worker(rank, n_games, seeds, state_np, cfg):
                 "scalars": torch.stack([s.scalars for s in steps]).numpy(),
                 "mask": torch.stack([s.mask for s in steps]).numpy(),
                 "actions": np.array([s.action_idx for s in steps], dtype=np.int64),
+                "old_logprobs": np.array([s.logprob for s in steps], dtype=np.float32),
                 "returns": np.array(rets, dtype=np.float32),
                 "key": (seed, pid),
             })
