@@ -56,6 +56,14 @@ def main():
     ap.add_argument("--blocks", type=int, default=3)
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--drop_zero_return", action="store_true")
+    ap.add_argument("--gae_lambda", type=float, default=None,
+                    help="Use GAE(lambda) advantages instead of Monte-Carlo "
+                         "G - V(s). With a bootstrapped advantage, knowledge "
+                         "held by the value model becomes a PER-ACTION signal "
+                         "(e.g. a call that kills the menzen package is "
+                         "penalized immediately via gamma*V(s')-V(s), without "
+                         "waiting for the settlement). MC advantages reduce "
+                         "the critic to variance reduction only.")
     ap.add_argument("--milestones", type=str, default="20000,80000,240000,600000")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--train_device",
@@ -194,7 +202,24 @@ def main():
                 net.forward_with_value(planes[i:i + 8192], scal[i:i + 8192],
                                        mask[i:i + 8192])[1]
                 for i in range(0, len(acts), 8192)])
-        adv_raw = rets - vals
+        if args.gae_lambda is not None:
+            # per-episode GAE over the SAME per-step V used elsewhere
+            adv_raw = torch.zeros_like(rets)
+            off = 0
+            lam, gam = args.gae_lambda, args.gamma
+            for e in episodes:
+                n = len(e["returns"])
+                r = torch.from_numpy(e["rewards"]).to(vals.device)
+                v = vals[off:off + n]
+                gae = 0.0
+                for t in range(n - 1, -1, -1):
+                    v_next = v[t + 1] if t + 1 < n else 0.0   # terminal V := 0
+                    delta = r[t] + gam * v_next - v[t]
+                    gae = delta + gam * lam * gae
+                    adv_raw[off + t] = gae
+                off += n
+        else:
+            adv_raw = rets - vals
         adv = ((adv_raw - adv_raw[idx_keep].mean())
                / (adv_raw[idx_keep].std() + 1e-8)).clamp(-5, 5)
 

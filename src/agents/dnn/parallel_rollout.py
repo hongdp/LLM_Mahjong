@@ -58,6 +58,7 @@ def _worker(rank, n_games, seeds, state_np, cfg):
                 "actions": np.array([s.action_idx for s in steps], dtype=np.int64),
                 "old_logprobs": np.array([s.logprob for s in steps], dtype=np.float32),
                 "returns": np.array(rets, dtype=np.float32),
+                "rewards": np.array([s.reward for s in steps], dtype=np.float32),
                 "key": (seed, pid),
             })
         payload.append({"episodes": eps, "result": g.result or ""})
