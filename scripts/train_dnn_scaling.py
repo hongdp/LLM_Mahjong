@@ -60,6 +60,13 @@ def main():
                     default="5000,20000,80000,320000",
                     help="cumulative game counts to snapshot at")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--train_device",
+                    default="cuda" if torch.cuda.is_available() else "cpu",
+                    help="Device for the UPDATE only. Rollout always stays on "
+                         "CPU worker processes: batch-1 forwards of a 1.4M net "
+                         "are launch-bound, so 16 CPU processes beat one GPU. "
+                         "The update is the opposite shape (batch 4-8k) and "
+                         "measured 148x faster on GPU (6439ms -> 43.6ms/step).")
     ap.add_argument("--exp_dir", default=None)
     args = ap.parse_args()
 
@@ -71,14 +78,16 @@ def main():
     json.dump(vars(args), open(f"{exp_dir}/config.json", "w"), indent=2)
     milestones = sorted(int(x) for x in args.milestones.split(","))
 
-    net = MahjongPolicyNet(channels=args.channels, blocks=args.blocks)
+    dev = torch.device(args.train_device)
+    net = MahjongPolicyNet(channels=args.channels, blocks=args.blocks).to(dev)
     if args.init:
         net.load_state_dict(torch.load(args.init, map_location="cpu")["state_dict"])
         print(f"⚓ warm-start {args.init}", flush=True)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 
     def save(tag, games):
-        torch.save({"state_dict": net.state_dict(), "channels": args.channels,
+        torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
+                    "channels": args.channels,
                     "blocks": args.blocks, "games": games},
                    f"{exp_dir}/{tag}.pt")
 
@@ -100,16 +109,16 @@ def main():
         apply_group_baseline(episodes, args.gamma)
         games += len(results)
 
-        planes = torch.from_numpy(np.concatenate([e["planes"] for e in episodes]))
-        scal = torch.from_numpy(np.concatenate([e["scalars"] for e in episodes]))
-        mask = torch.from_numpy(np.concatenate([e["mask"] for e in episodes]))
-        acts = torch.from_numpy(np.concatenate([e["actions"] for e in episodes]))
-        rets = torch.from_numpy(np.concatenate([e["returns"] for e in episodes]))
+        planes = torch.from_numpy(np.concatenate([e["planes"] for e in episodes])).to(dev)
+        scal = torch.from_numpy(np.concatenate([e["scalars"] for e in episodes])).to(dev)
+        mask = torch.from_numpy(np.concatenate([e["mask"] for e in episodes])).to(dev)
+        acts = torch.from_numpy(np.concatenate([e["actions"] for e in episodes])).to(dev)
+        rets = torch.from_numpy(np.concatenate([e["returns"] for e in episodes])).to(dev)
         adv = ((rets - rets.mean()) / (rets.std() + 1e-8)).clamp(-5, 5)
 
         with torch.no_grad():
             # entropy of the SAMPLING policy, before any update touches it
-            probe = torch.randperm(len(acts))[:2048]
+            probe = torch.randperm(len(acts), device=dev)[:2048]
             lp0 = torch.log_softmax(net(planes[probe], scal[probe], mask[probe]), 1)
             safe0 = torch.where(torch.isfinite(lp0), lp0, torch.zeros_like(lp0))
             ent_before = float(-(lp0.exp() * safe0).sum(1).mean())
@@ -124,13 +133,14 @@ def main():
             lens = [len(e["returns"]) for e in episodes]
             nonzero_ep = [bool(np.abs(e["returns"]).max() > 1e-6) for e in episodes]
             idx_keep = torch.nonzero(
-                torch.from_numpy(np.repeat(nonzero_ep, lens)), as_tuple=True)[0]
+                torch.from_numpy(np.repeat(nonzero_ep, lens)).to(dev),
+                as_tuple=True)[0]
         else:
-            idx_keep = torch.arange(len(acts))
+            idx_keep = torch.arange(len(acts), device=dev)
         n_eff = len(idx_keep)
         if n_eff == 0:
             continue
-        order = idx_keep[torch.randperm(n_eff)]
+        order = idx_keep[torch.randperm(n_eff, device=dev)]
 
         # --- ONE update per iteration over ALL effective samples ----------
         # Gradient accumulated in micro-batches; the statistical batch size
