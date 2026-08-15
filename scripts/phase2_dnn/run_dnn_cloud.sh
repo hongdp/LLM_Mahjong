@@ -26,7 +26,15 @@ else source "$VENV/bin/activate"; fi
 # idempotent top-up: the FULL third-party closure of the DNN path, computed
 # by import tracing (torch, numpy, the riichi scoring lib, tqdm, tb). Two
 # VMs self-terminated on missing modules found one at a time — never again.
-pip install -q --no-cache-dir numpy tensorboard "mahjong==2.0.0" tqdm
+pip install --no-cache-dir numpy tensorboard "mahjong==2.0.0" tqdm 2>&1 | tail -2
+# hard preflight: refuse to start the run unless the FULL closure imports in
+# the exact interpreter that will run it. a0 died on this silently once.
+echo "[env] python=$(which python) pip=$(which pip)"
+if ! python -c "import numpy, torch, tensorboard, mahjong, tqdm"; then
+    echo "[fatal] dependency closure incomplete in $(which python)"
+    pip list 2>/dev/null | grep -iE "torch|numpy|mahjong|tensorboard|tqdm"
+    exit 1
+fi
 python -c "import torch; assert torch.cuda.is_available()" || echo "[warn] no CUDA, updates on CPU"
 
 ( while true; do sleep 600
