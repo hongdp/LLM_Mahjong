@@ -22,8 +22,11 @@ if [ ! -f "$VENV/bin/activate" ]; then
     pip install -q --no-cache-dir --upgrade pip
     pip install -q --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu129 || \
     pip install -q --no-cache-dir torch
-    pip install -q --no-cache-dir numpy tensorboard
 else source "$VENV/bin/activate"; fi
+# idempotent top-up: the FULL third-party closure of the DNN path, computed
+# by import tracing (torch, numpy, the riichi scoring lib, tqdm, tb). Two
+# VMs self-terminated on missing modules found one at a time — never again.
+pip install -q --no-cache-dir numpy tensorboard "mahjong==2.0.0" tqdm
 python -c "import torch; assert torch.cuda.is_available()" || echo "[warn] no CUDA, updates on CPU"
 
 ( while true; do sleep 600
