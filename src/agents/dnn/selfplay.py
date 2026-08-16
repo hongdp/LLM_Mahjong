@@ -91,6 +91,10 @@ class DnnGame:
     trajectories: dict = field(default_factory=lambda: {i: [] for i in range(4)})
     result: Optional[str] = None
     points: Optional[List[int]] = None
+    # end-of-game style facts (eval_style_profile): riichi declared per seat,
+    # meld count per seat (ankan included — noted as a proxy for 副露)
+    riichi: Optional[List[bool]] = None
+    n_melds: Optional[List[int]] = None
 
 
 def _choose(net, table, pid, actions, temperature, device, cmode="none"):
@@ -182,6 +186,8 @@ def play_game(net, temperature: float = 1.0, device="cpu",
                 last.is_terminal = True
     game.result = table.result_summary
     game.points = list(table.points)
+    game.riichi = [bool(table.riichi[p]) for p in range(4)]
+    game.n_melds = [len(table.melds[p]) for p in range(4)]
     return game
 
 
