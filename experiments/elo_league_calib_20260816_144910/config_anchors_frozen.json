@@ -1,0 +1,102 @@
+{
+ "pinned": [
+  "bc_cnn",
+  1000.0
+ ],
+ "deals_per_pair": 200,
+ "seed0": 20260816,
+ "date": "2026-08-16 14:49:34",
+ "anchors": {
+  "bc_cnn": {
+   "rating": 1000.0,
+   "se": 10.5,
+   "path": "experiments/arch_sweep/models/cnn_m.pt",
+   "residuals": {
+    "rf600": -0.017,
+    "ppo44_240": -0.016,
+    "ppo44_600": 0.001,
+    "reuse11_600": -0.042,
+    "e700": 0.026,
+    "vit240": 0.049
+   }
+  },
+  "rf600": {
+   "rating": 894.9,
+   "se": 10.3,
+   "path": "experiments/dnn_scratch_massive_20260815/games_600000.pt",
+   "residuals": {
+    "bc_cnn": 0.017,
+    "ppo44_240": 0.059,
+    "ppo44_600": -0.015,
+    "reuse11_600": 0.03,
+    "e700": -0.054,
+    "vit240": -0.036
+   }
+  },
+  "ppo44_240": {
+   "rating": 830.8,
+   "se": 10.7,
+   "path": "experiments/dnn_ppo_massive_20260815/games_240000.pt",
+   "residuals": {
+    "bc_cnn": 0.016,
+    "rf600": -0.059,
+    "ppo44_600": 0.016,
+    "reuse11_600": -0.016,
+    "e700": 0.078,
+    "vit240": -0.035
+   }
+  },
+  "ppo44_600": {
+   "rating": 828.3,
+   "se": 10.7,
+   "path": "experiments/dnn_ppo_massive_20260815/games_600000.pt",
+   "residuals": {
+    "bc_cnn": -0.001,
+    "rf600": 0.015,
+    "ppo44_240": -0.016,
+    "reuse11_600": -0.015,
+    "e700": -0.02,
+    "vit240": 0.038
+   }
+  },
+  "reuse11_600": {
+   "rating": 966.9,
+   "se": 10.3,
+   "path": "experiments/dnn_ppo_reuse1_20260815/games_600000.pt",
+   "residuals": {
+    "bc_cnn": 0.042,
+    "rf600": -0.03,
+    "ppo44_240": 0.016,
+    "ppo44_600": 0.015,
+    "e700": -0.012,
+    "vit240": -0.032
+   }
+  },
+  "e700": {
+   "rating": 1012.5,
+   "se": 10.6,
+   "path": "experiments/dnn_exp12_E_20260816/games_700000.pt",
+   "residuals": {
+    "bc_cnn": -0.026,
+    "rf600": 0.054,
+    "ppo44_240": -0.078,
+    "ppo44_600": 0.02,
+    "reuse11_600": 0.012,
+    "vit240": 0.017
+   }
+  },
+  "vit240": {
+   "rating": 928.8,
+   "se": 10.3,
+   "path": "experiments/_cloud_ckpts/dnn_vit_rl_r4/games_240000.pt",
+   "residuals": {
+    "bc_cnn": -0.049,
+    "rf600": 0.036,
+    "ppo44_240": 0.035,
+    "ppo44_600": -0.038,
+    "reuse11_600": 0.032,
+    "e700": -0.017
+   }
+  }
+ }
+}
