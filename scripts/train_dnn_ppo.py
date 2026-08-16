@@ -67,6 +67,25 @@ def main():
                          "penalized immediately via gamma*V(s')-V(s), without "
                          "waiting for the settlement). MC advantages reduce "
                          "the critic to variance reduction only.")
+    ap.add_argument("--entropy_schedule", default=None,
+                    help="step schedule 'games:coef,games:coef' overriding "
+                         "--entropy_coef once the games counter passes each "
+                         "threshold (exp13 hand-ladder arm)")
+    ap.add_argument("--entropy_auto", action="store_true",
+                    help="Lagrangian auto-anneal (exp13): treat the entropy "
+                         "coefficient as a dual variable on the constraint "
+                         "H >= entropy_floor. alpha decays exponentially "
+                         "while entropy is safely above the floor and rises "
+                         "when it approaches, so the annealing CURVE is "
+                         "emergent — the only hand number is the safety "
+                         "floor (exp8: collapse at H=0.44; champion healthy "
+                         "at 0.76).")
+    ap.add_argument("--entropy_floor", type=float, default=0.5)
+    ap.add_argument("--entropy_dual_lr", type=float, default=0.1)
+    ap.add_argument("--entropy_abort", type=float, default=None,
+                    help="hard safety: if post-update entropy falls below "
+                         "this, snapshot and stop (exp8: policy died at "
+                         "H=0.44; guard for aggressive anneal arms)")
     ap.add_argument("--critic_feats", choices=["none", "profile", "hazard"],
                     default="none",
                     help="Privileged CRITIC-ONLY features (exp11; the policy "
@@ -97,6 +116,14 @@ def main():
                          "never loses more than that")
     ap.add_argument("--exp_dir", default=None)
     args = ap.parse_args()
+
+    if args.entropy_schedule and args.entropy_auto:
+        raise SystemExit("--entropy_schedule and --entropy_auto are exclusive")
+    ent_schedule = []
+    if args.entropy_schedule:
+        ent_schedule = sorted((int(g), float(c)) for g, c in
+                              (p.split(":") for p in
+                               args.entropy_schedule.split(",")))
 
     torch.set_num_threads(max(1, os.cpu_count() // 3))
     torch.manual_seed(args.seed); random.seed(args.seed)
@@ -150,12 +177,13 @@ def main():
         print(f"⚓ warm-start {args.init}"
               + (f" (fresh: {skipped})" if skipped else ""), flush=True)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
+    ent_alpha = args.entropy_coef      # live coefficient (schedule/auto laws)
 
     def save(tag, games, it=0):
         torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                     "channels": args.channels, "blocks": args.blocks,
                     "arch": args.arch, "critic_feats": args.critic_feats,
-                    "games": games, "iter": it,
+                    "games": games, "iter": it, "entropy_alpha": ent_alpha,
                     "optimizer": opt.state_dict()}, f"{exp_dir}/{tag}.pt")
 
     from torch.utils.tensorboard import SummaryWriter
@@ -177,6 +205,7 @@ def main():
                   flush=True)
         start_games = int(blob.get("games", 0))
         start_iter = int(blob.get("iter", 0))
+        ent_alpha = float(blob.get("entropy_alpha", ent_alpha) or ent_alpha)
         old_log = os.path.join(exp_dir, "train_log.json")
         if os.path.exists(old_log):
             try:
@@ -202,6 +231,9 @@ def main():
         next_ms += 1
     while games < args.total_games:
         it += 1
+        for g_thr, coef in ent_schedule:      # step function on the counter
+            if games >= g_thr:
+                ent_alpha = coef
         n_deals = max(1, args.games_per_iter // args.dup_k)
         base = 6_000_000 + it * 9973
         seeds = [base + d for d in range(n_deals) for _ in range(args.dup_k)]
@@ -287,7 +319,7 @@ def main():
                 safe = torch.where(torch.isfinite(logp), logp, torch.zeros_like(logp))
                 ent = -(logp.exp() * safe).sum(1).mean()
                 vl = torch.nn.functional.mse_loss(v, rets[sel])
-                loss = pg + args.value_coef * vl - args.entropy_coef * ent
+                loss = pg + args.value_coef * vl - ent_alpha * ent
                 if args.critic_feats == "hazard":
                     # supervised channel: completion is settled fact, so this
                     # loss is exempt from the on-policy/reuse constraints
@@ -316,6 +348,13 @@ def main():
             ent_after = float(-(lp1.exp() * s1).sum(1).mean())
             ev = float(1 - (rets[idx_keep] - vals[idx_keep]).var()
                        / (rets[idx_keep].var() + 1e-9))
+        if args.entropy_auto:
+            # dual ascent on the constraint H >= floor: decay while safe,
+            # rise when the floor approaches; the trajectory is emergent
+            import math
+            ent_alpha = min(0.1, max(1e-5, ent_alpha * math.exp(
+                args.entropy_dual_lr * (args.entropy_floor - ent_after)
+                / max(args.entropy_floor, 1e-6))))
 
         # NOTE: this is the DECISIVE-GAME rate (a hand ended in ron/tsumo by
         # anyone) = 1 - draw rate. It is NOT a per-agent win rate: all four
@@ -331,6 +370,7 @@ def main():
                "entropy_before": ent_before, "entropy": ent_after,
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
                "explained_var": ev, "win_rate": win,
+               "entropy_coef": ent_alpha,
                "n_effective": n_eff, "n_raw": int(len(acts))}
         if hloss:
             row["hazard_bce"] = float(np.mean(hloss))
@@ -348,6 +388,12 @@ def main():
                   f"kl={row['approx_kl']:.4f} passes={passes} EV={ev:+.3f} "
                   f"eff={n_eff}/{len(acts)}", flush=True)
             json.dump(log, open(f"{exp_dir}/train_log.json", "w"), indent=1)
+
+        if args.entropy_abort is not None and ent_after < args.entropy_abort:
+            save("entropy_abort", games, it)
+            print(f"🛑 entropy {ent_after:.3f} < abort {args.entropy_abort}; "
+                  f"snapshot saved, stopping", flush=True)
+            break
 
         if args.ckpt_every and it % args.ckpt_every == 0:
             save("latest", games, it)
