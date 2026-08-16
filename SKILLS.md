@@ -113,6 +113,11 @@
 
 - **（2026-08-15 a0 事故）重复并发发射会让 bootstrap 自我竞态**：pgrep 误判时代对同一 VM 多次发射 runner，两份 bootstrap 并发——崩掉的那份在兄弟进程 pip 装完 mahjong 之前就 `import`，报 ModuleNotFoundError 后 EXIT trap 自关机；事后验尸 venv 却是完整的（另一份装完了）。这类「事发时缺、验尸时在」的幻影缺包，先怀疑并发发射而不是网络。修复已固化：runner 起跑前**硬校验依赖闭包**（在将要执行 run 的同一解释器里 import 全家，失败打印 `which python`/pip list 后大声退出）；发射永远单次、以 GCS artifact 验证而非进程列表。参见上文 venv bootstrap 竞态条目——同族，成因不同（他挂 vs 自挂）。
 
+- **（2026-08-16）TensorBoard + rsync 镜像 = 静默失读**：TB 的 DirectoryWatcher 假定事件文件
+  **只追加**；`gsutil rsync`/`rsync` 更新文件走"临时文件+rename"= 换 inode，TB 撞上后该 run
+  静默停止索引（run 列表里在、scalar 全无——正是"cloud_vit_RL 又没了"的病因，概率性复发）。
+  修复：两段式镜像——rsync 落 staging 目录，再 `cp -f` 原地覆写（同 inode，对 TB 等于纯追加）。
+
 - **（2026-08-16 exp12 确认）PPO 后期平台 = 熵奖励均衡，不是噪声也不是步长**：恒定 entropy_coef
   （0.03）在策略梯度信号萎缩的末段变成主动约束，把策略钉在人工高熵位（H~1.18）。三臂单变量消融：
   熵 0.03→0.01 臂 +1073±594（发现+独立确认合并，p≈0.0004，新冠军 E-700k）；4× 批量臂 null
