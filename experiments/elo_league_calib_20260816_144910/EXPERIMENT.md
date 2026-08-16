@@ -60,5 +60,13 @@ Bernoulli 似然 + 阻尼对角牛顿联合 MLE；SE 取 Fisher 信息。原始�
 ## Artifacts
 | Path | Size | Description |
 |---|---|---|
-| experiments/elo_league/anchors.json | — | 锚点分数表（冻结资产） |
-| experiments/elo_league/matches/*.json | — | 21 场原始对局 |
+| experiments/elo_league/anchors.json | — | 锚点分数表（冻结资产，含 engine_git） |
+| experiments/elo_league/matches/*.json | — | 21+ 场原始对局（含评分赛） |
+| experiments/elo_league/history.jsonl | — | 评分史（回填 + 训练中排位） |
+
+## 回填验证（2026-08-16 16:50 追记）
+历史 run 全部回填成功，体系自检通过：(1) vit240 用 3 锚 60 副快评得 909±26，与其冻结锚点值
+928.8 噪声内一致（自洽）；(2) A0/A1 Elo 差 26 分与竞技场 null 互证；(3) ppo44 的 240k→600k
+倒退、reuse11 的持续爬升、REINFORCE 慢启动全部在曲线上复现既有结论。A2 训练中排位首拍
+61k@616±43 已产出（watch 模式实战生效）。曲线要点：vit-80k(904) ≈ cnn-reuse11-400k(900)，
+结构先验把「规则税」压缩了约 5 倍局数；vit 80k→240k 平坦(+5) 支持 exp15 立即降熵的决策。
