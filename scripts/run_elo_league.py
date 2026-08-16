@@ -160,8 +160,14 @@ def rate_checkpoint(ckpt, label, deals, seed0, parallel, device,
     ratings = {n: anchors[n]["rating"] for n in use}
     ratings["cand"] = init_guess
     fit_ratings(games, ratings, ["cand"])
+    # 0/100% scores make the MLE unbounded; clamp to anchor range ±600
+    # (≈97% expected score) and flag it so curves show a floor, not garbage.
+    lo = min(r for n, r in ratings.items() if n != "cand") - 600
+    hi = max(r for n, r in ratings.items() if n != "cand") + 600
+    at_bound = not (lo <= ratings["cand"] <= hi)
+    ratings["cand"] = max(lo, min(hi, ratings["cand"]))
     rec = {"ckpt": ckpt, "label": label,
-           "elo": round(ratings["cand"], 1),
+           "elo": round(ratings["cand"], 1), "at_bound": at_bound,
            "se": round(rating_se(games, ratings, "cand"), 1),
            "anchors": use, "deals_per_anchor": deals, "seed0": seed0,
            "date": time.strftime("%Y-%m-%d %H:%M:%S"),

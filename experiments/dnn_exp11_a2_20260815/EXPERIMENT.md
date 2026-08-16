@@ -1,6 +1,6 @@
 # exp11-A2：hazard-critic（共享完成-危险头，身份无关役种泛化）
 
-- **Date**: 预注册 2026-08-15；发射待 mahjong-dnn-a0 跑完 A0 基线（看守进程自动接棒）  **Status**: pre-registered
+- **Date**: 预注册 2026-08-15；发射 2026-08-16 15:03 本地（mahjong-dnn-c3, us-east1-b）  **Status**: running
 - **Git**: eb91d8f（实现 commit；设计文档 docs/design_hazard_critic.md）
 - **Env**: GCP g2-standard-32 spot（32 vCPU + L4），DLVM cu129，torch 2.13.0+cu129，mahjong==2.0.0
 - **对照**: A0 = `dnn_exp11_a0_20260815r2`；A1 = `dnn_exp11_a1_20260815`
@@ -45,6 +45,18 @@ A0 全套 + `--critic_feats hazard --hazard_coef 0.5`（diff 仅此两项；快�
 - [2026-08-15 ~15:50] 同 A1：us-central1-a spot 两次双机抢占 → 迁移 us-central1-b（b2）；
   A0 基线以 dnn_exp11_a0_20260815r3 从零重跑；--ckpt_every 25→10；runner 2 分钟 TB 轻量同步。
   本臂在 b2 跑完 A0-r3 后自动发射。
+- [2026-08-16] A0-r4 于 05:07 UTC 在 mahjong-dnn-c1 跑满 600k。看守进程三次尝试重启 c1
+  发射本臂均失败：us-central1-b L4 **ZONE_RESOURCE_POOL_EXHAUSTED（STOCKOUT）**；其间本地
+  网络中断使重试停摆 ~16h（22:16→次日 14:14 本地）。GCP 报错提示 us-central1-a 有容量。
+- [2026-08-16 ~14:50 本地] 决定换 zone：在 us-central1-a 新建 on-demand g2 机发射本臂
+  （配置与 A1 全同 + `--critic_feats hazard --hazard_coef 0.5`，见看守脚本 A2_ARGS）。
+  已置 .fired 标记防旧看守双发。当前本地网络故障中，恢复后立即执行。
+  （网络故障根因：AT&T 网关 walled-garden DNS 劫持，用户修复 DNS 后恢复。）
+- [2026-08-16 15:01 本地] us-central1-a 创建新机也 STOCKOUT → 改为**重启 us-east1-b 现成机
+  mahjong-dnn-c3**（A1 同款环境）发射。15:05 确认：bootstrap/preflight 通过，训练进程存活，
+  日志打印 `critic_feats: hazard` 配置正确。**Status: running**。已挂首 iter 确认哨兵。
+- [2026-08-16 15:15 本地] 首个 iter 确认：2048 局、win_rate 0.007（从零起步正常水平），
+  train_log 已上 GCS。发射闭环完成，预计 ~6h 跑满（对照 A1 时长）。
 
 ## Results
 | Metric | This run | Baseline (A0) | Success criterion |
