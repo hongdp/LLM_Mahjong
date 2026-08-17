@@ -5,6 +5,10 @@
 - **Env**: GCP g2-standard-32 on-demand（L4），runner run_dnn_cloud.sh
 - **对照**: vit240 = `dnn_vit_rl_20260815r4/games_240000.pt`（续训起点）；e700 = 现冠军
 
+> **主线声明（2026-08-16 晚，用户决策）**：本实验是**纯自对弈主线（AlphaZero 志向）**的
+> 当前代表——起点 vit240 与全部后续训练均零人类/教师知识。exp14（教师 warm-start）仅作
+> 参照系：exp15 曲线与 exp14 参照曲线的差距收敛程度，是「自行探索」成色的直接读数。
+
 ## Purpose & Hypothesis
 双重目的（2026-08-16 用户决策：transformer 谱系更强则押注 transformer）：
 1. **用户样本量假说**：纯 RL 前 ~240k 局在交「规则税」，强度曲线远未饱和——若为真，
