@@ -1,6 +1,7 @@
 # exp15：vit 谱系标度冲顶（冠军配方迁移 + 样本量假说检验）
 
-- **Date**: 预注册 2026-08-16 ~16:20 本地；发射待机器（c3 跑完 A2 自动接棒，或更早拿到新机）  **Status**: pre-registered
+- **Date**: 预注册 2026-08-16 ~16:20 本地；发射 21:45（c3；看守首射因开机 SSH 未就绪失败
+  + 看守存在 RUNNING 态不重试的 bug，人工补射成功）  **Status**: running
 - **Git**: 394d592 + 未提交预注册
 - **Env**: GCP g2-standard-32 on-demand（L4），runner run_dnn_cloud.sh
 - **对照**: vit240 = `dnn_vit_rl_20260815r4/games_240000.pt`（续训起点）；e700 = 现冠军
@@ -39,6 +40,10 @@ vit-r4 全套参数 + `--arch vit_small --resume <seed_vit240.pt> --ppo_epochs 1
 ## Progress
 - [2026-08-16 ~16:20] 预注册。发射机制：exp1415_queue_watcher（marker 文件防双发，
   修正了 pgrep 自匹配 bug 的教训）。
+- [2026-08-16 21:45] 发射并确认：`⏩ resume 241664 games`，首两个 iter win_rate 0.608/0.580
+  与 vit240 终点（0.602）无缝衔接。ladder watch 已挂（每 ≥40k 局评一次）。
+  运维教训（追加）：seed_and_launch 的 ssh 播种步需要与 launch_g2_run.sh 相同的重试环；
+  看守 fire 条件应接受「c3 已 RUNNING 且无 RUNNING.lock」为可重试状态。
 
 ## Results
 | Metric | This run | Baseline | Success criterion |

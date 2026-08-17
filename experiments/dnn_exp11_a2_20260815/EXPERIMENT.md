@@ -1,6 +1,6 @@
 # exp11-A2：hazard-critic（共享完成-危险头，身份无关役种泛化）
 
-- **Date**: 预注册 2026-08-15；发射 2026-08-16 15:03 本地（mahjong-dnn-c3, us-east1-b）  **Status**: running
+- **Date**: 预注册 2026-08-15；发射 2026-08-16 15:03；终判 2026-08-16 ~22:00  **Status**: done（主判定显著为负）
 - **Git**: eb91d8f（实现 commit；设计文档 docs/design_hazard_critic.md）
 - **Env**: GCP g2-standard-32 spot（32 vCPU + L4），DLVM cu129，torch 2.13.0+cu129，mahjong==2.0.0
 - **对照**: A0 = `dnn_exp11_a0_20260815r2`；A1 = `dnn_exp11_a1_20260815`
@@ -54,14 +54,44 @@ A0 全套 + `--critic_feats hazard --hazard_coef 0.5`（diff 仅此两项；快�
   （网络故障根因：AT&T 网关 walled-garden DNS 劫持，用户修复 DNS 后恢复。）
 - [2026-08-16 15:01 本地] us-central1-a 创建新机也 STOCKOUT → 改为**重启 us-east1-b 现成机
   mahjong-dnn-c3**（A1 同款环境）发射。15:05 确认：bootstrap/preflight 通过，训练进程存活，
-  日志打印 `critic_feats: hazard` 配置正确。**Status: running**。已挂首 iter 确认哨兵。
+  日志打印 `critic_feats: hazard` 配置正确。已挂首 iter 确认哨兵。
 - [2026-08-16 15:15 本地] 首个 iter 确认：2048 局、win_rate 0.007（从零起步正常水平），
   train_log 已上 GCS。发射闭环完成，预计 ~6h 跑满（对照 A1 时长）。
+- [2026-08-16 21:2x 本地] **600k 跑满自动关机**（终点 win_rate 0.631、entropy 1.13）。
+  训练中 Elo 轨迹（首个全程 ladder run）：236k@816 → 276k@890 → 328k@948。
+  主判据竞技场（vs A0-600k，200 副，seed0=20260819）已在本地开跑；机制判据
+  （hazard_bce 校准、役种泛化探针、风格档案）待竞技场后逐项执行。
 
 ## Results
-| Metric | This run | Baseline (A0) | Success criterion |
+| Metric | This run (A2) | Baseline (A0-r4) | Success criterion |
 |---|---|---|---|
-| （待运行） | | | |
+| **主判定**：600k vs A0-600k，200 副（seed0=20260819） | **−2029 ± 797，wins 92:203** | — | 超 95% CI ⇒ **显著为负（不止未达，是有害）** |
+| hazard_bce 收敛 | 0.595→0.162 单调下降 ✅ | — | 单调收敛 ⇒ 达标 |
+| explained_var @600k | 0.068 | 0.081 | ≥A0 ⇒ 未达（≈持平略低） |
+| 终点自对弈 win_rate / entropy | 0.631 / 1.13 | 0.811 / 1.00 | 健康 ✅（但 decisive 率显著低于 A0） |
+| 按族校准 / 役种泛化探针（判据 2 细项、4） | 待做（见 Next Steps） | | |
+| **判据 5 风格预测（副露↓立直↑）** | 副露 **0.946**、立直 **0.023**、流局 0.371、和牌 0.158 | 副露 0.670、立直 **0.149**、流局 0.204、和牌 0.200 | **反向证伪**：A2 比 A0 更极端副露、立直归零 |
+
+结果 JSON：`experiments/exp11_arena_A2_vs_A0.json`、`exp11_style_A2_A0.json`（各 4000 局）。
+
+## Conclusion
+1. **主判定显著为负（−2029±797）**：hazard 分解 critic 不是无用而是有害。
+2. 机制链路定位：hazard 头的监督任务学得很好（BCE 0.60→0.16），但 explained_var 不升
+   （0.068≈A0），风格反向移动——**设计文档预警的「良性乐观闭环」如实发生**：策略从不立直
+   → 门清族完成率标签恒为 0 → P_y 曲面把门清路线定价为零 → V 低估门清 → 更多副露。
+   共享曲面插值没能打破自我实现循环，反而把它固化进了价值函数。
+3. **意外的正面发现（属于 A0）**：普通 GAE critic 的 A0 自发把立直率推到 **14.9%**、副露降到
+   67%（旧冠军谱系：立直 ~3%/副露 ~88%；人类高手 ~19%/35-40%）——**纯自对弈自己发现了
+   立直价值**，无任何外部知识注入。exp11 三臂的真正遗产可能是「GAE 本身」：A0/A1 的 Elo
+   （1022/996）双双坐上锚点池顶部。
+4. exp11 总结论：外部役种知识注入 critic 的两种方式（A1 特权特征 null、A2 结构分解显著负）
+   全部失败；与主线哲学互洽——自对弈需要的是更好的**通用**信用分配（GAE），不是领域知识。
+
+## Next Steps
+- 役种泛化探针（判据 4）与按族校准：补做后归档（结论性质，不影响主判定）。
+- **新假说（值得预注册 exp17）**：GAE（λ=0.95）是 A0 风格突破与高 Elo 的候选归因——
+  对 e700 配方加 GAE 做单变量确认。
+- exp15 主线继续；A2 checkpoint 冻结存档（负结果基准）。
 
 ## Conclusion
 （待运行）
