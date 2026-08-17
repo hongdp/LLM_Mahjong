@@ -74,9 +74,6 @@ Elo 校准发现 bc_cnn 居全池第 2：纯自对弈烧 700k 局才超过简单
 - exp15 与本参照线的缺口曲线 = 「自行探索成色」主指标（已在 ladder 自动产出）。
 - 风格档案（立直 26%）为 exp17（GAE 归因）提供了旁证语境：A0-GAE 立直 14.9% 同向。
 
-## Conclusion
-（待运行）
-
 ## Artifacts
 | Path | Size | Description |
 |---|---|---|
