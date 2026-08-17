@@ -36,6 +36,7 @@ ANCHOR_POOL = {
     "reuse11_600": "experiments/dnn_ppo_reuse1_20260815/games_600000.pt",
     "e700":        "experiments/dnn_exp12_E_20260816/games_700000.pt",
     "vit240":      "experiments/_cloud_ckpts/dnn_vit_rl_r4/games_240000.pt",
+    "bcrl14_600":  "experiments/_cloud_ckpts/dnn_exp14_bcvit_rl_20260816/games_final.pt",
 }
 PINNED = ("bc_cnn", 1000.0)   # scale origin, fixed forever
 

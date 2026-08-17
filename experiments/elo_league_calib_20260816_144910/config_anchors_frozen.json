@@ -97,6 +97,21 @@
     "reuse11_600": 0.032,
     "e700": -0.017
    }
+  },
+  "bcrl14_600": {
+   "rating": 1117.7,
+   "se": 15.3,
+   "path": "experiments/_cloud_ckpts/dnn_exp14_bcvit_rl_20260816/games_final.pt",
+   "residuals": {
+    "bc_cnn": -0.098,
+    "rf600": 0.012,
+    "ppo44_240": -0.024,
+    "ppo44_600": 0.054,
+    "reuse11_600": -0.004,
+    "e700": 0.028,
+    "vit240": 0.032
+   },
+   "promoted": "2026-08-16 via full-pool 100-deal rating; teacher-prior yardstick, top anchor"
   }
  },
  "engine_git": "5c66d11"
