@@ -92,12 +92,7 @@ A0 全套 + `--critic_feats hazard --hazard_coef 0.5`（diff 仅此两项；快�
 - **新假说（值得预注册 exp17）**：GAE（λ=0.95）是 A0 风格突破与高 Elo 的候选归因——
   对 e700 配方加 GAE 做单变量确认。
 - exp15 主线继续；A2 checkpoint 冻结存档（负结果基准）。
-
-## Conclusion
-（待运行）
-
-## Next Steps
-- 国士场景重置试点（1000 局 2 向听开局）——设计文档遗留，另行预注册。
+- 国士场景重置试点（1000 局 2 向听开局）——设计文档遗留，另行预注册（A2 失败后优先级降低）。
 
 ## Artifacts
 | Path | Size | Description |
