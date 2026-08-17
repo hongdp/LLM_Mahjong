@@ -1,6 +1,6 @@
 # exp14：BC warm-start + 自对弈 RL（教师先验的价值定量）
 
-- **Date**: 预注册 2026-08-16 ~16:20 本地；发射待机器（zone 猎手拿到第二台 g2 即发）  **Status**: pre-registered
+- **Date**: 预注册 2026-08-16 ~16:20 本地；发射 16:01（注：看守比预注册文件落盘早数分钟拿到机器，配置与预注册全同）于 mahjong-dnn-c5（us-east1-c，zone 猎手创建）  **Status**: running
 - **Git**: 394d592 + 未提交预注册
 - **Env**: GCP g2-standard-32 on-demand（L4）
 - **对照**: bc_vit = `arch_sweep/models/vit_small.pt`（起点，BC 保真度 89.3%）；
@@ -36,11 +36,23 @@ Elo 校准发现 bc_cnn 居全池第 2：纯自对弈烧 700k 局才超过简单
 
 ## Progress
 - [2026-08-16 ~16:20] 预注册。bc_vit checkpoint 需先上传 GCS 供 VM 拉取。
+- [2026-08-16 16:01] zone 猎手在 us-east1-c 创建 c5 成功并发射；`⚓ warm-start` 日志确认。
+- [2026-08-16 18:50] 首步确认（补记）：**首 iter win_rate 0.832**（从零对照当年首 iter 0.007
+  ——教师先验的头程优势直观可见）。266k 局 @ ~2.7h（~27 局/s，超预期），win_rate 0.915，
+  entropy 0.41（贴着 0.4 告警地板，BC 尖峰先验+低熵系数所致，持续观察）。
+  240k 里程碑已产出 → 核心单变量竞技场（vs vit-从零-240k）已在本地开跑；ladder watch 已挂。
+- [2026-08-16 19:05] **判据 1 达成：+3482±1042（248:68）**。教师先验加速假说以项目史上
+  最大效应确认——同架构同配方同局数，仅起点不同。规则税假说（用户 2026-08-16 提出）
+  与 Elo 校准的 bc 高位发现在此交汇闭环。
 
 ## Results
 | Metric | This run | Baseline | Success criterion |
 |---|---|---|---|
-| （待运行） | | | |
+| **判据 1（核心单变量）**：240k vs vit-从零-240k，200 副（seed0=20260818） | **+3482 ± 1042，wins 248:68（z≈6.5）** | vit240 | 显著正 ⇒ **✅ 达成，项目史上最大单点效应**（前纪录 +2205） |
+| 判据 2：600k vs bc_vit 起点 | 待 600k | — | — |
+| 判据 3：先验存活（ladder 无深 V；立直率） | 首拍待出；熵 0.41 贴地板需持续盯 | — | — |
+
+结果 JSON：`experiments/exp14_arena_240k_vs_vitscratch240k.json`。
 
 ## Conclusion
 （待运行）
