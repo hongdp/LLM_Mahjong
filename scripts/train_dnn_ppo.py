@@ -58,6 +58,10 @@ def main():
     ap.add_argument("--channels", type=int, default=64)
     ap.add_argument("--blocks", type=int, default=3)
     ap.add_argument("--batch", type=int, default=4096)
+    ap.add_argument("--adv_clamp", type=float, default=5.0,
+                    help="normalized-advantage winsorize bound (sigma); a "
+                         "yakuman event sits near 8 sigma, so the 5.0 "
+                         "default caps big-hand policy gradients")
     ap.add_argument("--drop_zero_return", action="store_true")
     ap.add_argument("--gae_lambda", type=float, default=None,
                     help="Use GAE(lambda) advantages instead of Monte-Carlo "
@@ -297,7 +301,8 @@ def main():
         else:
             adv_raw = rets - vals
         adv = ((adv_raw - adv_raw[idx_keep].mean())
-               / (adv_raw[idx_keep].std() + 1e-8)).clamp(-5, 5)
+               / (adv_raw[idx_keep].std() + 1e-8)).clamp(-args.adv_clamp,
+                                                        args.adv_clamp)
 
         net.train()
         stop, passes, kls, closs, vloss, hloss = False, 0, [], [], [], []
