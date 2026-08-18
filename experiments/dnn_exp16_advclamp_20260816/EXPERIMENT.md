@@ -1,6 +1,6 @@
 # exp16：优势裁剪界消融——大番数胡牌的策略梯度被 ±5σ cap 是否有害
 
-- **Date**: 预注册 2026-08-16 ~23:40 本地  **Status**: pre-registered → launching
+- **Date**: 预注册 2026-08-16 ~23:40 本地  **Status**: done（±5 胜出，问题结案）
 - **Git**: c51c37e（--adv_clamp 参数化 commit）
 - **Env**: GCP g2-standard-32 on-demand（c5, us-east1-c），L4
 - **对照**: exp15 = `dnn_exp15_vitscale_20260816`（同起点同配方，唯一差异 --adv_clamp 5→10）
@@ -29,14 +29,25 @@ exp15 全套 + `--adv_clamp 10 --total_games 700000 --milestones 400000,700000
 
 ## Progress
 - [2026-08-16 23:40] 预注册。c5 启动+播种+发射流程同 exp15（含 ssh 重试教训）。
+- [2026-08-16 23:55] 发射确认：`⏩ resume 241664 games`，首两 iter win_rate 0.608/0.589
+  （exp15 同点 0.608/0.580——同起点同种子，早期轨迹如预期几乎重合，分叉将来自
+  adv_clamp 差异的累积）。ladder watch 已挂。**Status: running**。
 
 ## Results
-| Metric | This run | Baseline (exp15) | Success criterion |
+| Metric | This run (±10σ) | Baseline (exp15@700k, ±5σ) | Success criterion |
 |---|---|---|---|
-| （待运行） | | | |
+| **主判定**：700k vs exp15@700k，200 副（seed0=20260823） | **−1064 ± 1015（99:113）** | — | **显著负 ⇒ 预注册分支「±5 是有益的方差控制」成立** |
+| 机制：满贯+（≥8000）和牌数（400 方向） | 47 | 51 | 右移 ⇒ **未发生**，打点分布无差异 |
+| 正式排位（全池 ×100 副） | 923.2 ± 12.7 | exp15@700k ladder ≈930 | 一致 |
+| 训练健康 | KL 0.0022、熵 1.05、无坍缩 | — | ✅ |
 
 ## Conclusion
-（待运行）
+**「大番数胡牌 reward 被 cap」问题正式结案（2026-08-17）**：在当前规模，±5σ 优势 winsorize
+不构成瓶颈——放宽到 ±10σ 既没有解禁大牌路线（满贯+频率 47 vs 51 无差异），还因引入
+高方差梯度显著变弱（−1064±1015）。裁剪界保留默认 5.0。役满 8σ 梯度被截的理论损失，
+实际被「稀有事件本来就极少出现在梯度里」和「方差控制的收益」双重淹没。
+连同 exp11-A2（乘法价值通道，−2029）：**两条「解禁大额价值信号」的路线全部证伪**——
+当前谱系的瓶颈不在价值信号的幅度端。
 
 ## Artifacts
 | Path | Size | Description |
