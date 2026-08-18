@@ -1,5 +1,9 @@
 # exp10_arch_sweep（架构探索）
 
+> **2026-08-18 修订**：毕业赛结论被 exp18 受控对照推翻——+1633 是配方依赖幻象
+> （当年对手是 reuse44 弱配方的 cnn-240k；ppo_epochs=1 下同点对打 +471 null，
+> 700k 渐近线 cnn 反超 ~85 Elo）。见 `experiments/exp18_archpair_prereg/`。
+
 - **Date**: 2026-08-15  **Status**: done（BC 扫描 + RL 毕业赛均完成，vit 毕业通过）
 - **动机**: 用户指示「对模型结构进行进一步探索」。与 exp9 并行（BC 走 GPU，不抢 rollout CPU）。
 

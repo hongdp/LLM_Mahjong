@@ -103,9 +103,14 @@ def cmd_watch(args):
         games = gcs_train_log_games(run)
         if games and games - last_rated >= args.min_games:
             snap = f"{snap_dir}/ladder_{games}.pt"
-            got = subprocess.run(
-                ["gsutil", "cp", f"{GCS_BUCKET}/{run}/latest.pt", snap],
-                capture_output=True, timeout=300).returncode == 0
+            try:
+                got = subprocess.run(
+                    ["gsutil", "cp", f"{GCS_BUCKET}/{run}/latest.pt", snap],
+                    capture_output=True, timeout=300).returncode == 0
+            except subprocess.TimeoutExpired:
+                # slow network must delay a tick, not kill the watcher
+                # (2026-08-18: cnn arm curve lost past 194k to exactly this)
+                got = False
             if got:
                 prev = rate_one(snap, run, games, prev, args, device, writer)
                 last_rated = games
