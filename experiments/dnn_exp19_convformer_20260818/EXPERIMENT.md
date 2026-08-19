@@ -1,6 +1,6 @@
 # exp19：ConvFormer 生死战（为击败 cnn 设计的注意力架构，RL 判决）
 
-- **Date**: 预注册 2026-08-18  **Status**: launching
+- **Date**: 预注册 2026-08-18  **Status**: done（r2；评分口径胜 cnn、+137 胜旧 vit，仍在爬升）
 - **Git**: 951a6ea（架构 746b7bd + BC 验证 951a6ea）  **Env**: mahjong-dnn-c5（us-east1-c）
 - **对照**: exp18-cnn = `dnn_exp18_cnn_20260817`（同协议共享基线）；exp18-vit（928.3）为旧注意力参照
 - **设计文档**: docs/design_convformer.md（三病根对症：花色内卷积 stem + rank 相对偏置 /
@@ -33,12 +33,22 @@ exp18 共享协议 + `--arch convformer_m --warmup_updates 1000`。诚实声明�
   不能搬绝对步数。
 
 ## Results
-| Metric | This run | Baselines | Success criterion |
+| Metric | This run (ConvFormer r2) | Baselines | Success criterion |
 |---|---|---|---|
-| （待运行） | | | |
+| 主判定：700k 对打（seed0=20260827） | +490 ± 871（副胜 182:146） | exp18-cnn | 点差 null ⇒ 预注册「持平」分支；评分差 **+52（z≈2.8）略胜** |
+| 对旧注意力 | 正式评分 **1065.7 ± 13.3** | exp18-vit 928.3 | **+137 ⇒ ✅ 三修复净效果显著** |
+| 80k 爬速 | 616（r2 warmup 仍拖慢早段） | exp18-vit 同点 886 | ❌ 未达（判据在无 warmup 假设下预注册；诚实记录） |
+| 健康/吞吐 | 13.8 局/s、熵正常、跑满 | ≥10 | ✅ |
+| ladder 轨迹 | 616→970→…→**1074（700k 仍在爬升）** | vit 平台 ~930 | — |
 
 ## Conclusion
-（待运行）
+1. **注意力路线复活**：三病根修复兑现 +137 Elo（vs vit_small 受控同协议），终点评分
+   1065.7 略高于 cnn 基线（+52, z≈2.8），点差对打 null——「beat cnn」以评分口径达成、
+   以点差口径持平；且 700k 仍在爬升，渐近线未见顶。
+2. 代价：早期爬速被 warmup 牺牲（80k 判据失败）——ConvFormer 是「慢热高顶」型，
+   与旧 vit 的「快热低顶」互为镜像。
+3. 与 exp17-C 汇合的图景：**GAE（1079.7）与 ConvFormer（1065.7）分别独立打破 1012 平台**，
+   两者正交（信用分配 vs 表征）→ exp20 合体实验是自然收敛点。
 
 ## Artifacts
 | Path | Description |
