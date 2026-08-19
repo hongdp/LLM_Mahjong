@@ -19,8 +19,9 @@
 b1 延迟 3.47ms（vit_small 3.24 / cnn_m 0.64——参数 2.4× 但几乎不变慢，35×35 注意力矩阵太小）。
 
 ## 评估路线
-1. **BC 保真度**（本地免费，进行中）：对标 vit_small 89.3% / cnn_m 81.4%。预期 ≥ vit_small
-   （多的容量+先验不应伤模仿）；若显著低于则回炉。
+1. **BC 保真度** ✅（2026-08-18 完成）：**90.5%，全 zoo 新纪录**（vit_small 89.3% /
+   cnn_m 81.4%）；CPU b1 4.3ms；checkpoint `experiments/arch_sweep/models/convformer_m.pt`。
+   注意 exp10 教训：BC 保真度不兑现强度——这只是及格线检查，判决在 RL。
 2. **exp19 RL 配对**（预注册，待发射）：exp18 协议原样（从零 700k、熵台阶、同种子），
    convformer_m vs cnn_m。诚实声明：convformer 臂带 `--warmup_updates 1000`——这是
    「注意力系统包 vs 卷积系统包」的对照，不是纯架构消融（warmup 对 cnn 中性偏无用，
