@@ -58,6 +58,9 @@ def main():
     ap.add_argument("--channels", type=int, default=64)
     ap.add_argument("--blocks", type=int, default=3)
     ap.add_argument("--batch", type=int, default=4096)
+    ap.add_argument("--warmup_updates", type=int, default=0,
+                    help="linear LR warmup over N optimizer updates "
+                         "(0 = off; transformers in RL want ~1000)")
     ap.add_argument("--adv_clamp", type=float, default=5.0,
                     help="normalized-advantage winsorize bound (sigma); a "
                          "yakuman event sits near 8 sigma, so the 5.0 "
@@ -181,6 +184,7 @@ def main():
         print(f"⚓ warm-start {args.init}"
               + (f" (fresh: {skipped})" if skipped else ""), flush=True)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
+    n_upd = 0                      # optimizer updates, for --warmup_updates
     ent_alpha = args.entropy_coef      # live coefficient (schedule/auto laws)
 
     def save(tag, games, it=0):
@@ -334,6 +338,11 @@ def main():
                     hloss.append(hz.item())
                 opt.zero_grad(); loss.backward()
                 torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+                if args.warmup_updates:
+                    n_upd += 1
+                    scale = min(1.0, n_upd / args.warmup_updates)
+                    for g in opt.param_groups:
+                        g["lr"] = args.lr * scale
                 opt.step()
                 with torch.no_grad():
                     lr_ = chosen - old_lp[sel]
