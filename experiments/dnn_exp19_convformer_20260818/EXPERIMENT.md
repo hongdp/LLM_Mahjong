@@ -24,6 +24,13 @@ exp18 共享协议 + `--arch convformer_m --warmup_updates 1000`。诚实声明�
 
 ## Progress
 - [2026-08-18] 预注册，c5 发射。
+- [2026-08-18] 发射确认：首 iter win_rate 0.009，149 s/iter（**13.8 局/s，过 ≥10 健康线**——d160×6 CPU rollout 代价实测 1.8× cnn），预计 ~14h 跑满。ladder 已挂。**Status: running**。
+- [2026-08-18 22:45] **r1 中止（10%，设计失误，诚实记录）**：--warmup_updates 1000 的尺寸
+  按 LLM 级更新量拍脑袋；实测本配置全程仅 ~2400 次 minibatch 更新，1000 步预热 = 40% 训练
+  在低 LR 爬行（71k 局 win_rate 仅 0.042、熵 1.88，远落后基线同期）。r1 产物弃用。
+  **r2 重发**：唯一改动 --warmup_updates 1000→150（~6% 更新数，预热的合理占比），
+  目录 `dnn_exp19_convformer_20260818r2`。教训：warmup 长度必须按「占总更新数比例」设定，
+  不能搬绝对步数。
 
 ## Results
 | Metric | This run | Baselines | Success criterion |
