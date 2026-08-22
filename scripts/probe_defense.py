@@ -36,6 +36,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.run_arena_dnn import load_dnn                      # noqa: E402
+from src.agents.dnn.encoder import encode_state, legal_mask     # noqa: E402
 from src.agents.dnn.selfplay import _choose                     # noqa: E402
 from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE   # noqa: E402
 from src.tasks.mahjong.shanten import TileEfficiency, pad_for_melds  # noqa: E402
@@ -73,15 +74,25 @@ def play_chunk(args):
                            if o != pid and table.riichi[o]]
             exposed = bool(riichi_opps) and not table.riichi[pid]
             hand14 = list(table.hands[pid])
+            # V threat probe (suite #3): critic's danger awareness, bucketed
+            # by own shanten so exposed/unexposed states are comparable.
+            sh_now = _shanten(hand14, len(table.melds[pid]))
+            vb = ("tenpai" if sh_now <= 0 else "mid" if sh_now == 1 else "weak")
+            planes, scalars = encode_state(table, pid)
+            vmask, _ = legal_mask(actions)
+            with torch.no_grad():
+                _, vv = net.forward_with_value(planes[None], scalars[None],
+                                               vmask[None])
+            vkey = f"v_{'exp' if exposed else 'un'}_{vb}"
+            c[vkey + "_sum"] += float(vv)
+            c[vkey + "_n"] += 1
             _, action_str = _choose(net, table, pid, actions, temperature,
                                     "cpu", cmode="none")
             m = ACTION_RE.search(action_str)
             if exposed and m and m.group(1) in ("discard", "riichi"):
                 exposed_seats.add(pid)
                 tile = m.group(2)
-                sh = _shanten(hand14, len(table.melds[pid]))
-                bucket = ("tenpai" if sh <= 0 else
-                          "mid" if sh == 1 else "weak")
+                bucket = vb
                 genbutsu = all(
                     tile in (t.replace("*", "") for t in table.discards[o])
                     for o in riichi_opps)
@@ -162,6 +173,13 @@ def main():
         }
         if rec["fold_weak"] is not None and rec["fold_tenpai"] is not None:
             rec["defense_iq"] = round(rec["fold_weak"] - rec["fold_tenpai"], 3)
+        vgap = {}
+        for b in ("weak", "mid", "tenpai"):
+            e_n, u_n = c[f"v_exp_{b}_n"], c[f"v_un_{b}_n"]
+            if e_n and u_n:
+                vgap[b] = round(c[f"v_exp_{b}_sum"] / e_n
+                                - c[f"v_un_{b}_sum"] / u_n, 3)
+        rec["v_danger_gap"] = vgap
         out[name] = rec
         print(name, json.dumps(rec), flush=True)
     json.dump(out, open(args.out, "w"), indent=1)
