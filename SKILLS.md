@@ -172,3 +172,7 @@
   DNN 路径关掉 LLM 文本观测 + numpy 编码器 + tile_to_34 查表。护栏：固定种子贪心轨迹 sha256
   （`scratchpad/snapshot_traj.py` 思路）必须逐字节一致 + 全套测试。引擎份额 77%→~45%，
   下一步 GPU 批推理（scale-up 前置）。档案 experiments/perf_rollout_20260822。
+- **（2026-08-22 结论）三条渐近线 + 梯度竞争假说证伪**：纯自对弈现配方族的平台——cnn 无 GAE ≈1012、
+  ConvFormer（含 ×GAE 合体）≈1060、vit ≈930；**冠军仍 cnn+GAE 1079.7**，GAE 与 ConvFormer 不可加。
+  exp20 在 1.2M 饱和后 defense_iq 仍 ≈0 ⇒「攻击饱和后防守自发浮现」不成立；剩余解释=生态均衡
+  （种群推牌近似最优），对手联赛（纯）为主手术，输入 v3（exp23）裁决输入层假说。风格≠强度再证。
