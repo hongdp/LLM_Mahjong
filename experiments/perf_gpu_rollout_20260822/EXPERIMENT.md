@@ -1,6 +1,6 @@
 # perf：GPU 批量推理服务（rollout 第二阶段，scale-up 前置）
 
-- **Date**: 2026-08-22  **Status**: running（实现完成，吞吐基准进行中）
+- **Date**: 2026-08-22  **Status**: done（本地阶段；CUDA graph 大桶与云端 L4 验证待首个大模型 run）
 - **Git**: （本提交）  **Env**: 本地 24 vCPU + RTX 4080（与 llama-server 共享 GPU）；云端 g2 待验
 
 ## Purpose
@@ -50,8 +50,29 @@
 - [2026-08-22 18:55] **v4 CUDA graph 分桶回放**已实现（eager 回退）；本机无法验证——4080 被 llama-server
   占 14.2GB，捕获 OOM。待云端 L4 验证（exp24/scale-ladder 的首个 run 顺带测）。
 
+- [2026-08-22 19:05] **v4 本地实测（桶 ≤64，expandable_segments）**：fwd 13.2 → **5.15 ms/批**，
+  **33.3 局/s（CPU 3.5 → 9.5×）**，2979 决策/s；桶 128 本机仍 OOM（llama-server 占 14.2GB）。
+  剩余瓶颈：服务循环内 6.2 ms/批，但每批周期 ~16 ms ⇒ ~10 ms 在等 worker 回流——24 核跑 96 个
+  worker 的唤醒/引擎/编码周转，**本机已到 CPU 侧天花板**。
+
 ## Results
-（待运行）
+| 配置（192×40，14M 参数） | 吞吐 | 倍率 |
+|---|---|---|
+| CPU 逐次推理 w16 | 3.5 局/s | 1× |
+| GPU 服务 v1（Queue）w48 | 16.5 | 4.7× |
+| v2（标志数组+信号量）w96 | 25.4 | 7.3× |
+| v3（广播唤醒）w96 | 22.3（cudnn 自调拖累） | — |
+| **v4（CUDA graph ≤64 桶）w96** | **33.3** | **9.5×** |
+| cnn_m 对照：CPU w16 / GPU w32 | 40.2 / 32.4 | 小模型仍走 CPU |
 
 ## Conclusion
-（待运行）
+1. 20M 级模型 rollout 提速 **9.5×**（本机），700k 局成本估算 $108 → ~$12（g2，同一台机）。
+   对局循环零改动；等价性为统计级（采样在 GPU RNG）。
+2. 分解后的瓶颈链：Queue 锁争用（v2 解）→ 逐个唤醒（v3 解）→ kernel 启动受限的前向（v4 CUDA
+   graph 解）→ **现在是 CPU 侧 worker 周转**：下一杠杆是更多 vCPU（g2-standard-48/96 在 GPU 批推理
+   下 CPU 核数才是正确的「花钱处」）与引擎进一步优化。
+3. 云端预期：L4 显存 24GB 可用 128/256 桶，fwd 再降；32 vCPU 与本机同量级 ⇒ 192×40 预计 30-40 局/s；
+   若上 g2-48（48 vCPU）≈ 50-60 局/s。与现役 cnn_m 的 46 局/s 同一量级——**scale-ladder 可负担**。
+4. 教训（入 SKILLS）：spawn 重导入 `__main__`（入口必须守卫）；`torch.nonzero` 不能碰并发写的共享
+   内存；`pkill -f` 模式出现在自身命令行会自杀；cudnn.benchmark 遇批尺寸漂移会反复自调；CUDA graph
+   每桶要显存，内存紧张时按桶上限降级。

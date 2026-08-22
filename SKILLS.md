@@ -176,3 +176,10 @@
   ConvFormer（含 ×GAE 合体）≈1060、vit ≈930；**冠军仍 cnn+GAE 1079.7**，GAE 与 ConvFormer 不可加。
   exp20 在 1.2M 饱和后 defense_iq 仍 ≈0 ⇒「攻击饱和后防守自发浮现」不成立；剩余解释=生态均衡
   （种群推牌近似最优），对手联赛（纯）为主手术，输入 v3（exp23）裁决输入层假说。风格≠强度再证。
+- **（2026-08-22 性能）GPU 批推理服务使 20M 模型 rollout 9.5×**（`src/agents/dnn/infer_server.py`，
+  `cfg["gpu_infer"]`；跨进程 RPC：共享内存槽位 + 单信号量 + 广播 Condition + CUDA graph 分桶）。
+  小模型（cnn_m）仍走 CPU。坑：①spawn 服务重导入 `__main__`——任何启用入口必须 `if __name__`
+  守卫；②`torch.nonzero` 对并发写的共享张量会内部断言——用 numpy 快照；③`pkill -f` 的模式若出现在
+  当前 shell 命令行会自杀——清理放脚本文件；④cudnn.benchmark 在批尺寸漂移下反复自调（默认关）；
+  ⑤CUDA graph 每桶占显存，本机（llama-server 占 14GB）只能 ≤64 桶；⑥批推理后瓶颈转到 CPU worker
+  周转，scale-up 时该买 vCPU 不是更贵的 GPU。档案 experiments/perf_gpu_rollout_20260822。
