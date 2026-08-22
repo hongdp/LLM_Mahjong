@@ -37,13 +37,20 @@ if ! python -c "import numpy, torch, tensorboard, mahjong, tqdm"; then
 fi
 python -c "import torch; assert torch.cuda.is_available()" || echo "[warn] no CUDA, updates on CPU"
 
+# two sync cadences: heavy artifacts (checkpoints) every 10 min; the light
+# observability set (tensorboard events, train_log, nohup log) every 2 min so
+# the local TB mirror is never more than ~3.5 min behind the run.
 ( while true; do sleep 600
     gsutil -m -q rsync -r "experiments/$NAME" "$GCS/$NAME/" 2>/dev/null
-    gsutil -q cp "$LOG" "$GCS/$NAME/" 2>/dev/null
   done ) & SYNC=$!
+( while true; do sleep 120
+    gsutil -m -q rsync -r "experiments/$NAME/tensorboard" "$GCS/$NAME/tensorboard" 2>/dev/null
+    gsutil -q cp "experiments/$NAME/train_log.json" "$GCS/$NAME/" 2>/dev/null
+    gsutil -q cp "$LOG" "$GCS/$NAME/" 2>/dev/null
+  done ) & SYNC2=$!
 
 echo "[run] $*"
 "$@"
 RC=$?
-kill $SYNC 2>/dev/null
+kill $SYNC $SYNC2 2>/dev/null
 echo "[run] exit=$RC"
