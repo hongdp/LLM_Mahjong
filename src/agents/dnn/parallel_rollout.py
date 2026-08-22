@@ -109,7 +109,7 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
         server = InferenceServer(state_np, cfg, n_slots=workers, n_planes=n_pl,
                                  n_scalars=n_sc, device=cfg.get("infer_device", "cuda"),
                                  max_batch=cfg.get("infer_max_batch", 256),
-                                 wait_ms=cfg.get("infer_wait_ms", 1.0))
+                                 wait_ms=cfg.get("infer_wait_ms", 4.0))
         state_np = {}                      # workers don't need weights
     ctx = mp.get_context("fork")
     args, lo = [], 0

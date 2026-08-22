@@ -40,6 +40,10 @@ HANDLES: dict = {}
 
 class _Shared:
     def __init__(self, n_slots: int, n_planes: int, n_scalars: int):
+        # v2 (2026-08-22): request flags in shared memory + ONE semaphore
+        # instead of a pickling Queue: 48 producers contending on a pipe
+        # lock cost more than the GPU forward itself.
+        self.pending = torch.zeros(n_slots, dtype=torch.int32).share_memory_()
         self.planes = torch.zeros(n_slots, n_planes, TILE_TYPES).share_memory_()
         self.scalars = torch.zeros(n_slots, n_scalars).share_memory_()
         self.mask = torch.zeros(n_slots, ACTION_DIM, dtype=torch.bool).share_memory_()
@@ -75,26 +79,30 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
 
 
 def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen):
+    sem, stop = req_q                       # (Semaphore, Event)
+    n_slots = shared.pending.shape[0]
+    target = max(1, min(max_batch, n_slots // 2))   # adaptive: half the slots
+    # the flag array is mutated by other processes while we scan it: never
+    # run multi-threaded torch ops on it (torch.nonzero hit an internal
+    # assert); snapshot through numpy instead.
+    pend_np = shared.pending.numpy()
     with torch.no_grad():
         while True:
-            first = req_q.get()
-            if first is None:
+            sem.acquire()                   # at least one request
+            if stop.is_set():
                 return
-            ids = [first]
             t_end = time.perf_counter() + wait_s
-            while len(ids) < max_batch:
-                left = t_end - time.perf_counter()
-                if left <= 0:
+            while True:
+                ids_np = np.flatnonzero(pend_np.copy())
+                if len(ids_np) >= target or time.perf_counter() >= t_end:
                     break
-                try:
-                    nxt = req_q.get(timeout=left)
-                except _queue.Empty:
-                    break
-                if nxt is None:
-                    req_q.put(None)          # re-post the poison pill
-                    break
-                ids.append(nxt)
-            idx = torch.tensor(ids)
+                time.sleep(0.0002)
+            ids_np = ids_np[:max_batch]
+            # drain the semaphore for every request we are about to serve
+            for _ in range(len(ids_np) - 1):
+                sem.acquire()
+            pend_np[ids_np] = 0
+            idx = torch.from_numpy(ids_np.astype(np.int64))
             p = shared.planes[idx].to(device, non_blocking=True)
             s = shared.scalars[idx].to(device, non_blocking=True)
             m = shared.mask[idx].to(device, non_blocking=True)
@@ -108,7 +116,7 @@ def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen):
             lp = torch.log_softmax(logits, 1).gather(1, act[:, None]).squeeze(1)
             shared.out_idx[idx] = act.cpu()
             shared.out_lp[idx] = lp.cpu()
-            for i in ids:
+            for i in ids_np.tolist():
                 events[i].set()
 
 
@@ -118,9 +126,9 @@ class InferenceServer:
 
     def __init__(self, state_np, cfg, n_slots: int, n_planes: int,
                  n_scalars: int, device: str = "cuda", max_batch: int = 256,
-                 wait_ms: float = 1.0):
+                 wait_ms: float = 4.0):
         self.shared = _Shared(n_slots, n_planes, n_scalars)
-        self.req_q = _CTX.Queue()
+        self.req_q = (_CTX.Semaphore(0), _CTX.Event())   # (requests, stop)
         self.events = [_CTX.Event() for _ in range(n_slots)]
         ready = _CTX.Event()
         self.proc = _CTX.Process(
@@ -134,7 +142,8 @@ class InferenceServer:
                        pid=self.proc.pid)
 
     def stop(self):
-        self.req_q.put(None)
+        self.req_q[1].set()
+        self.req_q[0].release()
         self.proc.join(timeout=30)
         HANDLES.clear()
 
@@ -160,7 +169,8 @@ class RemotePolicy:
         self.shared.mask[r].copy_(mask[0])
         self.shared.temp[r] = float(temperature)
         self.event.clear()
-        self.req_q.put(r)
+        self.shared.pending[r] = 1
+        self.req_q[0].release()
         while not self.event.wait(timeout=5.0):
             pid = HANDLES.get("pid")
             if pid is not None:

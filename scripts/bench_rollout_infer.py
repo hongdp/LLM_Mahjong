@@ -14,7 +14,7 @@ def main():
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--games", type=int, default=256)
     ap.add_argument("--gpu", action="store_true")
-    ap.add_argument("--wait_ms", type=float, default=1.0)
+    ap.add_argument("--wait_ms", type=float, default=4.0)
     ap.add_argument("--max_batch", type=int, default=256)
     a = ap.parse_args()
     if a.arch.startswith("cnnbig"):           # e.g. cnnbig192x40
