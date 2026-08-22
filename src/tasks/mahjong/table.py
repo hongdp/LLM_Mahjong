@@ -220,10 +220,17 @@ class PyMahjongTable(MahjongEngineAPI):
         self.hands[self.dealer].append(first)
         self.hands[self.dealer].sort(key=sort_key)
         self.last_drawn[self.dealer] = first
-        return {i: self._format_state(i) for i in range(4)}
+        return self._obs()
 
     def _meld_str(self, meld: dict) -> str:
         return f"{meld['type']}({' '.join(meld['tiles'])})"
+
+    def _obs(self) -> Dict[int, str]:
+        """Per-seat text observations for the LLM path; DNN drivers set
+        text_obs=False because they never read them (perf 2026-08-22)."""
+        if not getattr(self, "text_obs", True):
+            return {}
+        return {i: self._format_state(i) for i in range(4)}
 
     def _format_state(self, player_id: int) -> str:
         dora = ' '.join(self.dora_indicators)
@@ -340,6 +347,10 @@ class PyMahjongTable(MahjongEngineAPI):
                 return None
             concealed = hand
         else:
+            # memoized waits == {t : shanten(hand+t) == -1}; same gate,
+            # but cached per hand instead of one shanten per ron check
+            if win_tile not in self._waits(player_id):
+                return None
             concealed = hand + [win_tile]
 
         if self._shanten(concealed, len(self.melds[player_id])) != -1:
@@ -527,11 +538,14 @@ class PyMahjongTable(MahjongEngineAPI):
         # the wall (RCR 3.12), tenpai after the discard.
         if (self._is_closed(player_id) and self.points[player_id] >= 1000
                 and drawn and len(self.wall) >= self.RIICHI_MIN_WALL):
-            for t in uniq:
-                rest = list(hand)
-                rest.remove(t)
-                if self._shanten(rest, n_melds) == 0:
-                    actions.append(f'<action type="riichi" tile="{t}" />')
+            # 14-tile shanten is the best post-discard shanten: if it is
+            # not 0, no discard reaches tenpai -> skip the per-tile scan
+            if self._shanten(hand, n_melds) == 0:
+                for t in uniq:
+                    rest = list(hand)
+                    rest.remove(t)
+                    if self._shanten(rest, n_melds) == 0:
+                        actions.append(f'<action type="riichi" tile="{t}" />')
 
         # Kan from own turn: ankan (4 in hand) / shouminkan (4th tile of own pon).
         for t in sorted(set(hand), key=sort_key):
@@ -667,7 +681,7 @@ class PyMahjongTable(MahjongEngineAPI):
             ):
                 self._settle_tsumo(player_id, result)
                 return (
-                    {i: self._format_state(i) for i in range(4)},
+                    self._obs(),
                     rewards, True, {"discarded": False},
                 )
 
@@ -680,7 +694,7 @@ class PyMahjongTable(MahjongEngineAPI):
                 # mutated until the chankan window closes.
                 self.pending_kan = {"player": player_id, "tile": tile}
                 return (
-                    {i: self._format_state(i) for i in range(4)},
+                    self._obs(),
                     rewards, False, {"discarded": False, "chankan": tile},
                 )
 
@@ -691,7 +705,7 @@ class PyMahjongTable(MahjongEngineAPI):
                 forced_discard()
 
         self.hands[player_id].sort(key=sort_key)
-        obs = {i: self._format_state(i) for i in range(4)}
+        obs = self._obs()
         return obs, rewards, self.finished, {"discarded": discarded}
 
     def _riichi_tenpai(self, player_id: int, discard_tile: str) -> bool:
@@ -757,7 +771,7 @@ class PyMahjongTable(MahjongEngineAPI):
         self.turn = (self.turn + 1) % 4
         if not self.wall:
             self._ryuukyoku()
-            return {i: self._format_state(i) for i in range(4)}, True
+            return self._obs(), True
         t = self.wall.pop()
         self.hands[self.turn].append(t)
         self.hands[self.turn].sort(key=sort_key)
@@ -765,7 +779,7 @@ class PyMahjongTable(MahjongEngineAPI):
         self.rinshan[self.turn] = False
         # RCR 3.13.2: same-turn furiten lifts once the player draws again.
         self.temp_furiten[self.turn] = False
-        return {i: self._format_state(i) for i in range(4)}, False
+        return self._obs(), False
 
     # ------------------------------------------------------------------
     # Riichi confirmation / missed-ron furiten
@@ -812,7 +826,7 @@ class PyMahjongTable(MahjongEngineAPI):
         the riichi sticks.
         """
         rewards = {i: 0.0 for i in range(4)}
-        obs = lambda: {i: self._format_state(i) for i in range(4)}
+        obs = lambda: self._obs()
         if self.pending_kan:
             tile = self.pending_kan["tile"]
             discarder = self.pending_kan["player"]
@@ -848,7 +862,7 @@ class PyMahjongTable(MahjongEngineAPI):
     def step_interrupt(self, player_id: int, action_xml: str):
         match = ACTION_RE.search(action_xml or "")
         rewards = {i: 0.0 for i in range(4)}
-        obs = lambda: {i: self._format_state(i) for i in range(4)}
+        obs = lambda: self._obs()
 
         if not match:
             rewards[player_id] = self.FORMAT_PENALTY

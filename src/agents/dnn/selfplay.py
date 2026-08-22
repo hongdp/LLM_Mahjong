@@ -116,6 +116,7 @@ def play_game(net, temperature: float = 1.0, device="cpu",
     if deal_seed is not None:
         random.seed(deal_seed)          # common random numbers
     table = PyMahjongTable(randomize_round=randomize_round)
+    table.text_obs = False          # DNN path never reads text obs
     game = DnnGame()
 
     guard = 0

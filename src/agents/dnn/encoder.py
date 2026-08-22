@@ -16,7 +16,10 @@ each uses a different pair of tiles from hand.
 import re
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
+
+from src.tasks.mahjong.shanten import dora_from_indicator
 
 TILE_TYPES = 34
 SUITS = "mps"
@@ -81,12 +84,24 @@ def legal_mask(actions: List[str]) -> Tuple[torch.Tensor, Dict[int, str]]:
 
 
 def _counts_plane(tiles: List[str]) -> torch.Tensor:
-    # list accumulate + one tensor build: per-element tensor indexing was
-    # 11% of rollout time (perf 2026-08-22)
     c = [0.0] * TILE_TYPES
     for t in tiles:
         c[tile_to_34(t)] += 1.0
     return torch.tensor(c)
+
+
+def _counts_list(tiles) -> List[float]:
+    c = [0.0] * TILE_TYPES
+    for t in tiles:
+        c[tile_to_34(t)] += 1.0
+    return c
+
+
+def _presence_row(tiles) -> np.ndarray:
+    row = np.zeros(TILE_TYPES, dtype=np.float32)
+    for t in tiles:
+        row[tile_to_34(t)] = 1.0
+    return row
 
 
 def encode_state(table, player_id: int,
@@ -96,35 +111,34 @@ def encode_state(table, player_id: int,
     Everything is written from `player_id`'s point of view: opponents are
     indexed by seat offset 1..3 downstream of the player, so the network
     never has to learn absolute seat identities.
+
+    numpy build + one from_numpy (perf 2026-08-22): the per-plane torch
+    ops were ~20% of rollout time; values are bit-identical.
     """
-    planes = torch.zeros(N_PLANES_V2 if with_order else N_PLANES, TILE_TYPES)
+    planes = np.zeros((N_PLANES_V2 if with_order else N_PLANES, TILE_TYPES),
+                      dtype=np.float32)
 
     hand = table.hands[player_id]
-    counts = _counts_plane(hand)
+    counts = np.asarray(_counts_list(hand), dtype=np.float32)
     for k in range(4):                       # 0-3: hand count >= k+1
-        planes[k] = (counts >= (k + 1)).float()
+        planes[k] = counts >= (k + 1)
 
-    own_meld_tiles = [t for m in table.melds[player_id] for t in m["tiles"]]
-    planes[4] = (_counts_plane(own_meld_tiles) > 0).float()
-
+    planes[4] = _presence_row(t for m in table.melds[player_id] for t in m["tiles"])
     for off in range(1, 4):                  # 5-7: opponents' melds
         pid = (player_id + off) % 4
-        tiles = [t for m in table.melds[pid] for t in m["tiles"]]
-        planes[4 + off] = (_counts_plane(tiles) > 0).float()
+        planes[4 + off] = _presence_row(t for m in table.melds[pid] for t in m["tiles"])
 
-    planes[8] = (_counts_plane(table.discards[player_id]) > 0).float()
+    planes[8] = _presence_row(table.discards[player_id])
     for off in range(1, 4):                  # 9-11: opponents' rivers
         pid = (player_id + off) % 4
-        planes[8 + off] = (_counts_plane(table.discards[pid]) > 0).float()
+        planes[8 + off] = _presence_row(table.discards[pid])
 
-    from src.tasks.mahjong.shanten import dora_from_indicator
-    dora = [dora_from_indicator(i) for i in table.dora_indicators]
-    planes[12] = (_counts_plane(dora) > 0).float()
+    planes[12] = _presence_row(dora_from_indicator(i) for i in table.dora_indicators)
 
     if table.last_discard:
         planes[13][tile_to_34(table.last_discard)] = 1.0
 
-    planes[14] = (_counts_plane(table.furiten_river[player_id]) > 0).float()
+    planes[14] = _presence_row(table.furiten_river[player_id])
 
     if with_order:
         for off in range(4):             # 15-18: rivers with discard order
@@ -132,7 +146,7 @@ def encode_state(table, player_id: int,
             for j, t in enumerate(table.discards[pid]):
                 planes[15 + off][tile_to_34(t)] = min((j + 1) / 20.0, 1.0)
 
-    s = torch.zeros(N_SCALARS)
+    s = np.zeros(N_SCALARS, dtype=np.float32)
     for off in range(4):                     # 0-3: points, own seat first
         pid = (player_id + off) % 4
         s[off] = (table.points[pid] - 25000) / 25000.0
@@ -148,4 +162,6 @@ def encode_state(table, player_id: int,
     s[14 + seat_wind] = 1.0                  # 14-17: seat wind
     s[18] = 1.0 if table.turn == player_id else 0.0
     s[19] = 1.0 if table.last_discarder == (player_id - 1) % 4 else 0.0
+    planes = torch.from_numpy(planes)
+    s = torch.from_numpy(s)
     return planes, s

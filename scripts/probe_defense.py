@@ -62,6 +62,7 @@ def play_chunk(args):
     for seed in seeds:
         random.seed(seed)
         table = PyMahjongTable(randomize_round=True)
+        table.text_obs = False
         exposed_seats = set()
         guard = 0
         while not table.finished and guard < 600:

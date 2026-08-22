@@ -32,6 +32,12 @@ engine/encoder 单测全过。
 - [2026-08-22 13:40] **第一轮（方法 1-3）**：5.91 局/s（2.39×），2.43 ms/决策；shanten 调用 60,740→15,487；
   等价性 hash 一致；62 测试通过。新构成（5.1 s）：shanten 1.9 s（37%，其中 mahjong 库纯 Python
   `_run` 1.4 s）、网络 1.6 s（31%）、其余编码/合法动作/结算 ~1.6 s。
+- [2026-08-22 14:20] **第二轮**：①立直候选枚举先看 14 张向听（非 0 跳过逐张扫描）；②荣和判定用
+  memoized waits 预门控（同一条件，免逐次 shanten）；③DNN 路径关闭每步 LLM 文本观测拼装
+  （`table.text_obs=False`）；④编码器改 numpy 一次成型。结果 **9.77 局/s（累计 3.96×）**，
+  1.31 ms/决策；shanten 调用 4,327；hash 一致；62 测试通过。剩余构成（3.1 s）：网络 conv/linear/bn
+  ~1.05 s（34%）、shanten 0.3 s、tile_to_34 字符串解析 0.15 s、legal_mask 0.17 s。
+  引擎份额 77%→~45%：GPU 批推理的 Amdahl 上限相应抬高。
 
 ## Results
 （待运行）
