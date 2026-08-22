@@ -39,13 +39,32 @@ N_SCALARS = 20
 _ACT_RE = re.compile(r'type="(\w+)"(?:[^>]*?tile="([^"]+)")?(?:[^>]*?with="([^"]+)")?')
 
 
-def tile_to_34(tile: str) -> int:
-    """'1m'->0 .. '9m'->8, '1p'->9 .., '1s'->18 .., '1z'->27 .. '7z'->33."""
+def _tile_to_34_slow(tile: str) -> int:
     tile = tile.replace("*", "").strip()
     val, suit = int(tile[:-1]), tile[-1]
     if suit == "z":
         return 27 + (val - 1)
     return SUITS.index(suit) * 9 + (val - 1)
+
+
+_T34 = {}
+for _v in range(1, 10):
+    for _s in SUITS:
+        _T34[f"{_v}{_s}"] = _tile_to_34_slow(f"{_v}{_s}")
+        _T34[f"{_v}{_s}*"] = _T34[f"{_v}{_s}"]
+for _v in range(1, 8):
+    _T34[f"{_v}z"] = _tile_to_34_slow(f"{_v}z")
+    _T34[f"{_v}z*"] = _T34[f"{_v}z"]
+
+
+def tile_to_34(tile: str) -> int:
+    """'1m'->0 .. '9m'->8, '1p'->9 .., '1s'->18 .., '1z'->27 .. '7z'->33.
+    Dict lookup for the ~160k calls/30 games (perf 2026-08-22); falls back
+    to parsing for any unusual spelling."""
+    try:
+        return _T34[tile]
+    except KeyError:
+        return _tile_to_34_slow(tile)
 
 
 def action_to_index(action_xml: str) -> Optional[int]:
