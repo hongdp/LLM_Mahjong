@@ -81,10 +81,12 @@ def legal_mask(actions: List[str]) -> Tuple[torch.Tensor, Dict[int, str]]:
 
 
 def _counts_plane(tiles: List[str]) -> torch.Tensor:
-    c = torch.zeros(TILE_TYPES)
+    # list accumulate + one tensor build: per-element tensor indexing was
+    # 11% of rollout time (perf 2026-08-22)
+    c = [0.0] * TILE_TYPES
     for t in tiles:
-        c[tile_to_34(t)] += 1
-    return c
+        c[tile_to_34(t)] += 1.0
+    return torch.tensor(c)
 
 
 def encode_state(table, player_id: int,

@@ -43,6 +43,42 @@ def str_from_34(idx: int) -> str:
     return f"{idx - 27 + 1}z"
 
 
+
+# ---- rollout perf (2026-08-22): shanten LRU + wait-candidate pruning ----
+import functools as _functools
+
+_ORPHANS_34 = frozenset([0, 8, 9, 17, 18, 26] + list(range(27, 34)))
+
+
+def _tile34(t: str) -> int:
+    val, suit = int(t[:-1]), t[-1]
+    return 27 + val - 1 if suit == "z" else "mps".index(suit) * 9 + val - 1
+
+
+def _wait_candidates(tiles: List[str]):
+    """34-indices that could possibly complete `tiles`: a winning tile must
+    pair/triplet with a tile in hand (same tile) or extend a sequence
+    (same suit, rank within +-2). Kokushi-shaped hands (all orphans) are the
+    one case where the missing tile need not be adjacent -> full scan."""
+    idx = [_tile34(t) for t in tiles]
+    if all(i in _ORPHANS_34 for i in idx):
+        return range(34)
+    cand = set()
+    for i in idx:
+        cand.add(i)
+        if i < 27:
+            r, base = i % 9, i - i % 9
+            for d in (-2, -1, 1, 2):
+                if 0 <= r + d <= 8:
+                    cand.add(base + r + d)
+    return sorted(cand)
+
+
+@_functools.lru_cache(maxsize=262144)
+def _shanten_cached(key: tuple, num_melds: int) -> int:
+    return PyMahjongTable._efficiency.calculate_shanten(
+        pad_for_melds(list(key), num_melds))
+
 class PyMahjongTable(MahjongEngineAPI):
     """
     Single-round four-player riichi mahjong table, implementing the EMA
@@ -234,9 +270,7 @@ class PyMahjongTable(MahjongEngineAPI):
         # Clamp so padding can never exceed a legal 14-tile hand.
         num_melds = max(0, min(num_melds, (14 - len(tiles)) // 3))
         try:
-            return self._efficiency.calculate_shanten(
-                pad_for_melds(tiles, num_melds)
-            )
+            return _shanten_cached(tuple(sorted(tiles)), num_melds)
         except ValueError:
             # Degenerate tile counts (broken mid-action states) are never
             # winning/tenpai — report "far from tenpai" instead of crashing.
@@ -352,12 +386,15 @@ class PyMahjongTable(MahjongEngineAPI):
         if cached is not None:
             return cached
         waits = []
-        for i34 in range(34):
-            t = str_from_34(i34)
-            if hand.count(t) >= 4:
-                continue
-            if self._shanten(hand + [t], n_melds) == -1:
-                waits.append(t)
+        # a 13-tile-state hand has waits only if it is tenpai: one shanten
+        # call replaces 34 when it is not (perf 2026-08-22)
+        if self._shanten(hand, n_melds) == 0:
+            for i34 in _wait_candidates(hand):
+                t = str_from_34(i34)
+                if hand.count(t) >= 4:
+                    continue
+                if self._shanten(hand + [t], n_melds) == -1:
+                    waits.append(t)
         if len(self._waits_cache) > 4096:
             self._waits_cache.clear()
         self._waits_cache[key] = waits
@@ -422,7 +459,9 @@ class PyMahjongTable(MahjongEngineAPI):
         return waits_before == waits_after and bool(waits_before)
 
     def _waits_of(self, tiles: List[str], n_melds: int) -> set:
-        return {str_from_34(i) for i in range(34)
+        if self._shanten(tiles, n_melds) != 0:
+            return set()
+        return {str_from_34(i) for i in _wait_candidates(tiles)
                 if tiles.count(str_from_34(i)) < 4
                 and self._shanten(tiles + [str_from_34(i)], n_melds) == -1}
 
