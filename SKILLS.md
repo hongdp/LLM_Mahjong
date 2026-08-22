@@ -160,3 +160,9 @@
   落在上一个 run 的 EXIT-trap 关机窗口里，2 分钟后被一并关掉，首 iter 哨兵给出假阳性，两天后才被
   发现重发（VM 关着未计费，但时间全损）。规则：`instances start` 对 RUNNING 机是 no-op 成功，
   不能当「机器可用」信号；发射后除首 iter 确认外，必须挂 train_log 新鲜度心跳（>30 min 未更新即报）。
+- **（2026-08-21 用户规则）每个长跑任务必须有心跳监控**：统一用 `scripts/phase2_dnn/watch_run.sh <run>`
+  （train_log 新鲜度 >40 min 报 STALE、games_final 报 DONE、30 min 无日志报 MISSING）；本地长评估
+  用等价的 mtime/进程心跳。会话重启后第一件事是重建全部心跳。
+- **（2026-08-21 决策）人类标尺 = Mortal**（用户批准）：仅作冻结外部锚点入 Elo 池用于测量，训练永远
+  不接触。M3 前须先核实 Mortal 权重的可获得性（其官方不公开分发训练权重）；若不可得，备选
+  Akochan（全开源）或人类牌谱 BC 标尺。
