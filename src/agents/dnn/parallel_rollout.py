@@ -32,14 +32,20 @@ def _worker(rank, n_games, seeds, state_np, cfg):
     torch.manual_seed(cfg["seed"] * 1000 + rank)
     import random as _rnd
     _rnd.seed(cfg["seed"] * 7919 + rank)
-    if cfg.get("arch"):
-        from src.agents.dnn.arch_zoo import ZOO
-        net = ZOO[cfg["arch"]][0]()
+    if cfg.get("gpu_infer"):
+        # batched GPU inference (perf 2026-08-22): the server was started by
+        # the parent before the fork; we only need a slot-bound shim
+        from src.agents.dnn.infer_server import RemotePolicy
+        net = RemotePolicy(rank, cfg.get("encoder_variant", "v1"))
     else:
-        net = MahjongPolicyNet(channels=cfg["channels"], blocks=cfg["blocks"])
-    from src.agents.dnn.net import load_compatible
-    load_compatible(net, {k: torch.from_numpy(v) for k, v in state_np.items()})
-    net.eval()
+        if cfg.get("arch"):
+            from src.agents.dnn.arch_zoo import ZOO
+            net = ZOO[cfg["arch"]][0]()
+        else:
+            net = MahjongPolicyNet(channels=cfg["channels"], blocks=cfg["blocks"])
+        from src.agents.dnn.net import load_compatible
+        load_compatible(net, {k: torch.from_numpy(v) for k, v in state_np.items()})
+        net.eval()
     cmode = cfg.get("critic_feats", "none")
     payload = []
     for i in range(n_games):
@@ -91,6 +97,20 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
         per[i] += 1
 
     state_np = {k: v.numpy() for k, v in state_dict.items()}
+    server = None
+    if cfg.get("gpu_infer"):
+        from src.agents.dnn.infer_server import InferenceServer
+        from src.agents.dnn.encoder import (N_PLANES, N_PLANES_V3, N_SCALARS,
+                                            N_SCALARS_V3)
+        variant = getattr(net, "encoder_variant", "v1")
+        cfg = dict(cfg, encoder_variant=variant)
+        n_pl, n_sc = ((N_PLANES_V3, N_SCALARS_V3) if variant == "v3"
+                      else (N_PLANES, N_SCALARS))
+        server = InferenceServer(state_np, cfg, n_slots=workers, n_planes=n_pl,
+                                 n_scalars=n_sc, device=cfg.get("infer_device", "cuda"),
+                                 max_batch=cfg.get("infer_max_batch", 256),
+                                 wait_ms=cfg.get("infer_wait_ms", 1.0))
+        state_np = {}                      # workers don't need weights
     ctx = mp.get_context("fork")
     args, lo = [], 0
     for r in range(workers):
@@ -99,10 +119,14 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
         chunk = seeds[lo:lo + per[r]] if seeds else None
         lo += per[r]
         args.append((r, per[r], chunk, state_np, cfg))
-    with ctx.Pool(len(args)) as pool:
-        collected = []
-        for payload in pool.starmap(_worker, args):
-            collected.extend(payload)
+    try:
+        with ctx.Pool(len(args)) as pool:
+            collected = []
+            for payload in pool.starmap(_worker, args):
+                collected.extend(payload)
+    finally:
+        if server is not None:
+            server.stop()
 
     episodes, results = [], []
     for game in collected:
