@@ -98,7 +98,8 @@ class DnnGame:
 
 
 def _choose(net, table, pid, actions, temperature, device, cmode="none"):
-    planes, scalars = encode_state(table, pid)
+    planes, scalars = encode_state(table, pid,
+                                   variant=getattr(net, "encoder_variant", "v1"))
     mask, lookup = legal_mask(actions)
     idx, lp = net.act(planes[None].to(device), scalars[None].to(device),
                       mask[None].to(device), temperature=temperature)

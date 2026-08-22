@@ -35,6 +35,13 @@ N_PLANES = 15
 # so adding order restores information parity rather than exceeding it.
 N_PLANES_V2 = 19
 N_SCALARS = 20
+# encoder v3 (2026-08-22, exp23): the COMPLETE public record, zero derived
+# features. v1's 15 planes + per-seat river facts (order / tsumogiri /
+# riichi-declaration tile / called-away) x4 + per-seat meld type planes
+# (chi/pon/kan) x4 + "this opponent's open meld was fed by me" x3 +
+# visible-tile count >= k (k=1..4, union of everything on the table).
+N_PLANES_V3 = 15 + 16 + 12 + 3 + 4          # = 50
+N_SCALARS_V3 = N_SCALARS + 4 + 4 + 1        # + riichi turn x4, discard count x4, wall-turn
 
 _ACT_RE = re.compile(r'type="(\w+)"(?:[^>]*?tile="([^"]+)")?(?:[^>]*?with="([^"]+)")?')
 
@@ -124,7 +131,8 @@ def _presence_row(tiles) -> np.ndarray:
 
 
 def encode_state(table, player_id: int,
-                 with_order: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+                 with_order: bool = False,
+                 variant: str = "v1") -> Tuple[torch.Tensor, torch.Tensor]:
     """Returns (planes [N_PLANES, 34], scalars [N_SCALARS]).
 
     Everything is written from `player_id`'s point of view: opponents are
@@ -134,6 +142,8 @@ def encode_state(table, player_id: int,
     numpy build + one from_numpy (perf 2026-08-22): the per-plane torch
     ops were ~20% of rollout time; values are bit-identical.
     """
+    if variant == "v3":
+        return _encode_v3(table, player_id)
     planes = np.zeros((N_PLANES_V2 if with_order else N_PLANES, TILE_TYPES),
                       dtype=np.float32)
 
@@ -184,3 +194,78 @@ def encode_state(table, player_id: int,
     planes = torch.from_numpy(planes)
     s = torch.from_numpy(s)
     return planes, s
+
+
+def _encode_v3(table, player_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Complete public record (see N_PLANES_V3). Seats are relative: offset 0
+    is the player, 1..3 the opponents downstream."""
+    P = np.zeros((N_PLANES_V3, TILE_TYPES), dtype=np.float32)
+    hand = table.hands[player_id]
+    counts = np.asarray(_counts_list(hand), dtype=np.float32)
+    for k in range(4):
+        P[k] = counts >= (k + 1)
+    seen = counts.copy()                       # visible tiles: hand + rivers + melds + dora
+    for off in range(4):
+        pid = (player_id + off) % 4
+        meld_tiles = [t for m in table.melds[pid] for t in m["tiles"]]
+        P[4 + off] = _presence_row(meld_tiles)
+        P[8 + off] = _presence_row(table.discards[pid])
+        if off:
+            seen += np.asarray(_counts_list(meld_tiles), dtype=np.float32)
+        else:
+            seen += np.asarray(_counts_list(meld_tiles), dtype=np.float32)
+        seen += np.asarray(_counts_list(t.replace("*", "") for t in table.furiten_river[pid]),
+                           dtype=np.float32)
+    dora = [dora_from_indicator(i) for i in table.dora_indicators]
+    P[12] = _presence_row(dora)
+    seen += np.asarray(_counts_list(table.dora_indicators), dtype=np.float32)
+    if table.last_discard:
+        P[13][tile_to_34(table.last_discard)] = 1.0
+    P[14] = _presence_row(table.furiten_river[player_id])
+    # 15..30: per-seat river facts (order, tsumogiri, riichi-decl, called)
+    for off in range(4):
+        pid = (player_id + off) % 4
+        base = 15 + 4 * off
+        for j, (tile, tsumogiri, rdecl, called, _idx) in enumerate(table.river_events[pid]):
+            t = tile_to_34(tile)
+            P[base][t] = min((j + 1) / 20.0, 1.0)
+            if tsumogiri:
+                P[base + 1][t] = 1.0
+            if rdecl:
+                P[base + 2][t] = 1.0
+            if called:
+                P[base + 3][t] = 1.0
+    # 31..42: per-seat meld types; 43..45: opponent melds fed by me
+    for off in range(4):
+        pid = (player_id + off) % 4
+        for m in table.melds[pid]:
+            kind = {"chi": 0, "pon": 1}.get(m["type"], 2)   # kan/ankan/shouminkan -> 2
+            for t in m["tiles"]:
+                P[31 + 3 * off + kind][tile_to_34(t)] = 1.0
+            if off and m.get("from") == player_id:
+                for t in m["tiles"]:
+                    P[43 + off - 1][tile_to_34(t)] = 1.0
+    # 46..49: visible count >= k
+    for k in range(4):
+        P[46 + k] = seen >= (k + 1)
+
+    s = np.zeros(N_SCALARS_V3, dtype=np.float32)
+    for off in range(4):
+        pid = (player_id + off) % 4
+        s[off] = (table.points[pid] - 25000) / 25000.0
+        s[4 + off] = 1.0 if table.riichi[pid] else 0.0
+    s[8] = len(table.wall) / 70.0
+    s[9] = table.kyotaku / 4.0
+    s[10] = len(hand) / 14.0
+    s[11] = len(table.melds[player_id]) / 4.0
+    s[12 + table.round_wind_idx] = 1.0
+    s[14 + (player_id - table.dealer) % 4] = 1.0
+    s[18] = 1.0 if table.turn == player_id else 0.0
+    s[19] = 1.0 if table.last_discarder == (player_id - 1) % 4 else 0.0
+    for off in range(4):
+        pid = (player_id + off) % 4
+        rt = table.riichi_turn[pid]
+        s[20 + off] = 0.0 if rt is None else min((rt + 1) / 20.0, 1.0)
+        s[24 + off] = min(table.discard_count[pid] / 20.0, 1.0)
+    s[28] = min(sum(table.discard_count) / 70.0, 1.0)
+    return torch.from_numpy(P), torch.from_numpy(s)

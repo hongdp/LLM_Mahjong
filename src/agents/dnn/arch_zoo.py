@@ -18,15 +18,18 @@ import torch
 import torch.nn as nn
 
 from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
-                                    N_PLANES_V2, N_SCALARS, TILE_TYPES)
+                                    N_PLANES_V2, N_PLANES_V3, N_SCALARS,
+                                    N_SCALARS_V3, TILE_TYPES)
 from src.agents.dnn.net import MahjongPolicyNet, ResBlock
 
 
 class CnnPolicy(MahjongPolicyNet):
     """The incumbent, parameterized by input planes for encoder v2."""
 
-    def __init__(self, channels=64, blocks=3, in_planes=N_PLANES):
+    def __init__(self, channels=64, blocks=3, in_planes=N_PLANES,
+                 in_scalars=N_SCALARS, encoder_variant="v1"):
         nn.Module.__init__(self)
+        self.encoder_variant = encoder_variant
         # bypasses MahjongPolicyNet.__init__, so the exp11 critic-variant
         # attributes its inherited forward_with_value reads must exist here
         self.critic_feat_dim = 0
@@ -34,7 +37,7 @@ class CnnPolicy(MahjongPolicyNet):
         self.hazard_head = None
         self.stem = nn.Conv1d(in_planes, channels, 3, padding=1)
         self.blocks = nn.Sequential(*[ResBlock(channels) for _ in range(blocks)])
-        self.scalar_fc = nn.Sequential(nn.Linear(N_SCALARS, 64), nn.ReLU())
+        self.scalar_fc = nn.Sequential(nn.Linear(in_scalars, 64), nn.ReLU())
         self.head = nn.Sequential(
             nn.Linear(channels * TILE_TYPES + 64, 512), nn.ReLU(),
             nn.Linear(512, ACTION_DIM),
@@ -116,6 +119,11 @@ ZOO = {
     "vit_small_order": (lambda: TilesTransformer(128, 4, 8,
                                                  in_planes=N_PLANES_V2), True),
     "convformer_m": (lambda: ConvFormer(160, 6, 5), False),   # exp19
+    # encoder v3 (complete public record) variants — exp23
+    "cnn_m_v3": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3,
+                                   in_scalars=N_SCALARS_V3, encoder_variant="v3"), False),
+    "convformer_m_v3": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V3,
+                                           in_scalars=N_SCALARS_V3, encoder_variant="v3"), False),
 }
 
 
@@ -178,15 +186,17 @@ class ConvFormer(TilesTransformer):
     attention available for the relational skills CNNs can't route.
     """
 
-    def __init__(self, d=160, layers=6, heads=5, in_planes=N_PLANES):
+    def __init__(self, d=160, layers=6, heads=5, in_planes=N_PLANES,
+                 in_scalars=N_SCALARS, encoder_variant="v1"):
         nn.Module.__init__(self)
         self.in_planes = in_planes
+        self.encoder_variant = encoder_variant
         self.tile_embed = nn.Embedding(TILE_TYPES, d)
         self.suit_conv = nn.Sequential(
             nn.Conv1d(in_planes, d, 3, padding=1), nn.GELU(),
             nn.Conv1d(d, d, 3, padding=1))
         self.honor_proj = nn.Linear(in_planes, d)
-        self.global_proj = nn.Linear(N_SCALARS, d)
+        self.global_proj = nn.Linear(in_scalars, d)
         self.blocks = nn.ModuleList(
             [RelBiasBlock(d, heads, 20) for _ in range(layers)])
         self.norm_f = nn.LayerNorm(d)

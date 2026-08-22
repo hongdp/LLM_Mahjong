@@ -50,7 +50,8 @@ def _fill_with_dnn(net, pairs, device="cpu", temperature: float = 1.0):
             r.parsed = r.legal[0] if r.legal else None
             _EMPTY_LEGAL[0] += 1
             continue
-        planes, scalars = encode_state(table, r.player_id)
+        planes, scalars = encode_state(
+            table, r.player_id, variant=getattr(net, "encoder_variant", "v1"))
         idx, _ = net.act(planes[None].to(device), scalars[None].to(device),
                          mask[None].to(device), temperature=temperature)
         action = lookup.get(int(idx))

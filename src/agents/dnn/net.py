@@ -10,7 +10,7 @@ consumer GPU, which is the whole point of the comparison.
 import torch
 import torch.nn as nn
 
-from src.agents.dnn.encoder import ACTION_DIM, N_PLANES, N_SCALARS, TILE_TYPES
+from src.agents.dnn.encoder import ACTION_DIM, N_PLANES, N_SCALARS, TILE_TYPES  # noqa: F401
 
 
 class ResBlock(nn.Module):

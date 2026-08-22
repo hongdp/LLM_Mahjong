@@ -79,7 +79,8 @@ def play_chunk(args):
             # by own shanten so exposed/unexposed states are comparable.
             sh_now = _shanten(hand14, len(table.melds[pid]))
             vb = ("tenpai" if sh_now <= 0 else "mid" if sh_now == 1 else "weak")
-            planes, scalars = encode_state(table, pid)
+            planes, scalars = encode_state(
+                table, pid, variant=getattr(net, "encoder_variant", "v1"))
             vmask, _ = legal_mask(actions)
             with torch.no_grad():
                 _, vv = net.forward_with_value(planes[None], scalars[None],
