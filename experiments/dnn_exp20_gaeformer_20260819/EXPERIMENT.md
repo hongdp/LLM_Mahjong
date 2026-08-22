@@ -26,6 +26,13 @@ exp18 共享协议 + 三件套合体：`--arch convformer_m --gae_lambda 0.95 --
 
 ## Progress
 - [2026-08-19] 预注册，c5 发射。
+- [2026-08-21 23:20 复盘，运维事故] 8/19 首发射落在 c5 上 exp19-r2 刚结束、runner EXIT trap
+  正在收尾的窗口；trap 的 `shutdown -h now` 在 ~2 分钟后把刚起步的 exp20 一并关掉（首 iter
+  哨兵恰在关机前看到 1 个 iter，假阳性）。VM 随后关停两天（无闲置计费）。8/21 14:47 被重新
+  启动并以**与预注册逐字一致**的配置从零重发（非本会话操作）。当前 run 即正式 run，
+  8.3h 处 379k 局、12.7 局/s、Elo 370k@978，ETA 8/22 ~17:00。
+  **教训**：①复用 VM 前必须等 TERMINATED（exp11 看守的条件，手动发射时被跳过）；
+  ②完成哨兵只盯 games_final 对死 run 是盲的——已加 train_log 心跳告警（30 min 无更新即报）。
 
 ## Results
 | Metric | This run | Baselines | Success criterion |
