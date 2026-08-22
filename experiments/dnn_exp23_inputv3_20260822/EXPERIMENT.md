@@ -24,6 +24,9 @@ exp17-C 协议原样（cnn 64×3、GAE 0.95、熵台阶 0:0.03,600000:0.01、700
 
 ## Progress
 - [2026-08-22] 预注册；c3 发射（c3 自 8/19 关停，非关机窗口）。
+- [2026-08-22 13:10] 首 iter 确认：2048 局 win_rate 0.006（从零正常）；**44.8 s/iter = 45.7 局/s**
+  ——v3 编码器（50 平面）+ 优化后引擎，比 exp17-C 同机型同配置的 ~25 局/s 快 1.8×
+  （引擎优化的云端实测）。ETA ~4.3h。心跳哨兵/ladder 已挂。**Status: running**。
 
 ## Results
 | Metric | This run (v3) | Baseline (exp17-C, v1) | Success criterion |
