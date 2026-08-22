@@ -36,6 +36,14 @@
   进程每批开销（Queue 逐条 get 锁争用、1ms 窗口切短 batch、逐个 Event.set）。v2：共享标志数组 +
   单信号量、窗口自适应（≥半数槽位或 4ms）。
 
+- [2026-08-22 18:00] **v2 基准**（共享标志数组 + 单信号量 + 自适应窗口）：192×40 w48 14.7 / **w96 25.4 局/s
+  （CPU 3.5 → 7.3×）**，w96+8ms 窗口 24.7（窗口无关）；cnn_m w32 32.4（CPU 40.2，小模型仍走 CPU）。
+  服务端计时（192×40 w96，avg batch 61）：wait 1.46 / drain 0.01 / gather 0.27 / **fwd 11.1** /
+  write 0.02 / **signal 3.37** ms/批，循环内 16.2ms；而每批周期 27ms ⇒ 服务 ~40% 时间在
+  `sem.acquire` 空等 worker 回流（96 进程在 24 核上的唤醒风暴）。GPU 此时空闲（llama-server 0%）。
+  v3 方向：①单次 `Condition.notify_all` 取代 61 次 Event.set；②cudnn.benchmark + CUDA graph
+  分桶（40 块小卷积 = kernel 启动受限）；③双缓冲：收集下一批与 GPU 前向重叠。
+
 ## Results
 （待运行）
 

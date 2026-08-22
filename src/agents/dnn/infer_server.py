@@ -86,11 +86,20 @@ def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen):
     # run multi-threaded torch ops on it (torch.nonzero hit an internal
     # assert); snapshot through numpy instead.
     pend_np = shared.pending.numpy()
+    diag = bool(os.environ.get("INFER_DIAG"))
+    T = {"wait": 0.0, "drain": 0.0, "gather": 0.0, "fwd": 0.0, "write": 0.0,
+         "signal": 0.0, "n_batch": 0, "n_req": 0}
     with torch.no_grad():
         while True:
             sem.acquire()                   # at least one request
             if stop.is_set():
+                if diag and T["n_batch"]:
+                    nb = T["n_batch"]
+                    print("[infer-server] batches", nb, "avg batch", round(T["n_req"] / nb, 1),
+                          {k: round(v / nb * 1000, 2) for k, v in T.items()
+                           if k not in ("n_batch", "n_req")}, "ms/batch", flush=True)
                 return
+            t0 = time.perf_counter()
             t_end = time.perf_counter() + wait_s
             while True:
                 ids_np = np.flatnonzero(pend_np.copy())
@@ -98,15 +107,18 @@ def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen):
                     break
                 time.sleep(0.0002)
             ids_np = ids_np[:max_batch]
+            t1 = time.perf_counter()
             # drain the semaphore for every request we are about to serve
             for _ in range(len(ids_np) - 1):
                 sem.acquire()
             pend_np[ids_np] = 0
+            t2 = time.perf_counter()
             idx = torch.from_numpy(ids_np.astype(np.int64))
             p = shared.planes[idx].to(device, non_blocking=True)
             s = shared.scalars[idx].to(device, non_blocking=True)
             m = shared.mask[idx].to(device, non_blocking=True)
             t = shared.temp[idx].to(device)
+            t3 = time.perf_counter()
             logits = net(p, s, m)
             greedy = t <= 0
             probs = torch.softmax(logits / t.clamp(min=1e-6)[:, None], dim=1)
@@ -114,10 +126,18 @@ def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen):
             samp = torch.multinomial(probs, 1, generator=gen).squeeze(1)
             act = torch.where(greedy, logits.argmax(1), samp)
             lp = torch.log_softmax(logits, 1).gather(1, act[:, None]).squeeze(1)
-            shared.out_idx[idx] = act.cpu()
-            shared.out_lp[idx] = lp.cpu()
+            act_c, lp_c = act.cpu(), lp.cpu()
+            t4 = time.perf_counter()
+            shared.out_idx[idx] = act_c
+            shared.out_lp[idx] = lp_c
+            t5 = time.perf_counter()
             for i in ids_np.tolist():
                 events[i].set()
+            if diag:
+                t6 = time.perf_counter()
+                T["wait"] += t1 - t0; T["drain"] += t2 - t1; T["gather"] += t3 - t2
+                T["fwd"] += t4 - t3; T["write"] += t5 - t4; T["signal"] += t6 - t5
+                T["n_batch"] += 1; T["n_req"] += len(ids_np)
 
 
 class InferenceServer:
