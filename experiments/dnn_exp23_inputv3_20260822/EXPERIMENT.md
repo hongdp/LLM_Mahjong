@@ -1,7 +1,7 @@
 # exp23：输入扩展 v3（完整公开对局记录，零派生特征）——单变量 vs GAE 冠军
 
 - **Date**: 预注册 2026-08-22  **Status**: launching
-- **Git**: （发射时记录）  **Env**: mahjong-dnn-c3（us-east1-b）on-demand g2
+- **Git**: bf12fd4  **Env**: mahjong-dnn-c3（us-east1-b）on-demand g2
 - **对照**: exp17-C = `dnn_exp17c_gae_20260818`（同协议共享基线，1079.7；唯一差异 = 编码器 v1→v3）
 - **设计**: docs/design_input_v3_scale_dqn.md §A；实现 encoder.py `_encode_v3`（50 平面 + 29 标量）
 
