@@ -1,6 +1,6 @@
 # perf：rollout 引擎优化（scale-up 前置工程，用户指令 2026-08-22）
 
-- **Date**: 2026-08-22  **Status**: running
+- **Date**: 2026-08-22  **Status**: done（引擎侧三轮完成；GPU 批推理为下一阶段）
 - **Git**: 4d7a187 起  **Env**: 本地单线程 CPU 剖析（cnn_m，exp18-cnn 权重）
 
 ## Purpose
@@ -39,8 +39,22 @@ engine/encoder 单测全过。
   ~1.05 s（34%）、shanten 0.3 s、tile_to_34 字符串解析 0.15 s、legal_mask 0.17 s。
   引擎份额 77%→~45%：GPU 批推理的 Amdahl 上限相应抬高。
 
+- [2026-08-22 14:45] **第三轮**：tile_to_34 查表（160k 次/30 局）。无 profiler 实测 **14.76 局/s**；
+  等价性 hash 一致；全套 130 测试通过。为公平对比，用临时 worktree 跑 pre-perf 代码（b38ce3a^）
+  同口径无 profiler 基线 = **4.65 局/s**（此前 2.47/9.77 等数字均含 cProfile 开销，只可互比）。
+
 ## Results
-（待运行）
+| 指标 | 优化前 | 优化后 | 判据 |
+|---|---|---|---|
+| 单线程吞吐（无 profiler，30 局） | 4.65 局/s | **14.76 局/s（3.17×）** | ≥2× ✅ |
+| shanten 调用 / 30 局 | 60,740 | 4,327（−93%） | — |
+| 贪心轨迹 sha256（60 局） | 0b8eb9e567ecea2e | 0b8eb9e567ecea2e | 一致 ✅ |
+| 测试 | 130 passed | 130 passed | ✅ |
 
 ## Conclusion
-（待运行）
+1. 引擎份额从 77% 降到 ~45%，rollout 单线程 3.17×；全部改动语义零变化（轨迹逐字节一致 +
+   全套测试），可直接用于后续所有 run（云端 30 workers 预期 25 → ~60-80 局/s，下次发射实测）。
+2. 剩余构成以网络前向为主（conv/linear/bn ~1/3）+ mahjong 库纯 Python shanten（~10%）。
+   下一杠杆即 SKILLS 预定的 **GPU 批量推理服务**（worker 只跑引擎、GPU 凑 batch），
+   引擎份额下降使其 Amdahl 上限同步抬高；这是 scale-up（192×40 级）的前置工程。
+3. 方法论沉淀：先剖析再动手；每轮改动以「固定种子贪心轨迹 hash + 全套测试」护栏。
