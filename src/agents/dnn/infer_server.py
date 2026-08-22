@@ -44,6 +44,10 @@ class _Shared:
         # instead of a pickling Queue: 48 producers contending on a pipe
         # lock cost more than the GPU forward itself.
         self.pending = torch.zeros(n_slots, dtype=torch.int32).share_memory_()
+        # v3: per-slot done-generation counter; workers wait on ONE shared
+        # Condition and check their own counter (one notify_all per batch
+        # instead of one Event.set per served request)
+        self.done_gen = torch.zeros(n_slots, dtype=torch.int64).share_memory_()
         self.planes = torch.zeros(n_slots, n_planes, TILE_TYPES).share_memory_()
         self.scalars = torch.zeros(n_slots, n_scalars).share_memory_()
         self.mask = torch.zeros(n_slots, ACTION_DIM, dtype=torch.bool).share_memory_()
@@ -55,6 +59,7 @@ class _Shared:
 def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
                  wait_ms, ready):
     torch.set_num_threads(2)
+    torch.backends.cudnn.benchmark = bool(int(os.environ.get("INFER_CUDNN_BENCH", "0")))
     if cfg.get("arch"):
         from src.agents.dnn.arch_zoo import ZOO
         net = ZOO[cfg["arch"]][0]()
@@ -64,6 +69,11 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
     from src.agents.dnn.net import load_compatible
     load_compatible(net, {k: torch.from_numpy(v) for k, v in state_np.items()})
     net = net.to(device).eval()
+    if device.startswith("cuda") and cfg.get("infer_cuda_graph", True):
+        from src.agents.dnn.encoder import N_PLANES, N_PLANES_V3, N_SCALARS, N_SCALARS_V3
+        v3 = cfg.get("encoder_variant", "v1") == "v3"
+        net = _GraphRunner(net, N_PLANES_V3 if v3 else N_PLANES,
+                           N_SCALARS_V3 if v3 else N_SCALARS, device, max_batch)
     gen = torch.Generator(device=device)
     gen.manual_seed(int(cfg.get("seed", 0)) * 31337 + 7)
     ready.set()
@@ -73,8 +83,9 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
     except BaseException as e:          # never die silently: unblock workers
         import traceback; traceback.print_exc()
         shared.out_idx[:] = -1
-        for ev in events:
-            ev.set()
+        shared.done_gen[:] += 1
+        with events:
+            events.notify_all()
         raise
 
 
@@ -131,13 +142,69 @@ def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen):
             shared.out_idx[idx] = act_c
             shared.out_lp[idx] = lp_c
             t5 = time.perf_counter()
-            for i in ids_np.tolist():
-                events[i].set()
+            shared.done_gen[idx] += 1
+            with events:                      # v3: single broadcast
+                events.notify_all()
             if diag:
                 t6 = time.perf_counter()
                 T["wait"] += t1 - t0; T["drain"] += t2 - t1; T["gather"] += t3 - t2
                 T["fwd"] += t4 - t3; T["write"] += t5 - t4; T["signal"] += t6 - t5
                 T["n_batch"] += 1; T["n_req"] += len(ids_np)
+
+
+class _GraphRunner:
+    """Replays a captured CUDA graph per batch-size bucket. The 192x40-class
+    nets are kernel-launch bound (B=1..128 cost the same ~8 ms eager), so
+    replaying ~200 launches as one graph is the lever. Inputs are padded
+    to the bucket with all-legal dummy rows; only rows[:B] are read back.
+    Falls back to eager if capture fails (e.g. a net with data-dependent
+    control flow)."""
+
+    BUCKETS = (8, 16, 32, 64, 128, 256)
+    MAX_BUCKET_ENV = "INFER_MAX_BUCKET"   # cap buckets on memory-starved GPUs
+
+    def __init__(self, net, n_planes, n_scalars, device, max_batch):
+        self.net, self.device = net, device
+        cap = int(os.environ.get(self.MAX_BUCKET_ENV, max_batch))
+        self.buckets = [b for b in self.BUCKETS if b <= max(min(max_batch, cap), 8)]
+        torch.cuda.empty_cache()
+        self.static, self.graphs = {}, {}
+        ok = True
+        try:
+            side = torch.cuda.Stream()
+            for b in self.buckets:
+                p = torch.zeros(b, n_planes, TILE_TYPES, device=device)
+                sc = torch.zeros(b, n_scalars, device=device)
+                m = torch.ones(b, ACTION_DIM, dtype=torch.bool, device=device)
+                with torch.cuda.stream(side):
+                    for _ in range(3):
+                        net(p, sc, m)
+                torch.cuda.current_stream().wait_stream(side)
+                g = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(g):
+                    out = net(p, sc, m)
+                self.static[b] = (p, sc, m, out)
+                self.graphs[b] = g
+            torch.cuda.synchronize()
+        except Exception as e:              # pragma: no cover
+            print(f"[infer-server] CUDA graph capture failed ({e}); eager fallback",
+                  flush=True)
+            ok = False
+        self.enabled = ok
+
+    def __call__(self, p, sc, m):
+        B = p.shape[0]
+        if not self.enabled:
+            return self.net(p, sc, m)
+        b = next((x for x in self.buckets if x >= B), None)
+        if b is None:
+            return self.net(p, sc, m)
+        sp, ssc, sm, out = self.static[b]
+        sp[:B].copy_(p); ssc[:B].copy_(sc); sm[:B].copy_(m)
+        if B < b:                           # dummy rows: zeros + all-legal
+            sp[B:].zero_(); ssc[B:].zero_(); sm[B:].fill_(True)
+        self.graphs[b].replay()
+        return out[:B]
 
 
 class InferenceServer:
@@ -149,7 +216,7 @@ class InferenceServer:
                  wait_ms: float = 4.0):
         self.shared = _Shared(n_slots, n_planes, n_scalars)
         self.req_q = (_CTX.Semaphore(0), _CTX.Event())   # (requests, stop)
-        self.events = [_CTX.Event() for _ in range(n_slots)]
+        self.events = _CTX.Condition()                    # v3: one broadcast condition
         ready = _CTX.Event()
         self.proc = _CTX.Process(
             target=_server_main,
@@ -176,7 +243,8 @@ class RemotePolicy:
         self.encoder_variant = encoder_variant
         self.shared = HANDLES["shared"]
         self.req_q = HANDLES["req_q"]
-        self.event = HANDLES["events"][rank]
+        self.cond = HANDLES["events"]
+        self.gen = int(self.shared.done_gen[rank])
 
     def eval(self):
         return self
@@ -188,16 +256,19 @@ class RemotePolicy:
         self.shared.scalars[r].copy_(scalars[0])
         self.shared.mask[r].copy_(mask[0])
         self.shared.temp[r] = float(temperature)
-        self.event.clear()
+        want = self.gen + 1
         self.shared.pending[r] = 1
         self.req_q[0].release()
-        while not self.event.wait(timeout=5.0):
-            pid = HANDLES.get("pid")
-            if pid is not None:
-                try:
-                    os.kill(pid, 0)
-                except OSError:
-                    raise RuntimeError("inference server died")
+        with self.cond:
+            while int(self.shared.done_gen[r]) < want:
+                if not self.cond.wait(timeout=5.0):
+                    pid = HANDLES.get("pid")
+                    if pid is not None:
+                        try:
+                            os.kill(pid, 0)
+                        except OSError:
+                            raise RuntimeError("inference server died")
+        self.gen = want
         out = self.shared.out_idx[r:r + 1].clone()
         if int(out) < 0:
             raise RuntimeError("inference server reported failure")

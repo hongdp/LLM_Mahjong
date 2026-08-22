@@ -44,6 +44,12 @@
   v3 方向：①单次 `Condition.notify_all` 取代 61 次 Event.set；②cudnn.benchmark + CUDA graph
   分桶（40 块小卷积 = kernel 启动受限）；③双缓冲：收集下一批与 GPU 前向重叠。
 
+- [2026-08-22 18:40] **v3**（单次 `Condition.notify_all` + done 代计数）：signal 3.4→0.27 ms、wait 1.5→0.3 ms
+  ✅；但 cudnn.benchmark 在批尺寸漂移下反复自调 ⇒ fwd 11→14.5 ms，吞吐 25.4→22.3（已改为默认关）。
+  结论：服务端非 GPU 开销已清零，**瓶颈 = 前向本身 11-14 ms/批，与批尺寸无关 ⇒ kernel 启动受限**。
+- [2026-08-22 18:55] **v4 CUDA graph 分桶回放**已实现（eager 回退）；本机无法验证——4080 被 llama-server
+  占 14.2GB，捕获 OOM。待云端 L4 验证（exp24/scale-ladder 的首个 run 顺带测）。
+
 ## Results
 （待运行）
 
