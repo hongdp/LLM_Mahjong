@@ -177,6 +177,11 @@ class PyMahjongTable(MahjongEngineAPI):
 
         self.riichi = [False, False, False, False]
         self.riichi_pending: Optional[int] = None   # declared, stick unpaid
+        # --- public-fact record for encoder v3 (2026-08-22): per-seat river
+        # events [tile, tsumogiri, riichi_decl, called, discard_idx]; additive,
+        # never read by game logic. riichi_turn = discard index at declaration.
+        self.river_events: Dict[int, list] = {i: [] for i in range(4)}
+        self.riichi_turn: List[Optional[int]] = [None, None, None, None]
         self.ippatsu = [False, False, False, False]
         self.daburu = [False, False, False, False]
         self.temp_furiten = [False, False, False, False]   # RCR 3.13.2
@@ -616,6 +621,11 @@ class PyMahjongTable(MahjongEngineAPI):
 
         def do_discard(tile: str, riichi_mark: bool = False):
             nonlocal discarded
+            self.river_events[player_id].append(
+                [tile, self.last_drawn[player_id] == tile, riichi_mark, False,
+                 self.discard_count[player_id]])
+            if riichi_mark:
+                self.riichi_turn[player_id] = self.discard_count[player_id]
             self.hands[player_id].remove(tile)
             self.discards[player_id].append(tile + ('*' if riichi_mark else ''))
             self.furiten_river[player_id].append(tile)
@@ -804,6 +814,9 @@ class PyMahjongTable(MahjongEngineAPI):
         self.riichi_pending = None
         if self.discards[pid] and self.discards[pid][-1].endswith('*'):
             self.discards[pid][-1] = self.discards[pid][-1][:-1]
+        if self.river_events[pid]:
+            self.river_events[pid][-1][2] = False
+        self.riichi_turn[pid] = None
 
     def _apply_missed_ron(self):
         """RCR 3.13.2 / 3.13.3: passing up a ron makes you furiten —
@@ -898,7 +911,8 @@ class PyMahjongTable(MahjongEngineAPI):
             hand.remove(tile)
             hand.remove(tile)
             self.melds[player_id].append(
-                {"type": "pon", "tiles": [tile] * 3, "opened": True}
+                {"type": "pon", "tiles": [tile] * 3, "opened": True,
+                 "from": self.last_discarder}
             )
             self._record_pao(player_id, tile, self.last_discarder)
             self.kuikae = (player_id, self._kuikae_tiles(tile, []))
@@ -910,7 +924,8 @@ class PyMahjongTable(MahjongEngineAPI):
             for _ in range(3):
                 hand.remove(tile)
             self.melds[player_id].append(
-                {"type": "kan", "tiles": [tile] * 4, "opened": True}
+                {"type": "kan", "tiles": [tile] * 4, "opened": True,
+                 "from": self.last_discarder}
             )
             self._record_pao(player_id, tile, self.last_discarder)
             self._claim_discard(player_id)
@@ -928,7 +943,8 @@ class PyMahjongTable(MahjongEngineAPI):
                     hand.remove(t)
                 seq = sorted(chosen + [tile], key=sort_key)
                 self.melds[player_id].append(
-                    {"type": "chi", "tiles": seq, "opened": True}
+                    {"type": "chi", "tiles": seq, "opened": True,
+                     "from": self.last_discarder}
                 )
                 self.kuikae = (player_id, self._kuikae_tiles(tile, chosen))
                 self._claim_discard(player_id)
@@ -947,6 +963,8 @@ class PyMahjongTable(MahjongEngineAPI):
         if self.discards[self.last_discarder]:
             # Visible river only — furiten_river keeps the permanent record.
             self.discards[self.last_discarder].pop()
+        if self.river_events[self.last_discarder]:
+            self.river_events[self.last_discarder][-1][3] = True
         self.turn = player_id
         self.last_discard = None
         self.last_drawn[player_id] = None
