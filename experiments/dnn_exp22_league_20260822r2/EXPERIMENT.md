@@ -1,6 +1,6 @@
 # exp22-r2：联赛续训 700k→1.4M（样本饥饿假说 + 防守是否继续抬头）
 
-- **Date**: 预注册 2026-08-22 21:40  **Status**: launching
+- **Date**: 预注册 2026-08-22 21:40  **Status**: running
 - **Git**: 4bc4b76  **Env**: mahjong-dnn-c3，统一基建（`--gpu_infer --gpu_infer_opponents`）
 - **对照**: exp22 r1 终点（1041.1，defense_iq +0.016）；exp17-C（1079.7，+0.011）
 
@@ -23,6 +23,9 @@ frac 0.5、GAE 0.95、熵 0.01（台阶已过）、`--total_games 1400000 --mile
 
 ## Progress
 - [2026-08-22 21:40] 预注册。
+- [2026-08-22 22:10] 发射确认：`⏩ resume 700416 games`、league 7 对手、gpu_infer；**对手池首次 GPU 托管，
+  38.8 局/s**（r1 对手走 CPU 为 45.0——小模型池上 GPU 慢 ~14%，与本机预测一致；统一基建裁定下接受）。
+  心跳/ladder 已挂。**Status: running**，ETA ~5h。
 
 ## Results
 | Metric | This run | r1 / exp17-C | Success criterion |
