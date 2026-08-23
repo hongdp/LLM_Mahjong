@@ -11,6 +11,16 @@ API (all JSON):
   POST /react  {"msg": <mjai event>} -> {"reaction": <mjai reaction> | null}
   POST /react_batch {"msgs": [...]}  -> {"reaction": ...}   (only the last may act)
   GET  /last                         -> last decision (phase / legal / probs / value)
+  GET  /panel                        -> assist-mode web panel (auto-refreshing)
+  GET  /state                        -> panel payload (hand, dora, rivers, decision history)
+
+Two ways to use it with MahjongCopilot:
+  * auto-play : MC "enable automation" on  -> MC clicks the bot's reaction.
+  * assist    : MC automation off; open http://127.0.0.1:8765/panel and
+                play by hand. The panel shows the legal actions with the
+                policy's probabilities, the sampled/greedy pick and V(s).
+                --temperature > 0 samples (the pick is highlighted, the
+                full distribution is always shown); 0 = greedy.
 
 Every event and reaction is appended to --log (JSONL) so a Majsoul
 session can be replayed offline and audited.
@@ -42,12 +52,84 @@ class State:
         self.lock = threading.Lock()
         self.log = open(log_path, "a") if log_path else None
         self.started = time.time()
+        self.history = []          # decisions of the current kyoku (panel)
+
+    def snapshot(self):
+        bot, tb = self.bot, self.bot.table
+        if tb is None or not bot.in_kyoku:
+            return {"in_kyoku": False, "history": self.history[-12:], "decisions": bot.n_decisions}
+        me = bot.seat
+        from src.tasks.mahjong.shanten import dora_from_indicator
+        return {
+            "in_kyoku": True, "seat": me, "dealer": tb.dealer, "turn": tb.turn,
+            "hand": list(tb.my_tiles_mjai), "drawn": tb.my_drawn_mjai,
+            "dora": [dora_from_indicator(i) for i in tb.dora_indicators],
+            "melds": [[m["type"], m["tiles"]] for m in tb.melds[me]],
+            "rivers": [tb.discards[p] for p in range(4)],
+            "riichi": list(tb.riichi), "points": list(tb.points), "wall": len(tb.wall),
+            "last_discard": tb.last_discard, "last_discarder": tb.last_discarder,
+            "history": self.history[-12:], "decisions": bot.n_decisions,
+        }
+
+    def note_decision(self):
+        d = self.bot.last_decision
+        if d and (not self.history or self.history[-1]["n"] != self.bot.n_decisions):
+            probs = sorted(d["probs"].items(), key=lambda kv: -kv[1])
+            self.history.append({"n": self.bot.n_decisions, "phase": d["phase"], "chosen": d["chosen"],
+                                 "value": round(d["value"], 3),
+                                 "probs": [(a, round(p, 4)) for a, p in probs]})
 
     def record(self, kind, payload):
         if self.log:
             self.log.write(json.dumps({"t": time.time(), "kind": kind, "data": payload},
                                       ensure_ascii=False) + "\n")
             self.log.flush()
+
+
+PANEL_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>LLM_Mahjong assist</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#151a1e;color:#e6e6e6;margin:0;padding:14px}
+h1{font-size:16px;margin:0 0 8px;color:#9fd}
+.row{display:flex;gap:18px;flex-wrap:wrap}
+.card{background:#1f262c;border-radius:8px;padding:10px 14px;min-width:260px}
+.tile{display:inline-block;font:bold 15px/1 system-ui;margin:1px;padding:6px 4px;background:#fafafa;color:#111;border-radius:4px;min-width:22px;text-align:center}
+.tile.red{color:#c22}.tile.drawn{outline:3px solid #ffb300}.tile.p{color:#1a5fb4}.tile.s{color:#26a269}.tile.z{color:#333}
+.bar{height:14px;background:#3a7;border-radius:3px}
+.act{display:grid;grid-template-columns:150px 1fr 60px;gap:8px;align-items:center;margin:2px 0}
+.act.pick{background:#2e4a3a;border-radius:4px}
+.small{color:#9aa;font-size:12px}
+table{border-collapse:collapse}td{padding:1px 8px}
+</style></head><body>
+<h1>LLM_Mahjong assist panel <span id=st class=small></span></h1>
+<div class=row>
+ <div class=card><div class=small>hand (drawn tile outlined)</div><div id=hand></div>
+   <div class=small>melds: <span id=melds></span> &nbsp; dora: <span id=dora></span></div>
+   <div class=small id=info></div></div>
+ <div class=card style="flex:1"><div class=small>latest decision — policy distribution (highlighted = sampled/greedy pick)</div><div id=dec></div></div>
+</div>
+<div class=card style="margin-top:12px"><div class=small>this kyoku</div><table id=hist></table></div>
+<script>
+const HON={'1z':'\u6771','2z':'\u5357','3z':'\u897f','4z':'\u5317','5z':'\u767d','6z':'\u767c','7z':'\u4e2d',E:'\u6771',S:'\u5357',W:'\u897f',N:'\u5317',P:'\u767d',F:'\u767c',C:'\u4e2d'};
+const ORD={m:0,p:1,s:2,z:3,E:30,S:31,W:32,N:33,P:34,F:35,C:36};
+function key(t){if(HON[t]&&t.length===1)return ORD[t];const n=parseInt(t[0]);return ORD[t[1]]*10+n+(t.endsWith('r')?-0.5:0)}
+function uni(t){return HON[t]||(t[0]+{m:'\u842c',p:'\u7b52',s:'\u7d22'}[t[1]])}
+function tile(t,cls){const suit=HON[t]?'z':t[1];return '<span class="tile '+suit+' '+(cls||'')+(t.endsWith('r')?' red':'')+'" title="'+t+'">'+uni(t)+'</span>'}
+function actLabel(x){const m=/type="(\\w+)"(?:[^>]*tile="([^"]+)")?(?:[^>]*with="([^"]+)")?/.exec(x);if(!m)return x;
+ let s=m[1];if(m[2])s+=' '+tile(m[2]);if(m[3])s+=' ('+m[3].split(' ').map(t=>tile(t)).join('')+')';return s}
+async function tick(){try{const r=await fetch('/state');const s=await r.json();
+ document.getElementById('st').textContent=(s.in_kyoku?'in kyoku · seat '+s.seat+' · wall '+s.wall:'idle')+' · decisions '+s.decisions;
+ if(s.in_kyoku){const h=s.hand.slice().sort((a,b)=>key(a)-key(b));let drawnShown=false;
+  document.getElementById('hand').innerHTML=h.map(t=>{const c=(!drawnShown&&t===s.drawn)?'drawn':'';if(c)drawnShown=true;return tile(t,c)}).join('');
+  document.getElementById('melds').innerHTML=s.melds.map(m=>m[0]+':'+m[1].map(t=>tile(t)).join('')).join(' ')||'–';
+  document.getElementById('dora').innerHTML=s.dora.map(t=>tile(t)).join('');
+  document.getElementById('info').textContent='points '+s.points.join(' / ')+' · riichi '+s.riichi.map(x=>x?1:0).join('')+' · last discard '+(s.last_discard||'–')+' by '+(s.last_discarder??'–')+' · turn '+s.turn;}
+ const hist=s.history;const d=hist[hist.length-1];
+ if(d){document.getElementById('dec').innerHTML='<div class=small>#'+d.n+' '+d.phase+' · V(s)='+d.value+'</div>'+
+   d.probs.map(([a,p])=>'<div class="act'+(a===d.chosen?' pick':'')+'"><span>'+actLabel(a)+'</span><div class=bar style="width:'+(p*100).toFixed(1)+'%"></div><span>'+(p*100).toFixed(1)+'%</span></div>').join('');}
+ document.getElementById('hist').innerHTML=hist.slice().reverse().map(x=>'<tr><td>#'+x.n+'</td><td>'+x.phase+'</td><td>'+actLabel(x.chosen)+'</td><td>'+(x.probs[0]?(x.probs.find(q=>q[0]===x.chosen)||[0,0])[1]*100:0).toFixed(0)+'%</td><td>V '+x.value+'</td></tr>').join('');
+ }catch(e){document.getElementById('st').textContent='server unreachable';}}
+setInterval(tick,400);tick();
+</script></body></html>"""
 
 
 def make_handler(state: State):
@@ -74,6 +156,16 @@ def make_handler(state: State):
                                  "uptime_s": round(time.time() - state.started)})
             elif self.path == "/last":
                 self._send(200, state.bot.last_decision or {})
+            elif self.path == "/state":
+                with state.lock:
+                    self._send(200, state.snapshot())
+            elif self.path in ("/", "/panel"):
+                body = PANEL_HTML.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             else:
                 self._send(404, {"error": "not found"})
 
@@ -89,13 +181,19 @@ def make_handler(state: State):
                     elif self.path == "/react":
                         msg = body["msg"]
                         state.record("in", msg)
+                        if msg.get("type") == "start_kyoku":
+                            state.history.clear()
                         r = state.bot.react(msg)
+                        state.note_decision()
                         state.record("out", r)
                         self._send(200, {"reaction": r})
                     elif self.path == "/react_batch":
                         msgs = body["msgs"]
                         state.record("in_batch", msgs)
+                        if any(m.get("type") == "start_kyoku" for m in msgs):
+                            state.history.clear()
                         r = state.bot.react_batch(msgs)
+                        state.note_decision()
                         state.record("out", r)
                         self._send(200, {"reaction": r})
                     else:

@@ -18,12 +18,21 @@ MC 用 mitmproxy 抓雀魂 websocket（liqi protobuf）→ 翻译成 **MJAI 协�
 |---|---|
 | `src/agents/dnn/mjai_bridge.py` | `ShadowTable`（继承引擎 `PyMahjongTable`，由 MJAI 事件驱动，复用编码器与合法动作生成）+ `MjaiDnnBot`（MJAI bot） |
 | `src/agents/dnn/mjai_export.py` | 引擎自对弈 → MJAI 事件流（测试用；也可导出 mjai 日志） |
-| `scripts/serve_mjai_bot.py` | HTTP 服务：`/start` `/react` `/react_batch` `/health` `/last`；全量事件落 JSONL |
+| `scripts/serve_mjai_bot.py` | HTTP 服务：`/start` `/react` `/react_batch` `/health` `/last` `/state`；`/panel` 辅助面板；全量事件落 JSONL |
 | `scripts/verify_mjai_bridge.py` | 用真实 checkpoint 做保真校验（影子桌张量 / 合法集 逐位对比引擎） |
 | `scripts/analyze_majsoul_session.py` | 会话日志 → 顺位 / 和牌率 / 放铳率 / 立直率 / 副露率 |
 | `tools/majsoul_bridge/bot_llmmahjong.py` | MC 侧插件（HTTP 客户端，实现 MC 的 `Bot` 接口） |
 | `tools/majsoul_bridge/install.py` | 一键把插件装进 MC 检出（注册 factory / settings / 转发局结果） |
 | `tests/test_mjai_bridge.py` | 单测：随机 + 偏副露自对弈 80 局逐决策保真、红五簿记、抢杠 |
+
+## 两种模式
+| 模式 | MC 设置 | 我方 | 说明 |
+|---|---|---|---|
+| **自动打牌** | 「自动打牌」开；`ai_randomize_choice=0` | `--temperature 0`（贪心，与竞技场口径一致） | MC 把 bot 反应点进浏览器；用于正式计分 |
+| **辅助打牌** | 「自动打牌」关 | 打开 `http://127.0.0.1:8765/panel` | 面板实时显示手牌、宝牌、合法动作的策略分布（条形）、**采样/贪心选中的动作**（高亮）与 V(s)，以及本局决策历史；你在雀魂里自己操作。`--temperature 1.0` = 显示采样动作，`0` = 贪心 |
+
+两种模式下 MC 自己的 GUI/悬浮层也会显示我们的建议（通过 MJAI `meta` 概率），面板信息更全。
+服务端只由 `--temperature` 决定采样/贪心，是否自动点击只由 MC 的开关决定，可随时切换而不重启服务。
 
 ## 运行步骤
 1. **准备 MC**（Python 3.12，独立 venv；Linux 上 tkinter 需要 `python3-tk`）
