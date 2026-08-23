@@ -23,10 +23,12 @@ that bot, built on two pieces:
   into an MJAI reaction (`dahai`, `reach`+`reach_dahai`, `chi`, `pon`,
   `daiminkan`, `ankan`, `kakan`, `hora`, `none`).
 
-Known gaps vs. Majsoul rules (see tools/majsoul_bridge/README.md):
-red fives are folded into plain 5s (the engine has no aka), honba is not
-represented, West-round is encoded as South, kyuushu-kyuuhai abort is
-never declared, and 3-player mode is unsupported.
+Known gaps vs. Majsoul rules (see tools/majsoul_bridge/README.md): the
+engine is single-round (no renchan/honba/hanchan placement pressure; honba
+is not in the observation), West-round is encoded as South, and 3-player
+mode is unsupported. Red fives, abortive draws (kyuushu declared as MJAI
+`ryukyoku`), double yakuman, nagashi mangan and triple-ron draw follow
+Majsoul since #6; checkpoints trained before #6 see red fives as plain 5s.
 """
 
 from __future__ import annotations
