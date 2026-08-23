@@ -66,6 +66,9 @@ def main():
     ap.add_argument("--gpu_infer", action="store_true",
                     help="batched GPU inference server for rollouts (user rule "
                          "2026-08-22: all future runs); see infer_server.py")
+    ap.add_argument("--gpu_infer_opponents", action="store_true",
+                    help="host the league pool on the GPU server too (model_id "
+                         "per slot); needed once opponents are >=10M nets")
     ap.add_argument("--infer_max_batch", type=int, default=128)
     ap.add_argument("--infer_wait_ms", type=float, default=4.0)
     ap.add_argument("--warmup_updates", type=int, default=0,
@@ -245,7 +248,8 @@ def main():
                temperature=args.temperature, gamma=args.gamma,
                shaping=False, seed=args.seed,
                critic_feats=args.critic_feats,
-               gpu_infer=args.gpu_infer, infer_max_batch=args.infer_max_batch,
+               gpu_infer=args.gpu_infer, gpu_infer_opponents=args.gpu_infer_opponents,
+               infer_max_batch=args.infer_max_batch,
                infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device)
     if args.league:
         cfg["league"] = json.load(open(args.league))

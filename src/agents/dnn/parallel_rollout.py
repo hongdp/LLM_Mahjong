@@ -82,10 +82,19 @@ def _worker(rank, n_games, seeds, state_np, cfg):
     cmode = cfg.get("critic_feats", "none")
     pool_nets = {}
     if cfg.get("league"):
-        # frozen opponents run on CPU inside the worker (small nets); the
-        # learner still goes through --gpu_infer when enabled
-        for j, entry in enumerate(cfg["league"]):
-            pool_nets[j] = _load_policy_ckpt(entry["path"])
+        if cfg.get("gpu_infer") and cfg.get("gpu_infer_opponents"):
+            # opponents hosted on the GPU server too (model ids 1..K share
+            # this worker's slot; a worker is single-threaded so sequential
+            # use of one slot by several shims is safe)
+            from src.agents.dnn.infer_server import RemotePolicy
+            for j, entry in enumerate(cfg["league"]):
+                pool_nets[j] = RemotePolicy(rank, entry.get("encoder_variant", "v1"),
+                                            model_id=j + 1)
+        else:
+            # frozen opponents on CPU inside the worker (fine for cnn_m-class
+            # nets; a 192x40 opponent at 17 ms/call would dominate)
+            for j, entry in enumerate(cfg["league"]):
+                pool_nets[j] = _load_policy_ckpt(entry["path"])
     payload = []
     for i in range(n_games):
         seed = seeds[i] if seeds else None
@@ -148,6 +157,14 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
                                             N_SCALARS_V3)
         variant = getattr(net, "encoder_variant", "v1")
         cfg = dict(cfg, encoder_variant=variant)
+        if cfg.get("league") and cfg.get("gpu_infer_opponents"):
+            # tag each pool entry with its encoder variant (from its checkpoint)
+            tagged = []
+            for entry in cfg["league"]:
+                blob = torch.load(entry["path"], map_location="cpu")
+                arch = blob.get("arch") or ""
+                tagged.append(dict(entry, encoder_variant="v3" if arch.endswith("_v3") else "v1"))
+            cfg["league"] = tagged
         n_pl, n_sc = ((N_PLANES_V3, N_SCALARS_V3) if variant == "v3"
                       else (N_PLANES, N_SCALARS))
         server = InferenceServer(state_np, cfg, n_slots=workers, n_planes=n_pl,

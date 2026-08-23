@@ -44,6 +44,8 @@ class _Shared:
         # instead of a pickling Queue: 48 producers contending on a pipe
         # lock cost more than the GPU forward itself.
         self.pending = torch.zeros(n_slots, dtype=torch.int32).share_memory_()
+        # multi-model (2026-08-22, user ask): which hosted model a slot wants
+        self.model_id = torch.zeros(n_slots, dtype=torch.int32).share_memory_()
         # v3: per-slot done-generation counter; workers wait on ONE shared
         # Condition and check their own counter (one notify_all per batch
         # instead of one Event.set per served request)
@@ -66,20 +68,29 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
     if os.environ.get("INFER_STRICT_FP32"):
         torch.backends.cudnn.allow_tf32 = False
         torch.backends.cuda.matmul.allow_tf32 = False
+    from src.agents.dnn.encoder import N_PLANES, N_PLANES_V3, N_SCALARS, N_SCALARS_V3
+    from src.agents.dnn.net import load_compatible
     if cfg.get("arch"):
         from src.agents.dnn.arch_zoo import ZOO
         net = ZOO[cfg["arch"]][0]()
     else:
         from src.agents.dnn.net import MahjongPolicyNet
         net = MahjongPolicyNet(channels=cfg["channels"], blocks=cfg["blocks"])
-    from src.agents.dnn.net import load_compatible
     load_compatible(net, {k: torch.from_numpy(v) for k, v in state_np.items()})
-    net = net.to(device).eval()
-    if device.startswith("cuda") and cfg.get("infer_cuda_graph", True):
-        from src.agents.dnn.encoder import N_PLANES, N_PLANES_V3, N_SCALARS, N_SCALARS_V3
-        v3 = cfg.get("encoder_variant", "v1") == "v3"
-        net = _GraphRunner(net, N_PLANES_V3 if v3 else N_PLANES,
-                           N_SCALARS_V3 if v3 else N_SCALARS, device, max_batch)
+    models = [net]                              # model 0 = learner
+    if cfg.get("gpu_infer_opponents") and cfg.get("league"):
+        from src.agents.dnn.parallel_rollout import _load_policy_ckpt
+        for entry in cfg["league"]:
+            models.append(_load_policy_ckpt(entry["path"]))
+    hosted = []
+    for m in models:
+        m = m.to(device).eval()
+        v3 = getattr(m, "encoder_variant", "v1") == "v3"
+        n_pl, n_sc = (N_PLANES_V3, N_SCALARS_V3) if v3 else (N_PLANES, N_SCALARS)
+        if device.startswith("cuda") and cfg.get("infer_cuda_graph", True):
+            m = _GraphRunner(m, n_pl, n_sc, device, max_batch)
+        hosted.append((m, n_pl, n_sc))
+    net = hosted                                # list of (runner, n_planes, n_scalars)
     gen = torch.Generator(device=device)
     gen.manual_seed(int(cfg.get("seed", 0)) * 31337 + 7)
     ready.set()
@@ -131,12 +142,18 @@ def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen):
             pend_np[ids_np] = 0
             t2 = time.perf_counter()
             idx = torch.from_numpy(ids_np.astype(np.int64))
-            p = shared.planes[idx].to(device, non_blocking=True)
-            s = shared.scalars[idx].to(device, non_blocking=True)
-            m = shared.mask[idx].to(device, non_blocking=True)
+            mids = shared.model_id[idx]
             t = shared.temp[idx].to(device)
             t3 = time.perf_counter()
-            logits = net(p, s, m)
+            logits = torch.empty(len(ids_np), ACTION_DIM, device=device)
+            for mid in torch.unique(mids).tolist():
+                sel = torch.nonzero(mids == mid, as_tuple=True)[0]
+                runner, n_pl, n_sc = net[mid]
+                sub = idx[sel]
+                p = shared.planes[sub, :n_pl].to(device, non_blocking=True)
+                s = shared.scalars[sub, :n_sc].to(device, non_blocking=True)
+                m = shared.mask[sub].to(device, non_blocking=True)
+                logits[sel] = runner(p, s, m)
             greedy = t <= 0
             probs = torch.softmax(logits / t.clamp(min=1e-6)[:, None], dim=1)
             probs = torch.nan_to_num(probs, nan=0.0)
@@ -220,7 +237,9 @@ class InferenceServer:
     def __init__(self, state_np, cfg, n_slots: int, n_planes: int,
                  n_scalars: int, device: str = "cuda", max_batch: int = 256,
                  wait_ms: float = 4.0):
-        self.shared = _Shared(n_slots, n_planes, n_scalars)
+        from src.agents.dnn.encoder import N_PLANES_V3, N_SCALARS_V3
+        # buffers sized for the widest hosted encoder; each model reads its own width
+        self.shared = _Shared(n_slots, max(n_planes, N_PLANES_V3), max(n_scalars, N_SCALARS_V3))
         self.req_q = (_CTX.Semaphore(0), _CTX.Event())   # (requests, stop)
         self.events = _CTX.Condition()                    # v3: one broadcast condition
         ready = _CTX.Event()
@@ -244,13 +263,13 @@ class InferenceServer:
 class RemotePolicy:
     """Drop-in for net.act() inside a forked worker (one slot per worker)."""
 
-    def __init__(self, rank: int, encoder_variant: str = "v1"):
+    def __init__(self, rank: int, encoder_variant: str = "v1", model_id: int = 0):
         self.rank = rank
         self.encoder_variant = encoder_variant
+        self.model_id = model_id
         self.shared = HANDLES["shared"]
         self.req_q = HANDLES["req_q"]
         self.cond = HANDLES["events"]
-        self.gen = int(self.shared.done_gen[rank])
 
     def eval(self):
         return self
@@ -258,11 +277,15 @@ class RemotePolicy:
     @torch.no_grad()
     def act(self, planes, scalars, mask, temperature: float = 1.0):
         r = self.rank
-        self.shared.planes[r].copy_(planes[0])
-        self.shared.scalars[r].copy_(scalars[0])
+        self.shared.planes[r, :planes.shape[1]].copy_(planes[0])
+        self.shared.scalars[r, :scalars.shape[1]].copy_(scalars[0])
         self.shared.mask[r].copy_(mask[0])
         self.shared.temp[r] = float(temperature)
-        want = self.gen + 1
+        self.shared.model_id[r] = self.model_id
+        # generation read from the SLOT at request time: several shims
+        # (learner + opponents) share one worker slot, so a per-object
+        # counter would see a stale 'done' and return another model's action
+        want = int(self.shared.done_gen[r]) + 1
         self.shared.pending[r] = 1
         self.req_q[0].release()
         with self.cond:
@@ -274,7 +297,6 @@ class RemotePolicy:
                             os.kill(pid, 0)
                         except OSError:
                             raise RuntimeError("inference server died")
-        self.gen = want
         out = self.shared.out_idx[r:r + 1].clone()
         if int(out) < 0:
             raise RuntimeError("inference server reported failure")
