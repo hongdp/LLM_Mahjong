@@ -48,6 +48,24 @@ MC 用 mitmproxy 抓雀魂 websocket（liqi protobuf）→ 翻译成 **MJAI 协�
 - 每局附 `start`（start_kyoku）与 `result`（liqi 和牌/流局数据），整局附 `end_game` 终局。
 `scripts/analyze_majsoul_session.py` 会额外汇报 recorded decisions / 人工覆盖率 / 平均 V / 平均 p(选中)。
 
+## 模型机（model server）准备
+模型机 = 放本仓库、checkpoint 和 torch 环境的那台；打牌机只需要 MC + 浏览器。两台机分工见下表，
+单机部署时两者是同一台。
+
+| 项 | 要求 / 做法 |
+|---|---|
+| 代码 | 本仓库（PR #5 之后的 master，或 `pr/majsoul-bridge` 分支） |
+| Python 环境 | `conda activate rlhf_mahjong`（torch + `mahjong` 库 + numpy）；`python -m pytest tests/test_mjai_bridge.py` 应全绿 |
+| checkpoint | 冠军 `experiments/_cloud_ckpts/dnn_exp17c_gae_20260818/games_final.pt`（23 MB，不入 git；无则 `gsutil cp gs://llm-mahjong-experiments/dnn_exp17c_gae_20260818/games_final.pt experiments/_cloud_ckpts/dnn_exp17c_gae_20260818/`） |
+| 硬件 | CPU 即可（20M cnn 单步 <10 ms，默认 `--device cpu`）；GPU 不必要 |
+| 保真自检（可选） | `PYTHONPATH=. python scripts/verify_mjai_bridge.py --ckpt <ckpt> --games 50` 打印 `OK {...}` |
+| 实验目录 | 正式计分前按 ml-experiment-tracking 建 `experiments/exp24_majsoul_live_<ts>/`（预注册见 `experiments/exp24_majsoul_live_prereg/`）；日志与每局 JSON 都落这里 |
+| 启动服务 | 见运行步骤 3；`--temperature 0`（贪心，exp25 证明比 T=1 强 +500 点/副）；`--name` 可设 MC 里显示的模型名 |
+| 网络 | 服务默认只监听 `127.0.0.1:8765`（无鉴权，**不要**直接暴露到网络）。打牌机在另一台时用 SSH 隧道：打牌机执行 `ssh -N -L 8765:127.0.0.1:8765 <模型机>`，MC 侧 URL 保持 `http://127.0.0.1:8765`。可信局域网内也可 `--host 0.0.0.0` + MC `settings.json` 的 `llmmahjong_url` 指向模型机 IP |
+| 心跳 | 按项目规则挂监控：`curl localhost:8765/health` 的 `decisions` 计数应随对局增长；`mjai_session.jsonl` mtime >40 min 不更新 = 已停止；日志里 `"kind": "error"` 行应为 0 |
+| 常驻 | `nohup ... > server.log 2>&1 &` 或 tmux；重启服务会重置进行中对局的内存状态（JSONL 已写的决策行不丢，但当前半庄的 game JSON 会缺）——**在半庄之间重启** |
+| 换模型 | 换 `--ckpt` 重启即可；`load_dnn` 自动识别 arch（cnn / vit / ConvFormer）与编码器版本（v1/v3） |
+
 ## 运行步骤
 1. **准备 MC**（Python 3.12，独立 venv；Linux 上 tkinter 需要 `python3-tk`）
    ```bash
@@ -60,7 +78,7 @@ MC 用 mitmproxy 抓雀魂 websocket（liqi protobuf）→ 翻译成 **MJAI 协�
    ```bash
    python tools/majsoul_bridge/install.py ~/MahjongCopilot
    ```
-3. **启动 agent 服务**（本仓库根目录，rlhf_mahjong 环境；先按 ml-experiment-tracking 规则建好实验目录）
+3. **启动 agent 服务**（模型机，本仓库根目录，rlhf_mahjong 环境；准备工作见上节「模型机准备」）
    ```bash
    PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_cloud_ckpts/dnn_exp17c_gae_20260818/games_final.pt --temperature 0 --log experiments/exp24_majsoul_live_<ts>/mjai_session.jsonl
    ```
