@@ -58,6 +58,11 @@ def main():
     ap.add_argument("--channels", type=int, default=64)
     ap.add_argument("--blocks", type=int, default=3)
     ap.add_argument("--batch", type=int, default=4096)
+    ap.add_argument("--gpu_infer", action="store_true",
+                    help="batched GPU inference server for rollouts (user rule "
+                         "2026-08-22: all future runs); see infer_server.py")
+    ap.add_argument("--infer_max_batch", type=int, default=128)
+    ap.add_argument("--infer_wait_ms", type=float, default=4.0)
     ap.add_argument("--warmup_updates", type=int, default=0,
                     help="linear LR warmup over N optimizer updates "
                          "(0 = off; transformers in RL want ~1000)")
@@ -108,11 +113,13 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--train_device",
                     default="cuda" if torch.cuda.is_available() else "cpu",
-                    help="Device for the UPDATE only. Rollout always stays on "
-                         "CPU worker processes: batch-1 forwards of a 1.4M net "
-                         "are launch-bound, so 16 CPU processes beat one GPU. "
-                         "The update is the opposite shape (batch 4-8k) and "
-                         "measured 148x faster on GPU (6439ms -> 43.6ms/step).")
+                    help="Device for the UPDATE (and, with --gpu_infer, the "
+                         "batched rollout inference server). Without "
+                         "--gpu_infer rollout stays on CPU workers: batch-1 "
+                         "forwards of a 1.4M net are launch-bound, so 16 CPU "
+                         "processes beat one GPU; the 2026-08-22 server "
+                         "batches across workers + CUDA graphs and wins for "
+                         ">=10M nets (9.5x on 192x40).")
     ap.add_argument("--resume", default=None,
                     help="checkpoint to continue from; restores weights, "
                          "optimizer moments and the games counter when the "
@@ -232,7 +239,12 @@ def main():
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
                temperature=args.temperature, gamma=args.gamma,
                shaping=False, seed=args.seed,
-               critic_feats=args.critic_feats)
+               critic_feats=args.critic_feats,
+               gpu_infer=args.gpu_infer, infer_max_batch=args.infer_max_batch,
+               infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device)
+    if args.gpu_infer:
+        print(f"🚀 gpu_infer: batched rollout inference on {args.train_device} "
+              f"(max_batch {args.infer_max_batch}, wait {args.infer_wait_ms} ms)", flush=True)
 
     games, it, t0, next_ms = start_games, start_iter, time.time(), 0
     while next_ms < len(milestones) and milestones[next_ms] <= start_games:

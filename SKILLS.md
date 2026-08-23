@@ -183,3 +183,7 @@
   当前 shell 命令行会自杀——清理放脚本文件；④cudnn.benchmark 在批尺寸漂移下反复自调（默认关）；
   ⑤CUDA graph 每桶占显存，本机（llama-server 占 14GB）只能 ≤64 桶；⑥批推理后瓶颈转到 CPU worker
   周转，scale-up 时该买 vCPU 不是更贵的 GPU。档案 experiments/perf_gpu_rollout_20260822。
+- **（2026-08-22 用户规则）后续所有训练 run 统一用 GPU 批推理 rollout**：trainer 加 `--gpu_infer`
+  （`--infer_max_batch 128 --infer_wait_ms 4`），云端 L4 设 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`。
+  小模型（cnn_m）本机 GPU 路径略慢于 CPU（32 vs 40 局/s），仍按规则走 GPU，首个云端 run 实测校准；
+  等价性为统计级（采样在 GPU RNG），贪心轨迹 hash 不再作为跨路径护栏。
