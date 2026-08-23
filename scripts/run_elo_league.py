@@ -101,13 +101,17 @@ def expected(ra, rb):
     return 1.0 / (1.0 + 10 ** ((rb - ra) / 400.0))
 
 
-def play_pair(name_a, path_a, name_b, path_b, deals, seed0, parallel, device):
-    """One duplicate-deal match; returns per-deal scores for side A."""
+def play_pair(name_a, path_a, name_b, path_b, deals, seed0, parallel, device,
+              temp_a: float = 1.0):
+    """One duplicate-deal match; returns per-deal scores for side A.
+    temp_a: the candidate's sampling temperature (anchors always play at
+    T=1, their calibration condition); 0 = greedy rating (exp28)."""
     t0 = time.time()
     policies = {"A": load_dnn(path_a, device), "B": load_dnn(path_b, device)}
     seeds = [seed0 + i for i in range(deals)]
     rows = run_match(None, None, seeds, parallel=parallel,
-                     dnn_policies=policies, dnn_device=device)
+                     dnn_policies=policies, dnn_device=device,
+                     dnn_temperature={"A": temp_a, "B": 1.0})
     scores = deal_scores(rows)
     diffs = [r["diff"] for r in rows]
     mean = sum(diffs) / len(diffs)
@@ -195,7 +199,8 @@ def cmd_calibrate(args):
 
 
 def rate_checkpoint(ckpt, label, deals, seed0, parallel, device,
-                    use=None, init_guess=1000.0, allow_engine_mismatch=False):
+                    use=None, init_guess=1000.0, allow_engine_mismatch=False,
+                    temperature: float = 1.0):
     """Rate one checkpoint against frozen anchors; append to history.jsonl.
 
     use: anchor-name subset; None = all. init_guess seeds the fit and (in
@@ -208,7 +213,7 @@ def rate_checkpoint(ckpt, label, deals, seed0, parallel, device,
     games = []
     for n in use:
         scores = play_pair("cand", ckpt, n, anchors[n]["path"],
-                           deals, seed0, parallel, device)
+                           deals, seed0, parallel, device, temp_a=temperature)
         games += [("cand", n, s) for s in scores]
     ratings = {n: anchors[n]["rating"] for n in use}
     ratings["cand"] = init_guess
@@ -225,6 +230,7 @@ def rate_checkpoint(ckpt, label, deals, seed0, parallel, device,
            "anchors": use, "deals_per_anchor": deals, "seed0": seed0,
            "date": time.strftime("%Y-%m-%d %H:%M:%S"),
            "engine": engine_fingerprint(), "engine_mismatch": mismatch,
+           "temperature": temperature,
            "residuals": residuals(games, ratings, "cand")}
     os.makedirs(LEAGUE_DIR, exist_ok=True)
     with open(f"{LEAGUE_DIR}/history.jsonl", "a") as f:
@@ -239,7 +245,8 @@ def cmd_rate(args):
     use = args.anchors.split(",") if args.anchors else None
     rate_checkpoint(args.ckpt, args.label or args.ckpt, args.deals,
                     args.seed0, args.parallel, device, use=use,
-                    allow_engine_mismatch=args.allow_engine_mismatch)
+                    allow_engine_mismatch=args.allow_engine_mismatch,
+                    temperature=args.temperature)
 
 
 def main():
@@ -259,6 +266,8 @@ def main():
     ra.add_argument("--seed0", type=int, required=True,
                     help="fresh seed0 per evaluation; recorded in history")
     ra.add_argument("--parallel", type=int, default=20)
+    ra.add_argument("--temperature", type=float, default=1.0,
+                    help="candidate sampling temperature (anchors stay at T=1); 0 = greedy")
     ra.add_argument("--allow_engine_mismatch", action="store_true",
                     help="rate even though the engine changed since calibration "
                          "(record is flagged engine_mismatch=true)")
