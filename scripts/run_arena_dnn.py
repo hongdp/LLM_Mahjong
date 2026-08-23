@@ -53,6 +53,9 @@ def main():
     ap.add_argument("--seed0", type=int, default=20260802)
     ap.add_argument("--parallel", type=int, default=12)
     ap.add_argument("--dnn_temperature", type=float, default=1.0)
+    ap.add_argument("--dnn_temperature_a", type=float, default=None,
+                    help="override for side A (0 = greedy/argmax)")
+    ap.add_argument("--dnn_temperature_b", type=float, default=None)
     ap.add_argument("--llm_temperature", type=float, default=0.9,
                     help="LLM sampling temperature in the arena. Lower = less\n                         evaluation noise AND (measured) better teacher fidelity.")
     ap.add_argument("--out", default="arena_dnn_result.json")
@@ -88,7 +91,9 @@ def main():
     rows = run_match(model, tokenizer, seeds, parallel=args.parallel,
                      transcript_path=args.transcript,
                      dnn_policies=dnn_policies or None,
-                     dnn_device=device, dnn_temperature=args.dnn_temperature,
+                     dnn_device=device,
+                     dnn_temperature={"A": args.dnn_temperature if args.dnn_temperature_a is None else args.dnn_temperature_a,
+                                      "B": args.dnn_temperature if args.dnn_temperature_b is None else args.dnn_temperature_b},
                      llm_temperature=args.llm_temperature)
 
     diffs = [r["diff"] for r in rows]
@@ -102,8 +107,8 @@ def main():
                "B stronger" if mean + ci < 0 else "no significant difference")
     label_a = args.dnn_a or args.adapter_a
     label_b = args.dnn_b or args.adapter_b
-    print(f"A = {label_a}")
-    print(f"B = {label_b}")
+    print(f"A = {label_a}  (T={args.dnn_temperature if args.dnn_temperature_a is None else args.dnn_temperature_a})")
+    print(f"B = {label_b}  (T={args.dnn_temperature if args.dnn_temperature_b is None else args.dnn_temperature_b})")
     print(f"deals={n}  paired diff = {mean:+.1f} +/- {ci:.1f}  "
           f"wins {wins_a}:{wins_b}  => {verdict}")
     json.dump({"a": label_a, "b": label_b, "deals": n, "mean_diff": mean,

@@ -168,7 +168,10 @@ def run_match(model, tokenizer, deal_seeds: List[int],
                 continue
             net = (dnn_policies or {}).get(pol)
             if net is not None:
-                _fill_with_dnn(net, pairs, dnn_device, dnn_temperature)
+                # dnn_temperature may be per-policy ({"A": 0.0, "B": 1.0})
+                temp = (dnn_temperature.get(pol, 1.0) if isinstance(dnn_temperature, dict)
+                        else dnn_temperature)
+                _fill_with_dnn(net, pairs, dnn_device, temp)
                 continue
             if model is not None:
                 model.set_adapter(pol)
