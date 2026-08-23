@@ -109,6 +109,10 @@ def main():
                          "floor (exp8: collapse at H=0.44; champion healthy "
                          "at 0.76).")
     ap.add_argument("--entropy_floor", type=float, default=0.5)
+    ap.add_argument("--entropy_floor_schedule", default=None,
+                    help="games:target pairs, linear between knots (e.g. "
+                         "'0:0.5,1000000:0.25'); overrides --entropy_floor "
+                         "as the dual-control target (exp31)")
     ap.add_argument("--entropy_dual_lr", type=float, default=0.1)
     ap.add_argument("--entropy_abort", type=float, default=None,
                     help="hard safety: if post-update entropy falls below "
@@ -411,6 +415,17 @@ def main():
             ent_after = float(-(lp1.exp() * s1).sum(1).mean())
             ev = float(1 - (rets[idx_keep] - vals[idx_keep]).var()
                        / (rets[idx_keep].var() + 1e-9))
+        if args.entropy_auto and args.entropy_floor_schedule:
+            knots = sorted((int(g), float(v)) for g, v in
+                           (p.split(":") for p in args.entropy_floor_schedule.split(",")))
+            t = games
+            lo = max((k for k in knots if k[0] <= t), default=knots[0])
+            hi = min((k for k in knots if k[0] > t), default=None)
+            if hi is None:
+                args.entropy_floor = lo[1]
+            else:
+                w = (t - lo[0]) / max(hi[0] - lo[0], 1)
+                args.entropy_floor = lo[1] + w * (hi[1] - lo[1])
         if args.entropy_auto:
             # dual ascent on the constraint H >= floor: decay while safe,
             # rise when the floor approaches; the trajectory is emergent
