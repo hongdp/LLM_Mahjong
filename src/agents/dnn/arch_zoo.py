@@ -254,8 +254,11 @@ class SetAttnBlock(nn.Module):
     def forward(self, x, bucket, keep):
         B, L, _ = x.shape
         q, k, v = self.qkv(self.ln1(x)).reshape(B, L, 3, self.h, self.dh).permute(2, 0, 3, 1, 4)
-        # [B, H, L, L] additive mask: rank bias + -inf on padded keys
-        bias = self.bias[:, bucket].permute(1, 0, 2, 3)
+        # [B, H, L, L] additive mask: rank bias + -inf on padded keys.
+        # F.embedding, not bias[:, bucket]: advanced-indexing backward
+        # scatter-adds B*L*L values into 20 slots with atomics — on the
+        # 20M arm one minibatch took ~30 s (2026-08-23 g4-2 stall).
+        bias = F.embedding(bucket, self.bias.t()).permute(0, 3, 1, 2)
         bias = bias.masked_fill(~keep[:, None, None, :], float("-inf"))
         y = F.scaled_dot_product_attention(q, k, v, attn_mask=bias.to(q.dtype))
         x = x + self.proj(y.transpose(1, 2).reshape(B, L, -1))
