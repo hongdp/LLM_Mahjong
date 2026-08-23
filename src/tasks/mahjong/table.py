@@ -248,6 +248,11 @@ class PyMahjongTable(MahjongEngineAPI):
         self.kuikae: Optional[Tuple[int, set]] = None
         self.pending_kan: Optional[dict] = None    # open chankan window
         self.pao: Dict[int, int] = {}              # winner -> liable player
+        # Majsoul kan-dora timing: daiminkan / shouminkan reveal after the
+        # kan player's next discard (or on a rinshan win); ankan reveals now.
+        self.pending_dora_reveal = 0
+        self.kan_players: set = set()              # for 四杠散了
+        self._pending_abort: Optional[str] = None  # 途中流局 applied once the window passes
         self._ron_chance: set = set()
         self._waits_cache: Dict[tuple, List[str]] = {}
 
@@ -369,7 +374,7 @@ class PyMahjongTable(MahjongEngineAPI):
         tenhou = (is_tsumo and is_dealer and virgin
                   and sum(self.discard_count) == 0)
         chiihou = (is_tsumo and not is_dealer and virgin and no_discard_yet)
-        renhou = (not is_tsumo and not is_dealer and virgin and no_discard_yet)
+        # Majsoul rules (2026-08-23): no renhou; double yakuman on.
         rinshan = is_tsumo and self.rinshan[player_id]
         # The wall being empty means the tile just drawn was the haitei
         # tile / the discard is the houtei discard (RCR 3.14).
@@ -385,12 +390,12 @@ class PyMahjongTable(MahjongEngineAPI):
             is_houtei=(not is_tsumo) and last_tile and not chankan,
             is_tenhou=tenhou,
             is_chiihou=chiihou,
-            is_renhou=renhou,
+            is_renhou=False,
             player_wind=WIND_CONST[(player_id - self.dealer) % 4],
             round_wind=self.round_wind,
             options=OptionalRules(
                 has_open_tanyao=True,        # RCR 4.2.1.7 kuitan
-                has_double_yakuman=False,    # RCR lists yakuman flat
+                has_double_yakuman=True,     # Majsoul: 四暗刻单骑 etc. ×2
                 # kazoe_limit left at the library default (13+ han counts
                 # as a yakuman) — a deliberate project divergence.
             ),
@@ -430,8 +435,11 @@ class PyMahjongTable(MahjongEngineAPI):
 
         # RCR 3.12: a riichi winner also turns over the ura indicators.
         indicators = list(self.dora_indicators)
+        if is_tsumo and self.pending_dora_reveal:
+            k = len(indicators)
+            indicators += self.dead_wall[4 + k:4 + min(5, k + self.pending_dora_reveal)]
         if self.riichi[player_id]:
-            indicators += self.ura_indicators[:len(self.dora_indicators)]
+            indicators += self.ura_indicators[:len(indicators)]
         dora_ids = self._alloc_136(indicators, {})
 
         result = self._calculator.estimate_hand_value(
@@ -596,6 +604,10 @@ class PyMahjongTable(MahjongEngineAPI):
         actions = [f'<action type="discard" tile="{t}" />' for t in uniq]
 
         n_melds = len(self.melds[player_id])
+        # 九种九牌 (Majsoul): first draw, no call yet, >=9 distinct terminals/honors.
+        if (drawn and not self.any_call and self.discard_count[player_id] == 0
+                and self._kyuushu_kinds(hand) >= 9):
+            actions.append('<action type="kyuushu" />')
         # Riichi declaration: closed hand, >=1000 points, >=4 tiles left in
         # the wall (RCR 3.12), tenpai after the discard.
         if (self._is_closed(player_id) and self.points[player_id] >= 1000
@@ -617,6 +629,11 @@ class PyMahjongTable(MahjongEngineAPI):
         if drawn and self._win_result(player_id, drawn, is_tsumo=True):
             actions.append('<action type="tsumo" />')
         return actions
+
+    @staticmethod
+    def _kyuushu_kinds(hand: List[str]) -> int:
+        return len({t for t in hand
+                    if t[-1] == 'z' or t[0] in '19'})
 
     def get_interrupt_actions(self, player_id: int) -> List[str]:
         # Chankan window (RCR 4.2.1.12): only a ron may interrupt an
@@ -694,6 +711,19 @@ class PyMahjongTable(MahjongEngineAPI):
             self.ippatsu[player_id] = False
             self.discard_count[player_id] += 1
             self.kuikae = None
+            # Majsoul: open-kan dora is turned over after the discard.
+            while self.pending_dora_reveal > 0:
+                self.pending_dora_reveal -= 1
+                self._reveal_kan_dora()
+            # 四风连打: four first discards, same wind, no call in between.
+            if (not self.any_call and sum(self.discard_count) == 4
+                    and all(self.discard_count[i] == 1 for i in range(4))):
+                firsts = {self.furiten_river[i][0] for i in range(4)}
+                if len(firsts) == 1 and next(iter(firsts)) in ("1z", "2z", "3z", "4z"):
+                    self._pending_abort = "四风连打"
+            # 四杠散了: four kans by two or more players, after the discard.
+            if self.kan_count >= 4 and len(self.kan_players) >= 2:
+                self._pending_abort = "四杠散了"
             # RCR 3.13.2: remember who could have ronned this tile; the
             # flags are applied once the interrupt window closes.
             self._ron_chance = {p for p in range(4) if p != player_id
@@ -743,6 +773,12 @@ class PyMahjongTable(MahjongEngineAPI):
                 do_discard(tile, riichi_mark=True)
                 self.ippatsu[player_id] = True
 
+            elif (action_type == "kyuushu" and drawn and not self.any_call
+                    and self.discard_count[player_id] == 0
+                    and self._kyuushu_kinds(hand) >= 9):
+                self._abort("九种九牌")
+                return (self._obs(), rewards, True, {"discarded": False})
+
             elif action_type == "tsumo" and drawn and (
                 result := self._win_result(player_id, drawn, is_tsumo=True)
             ):
@@ -787,7 +823,7 @@ class PyMahjongTable(MahjongEngineAPI):
         self.melds[player_id].append(
             {"type": "ankan", "tiles": [tile] * 4, "opened": False}
         )
-        self._after_kan(player_id)
+        self._after_kan(player_id, reveal_now=True)
 
     def resolve_pending_kan(self):
         """Nobody robbed the added kan: complete it (RCR 3.5 / 3.7.1)."""
@@ -804,11 +840,15 @@ class PyMahjongTable(MahjongEngineAPI):
         pon["tiles"] = [tile] * 4
         self._after_kan(player_id)
 
-    def _after_kan(self, player_id: int):
+    def _after_kan(self, player_id: int, reveal_now: bool = False):
         self.kan_count += 1
+        self.kan_players.add(player_id)
         self.any_call = True
         self.ippatsu = [False, False, False, False]   # RCR 4.2.1.3
-        self._reveal_kan_dora()
+        if reveal_now:                 # ankan: immediately
+            self._reveal_kan_dora()
+        else:                          # daiminkan / shouminkan: after the discard
+            self.pending_dora_reveal += 1
         self._rinshan_draw(player_id)
         self.hands[player_id].sort(key=sort_key)
 
@@ -835,6 +875,11 @@ class PyMahjongTable(MahjongEngineAPI):
     def advance_turn(self):
         self._confirm_riichi()
         self._apply_missed_ron()
+        if self.finished:                          # 四家立直 aborted in _confirm_riichi
+            return self._obs(), True
+        if self._pending_abort:
+            self._abort(self._pending_abort)
+            return self._obs(), True
         self.turn = (self.turn + 1) % 4
         if not self.wall:
             self._ryuukyoku()
@@ -859,6 +904,8 @@ class PyMahjongTable(MahjongEngineAPI):
         self.points[pid] -= 1000
         self.kyotaku += 1000
         self.riichi_pending = None
+        if all(self.riichi):
+            self._abort("四家立直")
 
     def _void_riichi(self):
         """RCR 3.12: the declaration tile was ronned — riichi never was."""
@@ -924,6 +971,13 @@ class PyMahjongTable(MahjongEngineAPI):
             return obs(), rewards, False, {"interrupt": False, "winners": []}
 
         self.pending_kan = None
+        if len(winners) >= 3:                       # Majsoul: 三家和了 -> draw
+            if self.riichi_pending == discarder:
+                self._void_riichi()
+            self._abort("三家和了")
+            return obs(), rewards, True, {
+                "interrupt": True, "winners": [w for w, _ in winners],
+                "abort": "三家和了"}
         self._settle_ron(winners, discarder, chankan=chankan)
         return obs(), rewards, True, {
             "interrupt": True, "winners": [w for w, _ in winners],
@@ -1014,6 +1068,7 @@ class PyMahjongTable(MahjongEngineAPI):
         return obs(), rewards, False, {"interrupt": interrupted}
 
     def _claim_discard(self, player_id: int):
+        self._pending_abort = None
         # A call does not void a riichi declaration (only a ron does).
         self._confirm_riichi()
         self._apply_missed_ron()
@@ -1128,8 +1183,40 @@ class PyMahjongTable(MahjongEngineAPI):
         )
         self._compute_final_rewards(houjuu_player=discarder)
 
+    def _abort(self, reason: str):
+        """途中流局 (Majsoul): no tenpai payments; sticks stay on the table."""
+        if self.finished:
+            return
+        self._pending_abort = None
+        self.finished = True
+        self.result_summary = f"途中流局({reason}) | 点数: {self.points}"
+        self._compute_final_rewards(houjuu_player=None)
+
+    def _nagashi_mangan(self) -> List[int]:
+        """Players whose every discard was a terminal/honor and none was called."""
+        out = []
+        for i in range(4):
+            ev = self.river_events[i]
+            if ev and all((e[0][-1] == 'z' or e[0][0] in '19') and not e[3] for e in ev):
+                out.append(i)
+        return out
+
     def _ryuukyoku(self):
         if self.finished:
+            return
+        nagashi = self._nagashi_mangan()
+        if nagashi:
+            for w in nagashi:
+                for i in range(4):
+                    if i == w:
+                        continue
+                    pay = 4000 if (w == self.dealer or i == self.dealer) else 2000
+                    self.points[i] -= pay
+                    self.points[w] += pay
+            self.finished = True
+            self.result_summary = (
+                f"流局满贯 | 玩家{nagashi} | 点数: {self.points}")
+            self._compute_final_rewards(houjuu_player=None)
             return
         tenpai = [
             self._shanten(self.hands[i], len(self.melds[i])) <= 0 for i in range(4)

@@ -95,6 +95,13 @@ def play_game_mjai(table: PyMahjongTable, policies: Dict[int, Policy],
             if rdecl:
                 emit({"type": "reach", "actor": pid})
                 pending_reach_acc = pid
+            # Majsoul timing: daiminkan / kakan dora is turned over with the
+            # kan player's discard (engine: pending_dora_reveal). Emitted
+            # BEFORE the dahai so the observer's call decision sees it, as
+            # the engine does; a live Majsoul stream sends it after the
+            # dahai, so the shadow there learns it one decision late.
+            emit_new_dora(n_dora)
+            n_dora = len(table.dora_indicators)   # a call on this discard must not re-emit it
             emit({"type": "dahai", "actor": pid, "pai": engine_to_mjai(tile),
                   "tsumogiri": bool(tsumogiri)})
         elif len(table.melds[pid]) > n_melds:            # ankan: dora, rinshan tsumo
