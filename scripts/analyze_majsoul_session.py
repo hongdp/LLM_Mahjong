@@ -141,7 +141,7 @@ def main():
     print(f"decisions: {dict(dec)}")
     recs = [r for gm in games for r in gm.get("records", [])]
     if recs:
-        ov = sum(r["override"] for r in recs)
+        ov = sum(r["override"] for r in recs if r["executed"] != "end_kyoku")
         vs = [r["value"] for r in recs if isinstance(r["value"], (int, float))]
         pc = [r["p_chosen"] for r in recs if isinstance(r["p_chosen"], (int, float))]
         print(f"recorded decisions: {len(recs)}  human overrides: {ov} ({ov / len(recs):.1%})  "

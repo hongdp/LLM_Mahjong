@@ -460,6 +460,14 @@ class MjaiDnnBot:
             hules = ld.get("hules") or []
             if any(h.get("seat") == me for h in hules):
                 self._settle_pending({"type": "hora"})
+            elif p["phase"] == "turn":
+                # MahjongCopilot drops the events queued right before the
+                # round-end message, so our last discard of a kyoku never
+                # reaches us: outcome unknown, NOT a human override.
+                p["executed"] = {"type": "end_kyoku"}
+                p["executed_action"] = None
+                p["override"] = False
+                self._pending = None
             else:
                 self._settle_pending({"type": "none"})
         elif p["phase"] in ("claim", "chankan") and (actor != me or t == "tsumo"):
