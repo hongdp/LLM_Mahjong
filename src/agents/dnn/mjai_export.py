@@ -97,7 +97,14 @@ def play_game_mjai(table: PyMahjongTable, policies: Dict[int, Policy],
         if done:
             emit({"type": "hora", "actor": pid, "target": pid})
             break
-        if info.get("chankan"):
+        if info.get("chankan") and (table.pending_kan or {}).get("ankan"):
+            # concealed kan that a 国士 hand may rob: announce it as an ankan,
+            # the chankan window below is the same as for a kakan
+            kt = info["chankan"]
+            pon_reds = table.red[pid].get(kt[-1], 0) if kt[-1] in "mps" else 0
+            emit({"type": "ankan", "actor": pid,
+                  "consumed": [engine_to_mjai(kt, red=i < pon_reds) for i in range(4)]})
+        elif info.get("chankan"):
             kt = info["chankan"]
             pk = table.pending_kan or {}
             pon = next((m for m in table.melds[pid] if m["type"] == "pon" and m["tiles"][0] == kt), {})

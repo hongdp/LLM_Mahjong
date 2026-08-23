@@ -756,10 +756,13 @@ class PyMahjongTable(MahjongEngineAPI):
         # added kan, and only from the other three players.
         if self.pending_kan:
             actions = ['<action type="skip" />']
-            if (player_id != self.pending_kan["player"]
-                    and self._can_ron(player_id, self.pending_kan["tile"],
-                                      chankan=True)):
-                actions.append('<action type="ron" />')
+            if player_id != self.pending_kan["player"]:
+                if self.pending_kan.get("ankan"):
+                    if player_id in self._kokushi_robbers(self.pending_kan["player"],
+                                                          self.pending_kan["tile"]):
+                        actions.append('<action type="ron" />')
+                elif self._can_ron(player_id, self.pending_kan["tile"], chankan=True):
+                    actions.append('<action type="ron" />')
             return actions
 
         if self.finished or not self.last_discard:
@@ -917,6 +920,15 @@ class PyMahjongTable(MahjongEngineAPI):
                 )
 
             elif action_type == "kan" and tile and self._can_ankan(player_id, tile):
+                if self._kokushi_robbers(player_id, tile):
+                    # Majsoul: 国士无双 can rob a concealed kan. Defer the
+                    # kan exactly like an added kan; resolve_pending_kan
+                    # completes it if nobody rons.
+                    self.pending_kan = {"player": player_id, "tile": tile, "ankan": True,
+                                        "red": False}
+                    self._ron_chance = set(self._kokushi_robbers(player_id, tile))
+                    return (self._obs(), rewards, False,
+                            {"discarded": False, "chankan": tile})
                 self._do_ankan(player_id, tile)
                 # Turn continues: player discards after the rinshan draw.
 
@@ -926,6 +938,9 @@ class PyMahjongTable(MahjongEngineAPI):
                 self.pending_kan = {"player": player_id, "tile": tile,
                                     "red": self._plain_copies(player_id, tile) == 0
                                     and self.red[player_id].get(tile[-1], 0) > 0}
+                # a passed-up chankan is a missed win too (同巡/立直振听)
+                self._ron_chance = {p for p in range(4) if p != player_id
+                                    and tile in self._waits(p)}
                 return (
                     self._obs(),
                     rewards, False, {"discarded": False, "chankan": tile},
@@ -953,12 +968,36 @@ class PyMahjongTable(MahjongEngineAPI):
         )
         self._after_kan(player_id, reveal_now=True)
 
+    def _kokushi_robbers(self, player_id: int, tile: str) -> List[int]:
+        """Opponents whose 13-orphan hand completes with `tile` (and who
+        are not furiten): the only hands allowed to rob an ankan."""
+        if tile[-1] != 'z' and tile[0] not in '19':
+            return []
+        out = []
+        for p in range(4):
+            if p == player_id or self._is_furiten(p):
+                continue
+            hand = self.hands[p]
+            if len(hand) != 13 or self.melds[p]:
+                continue
+            if not all(t[-1] == 'z' or t[0] in '19' for t in hand):
+                continue
+            res = self._win_result(p, tile, is_tsumo=False, chankan=True)
+            if res is not None and any("Kokushi" in str(y) for y in (res.yaku or [])):
+                out.append(p)
+        return out
+
     def resolve_pending_kan(self):
-        """Nobody robbed the added kan: complete it (RCR 3.5 / 3.7.1)."""
+        """Nobody robbed the kan: complete it (RCR 3.5 / 3.7.1)."""
         if not self.pending_kan:
             return
         player_id, tile = self.pending_kan["player"], self.pending_kan["tile"]
+        was_ankan = self.pending_kan.get("ankan", False)
         self.pending_kan = None
+        self._apply_missed_ron()
+        if was_ankan:
+            self._do_ankan(player_id, tile)
+            return
         pon = next((m for m in self.melds[player_id]
                     if m["type"] == "pon" and m["tiles"][0] == tile), None)
         if pon is None or tile not in self.hands[player_id]:
@@ -1085,10 +1124,14 @@ class PyMahjongTable(MahjongEngineAPI):
             return obs(), rewards, False, {"interrupt": False, "winners": []}
 
         winners = []
+        robbers = (self._kokushi_robbers(discarder, tile)
+                   if self.pending_kan and self.pending_kan.get("ankan") else None)
         for pid in player_ids:
             result = (self._win_result(pid, tile, is_tsumo=False,
                                        chankan=chankan)
                       if not self._is_furiten(pid) else None)
+            if robbers is not None and pid not in robbers:
+                result = None                       # only 国士 may rob an ankan
             if result is None:
                 rewards[pid] = self.ILLEGAL_PENALTY
             else:
