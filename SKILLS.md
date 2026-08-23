@@ -179,3 +179,6 @@
   坑：MJAI 杠后单发岭上 `tsumo`（引擎隐式摸）→ 按 tsumo 事件计活牌；抢杠要在 kakan 写入前判定；MC 不转发
   局结果（安装器补丁转发 `end_kyoku`/`end_game` 才能计顺位）；引擎无红五 → 折叠观测、出牌优先留红五。
   评估须走 ml-experiment-tracking（预注册 `experiments/exp24_majsoul_live_prereg`），发射需用户账号与浏览器。
+- **（2026-08-23 exp25）出牌温度是被忽略的强度杠杆**：同一冠军 checkpoint 贪心(T=0) vs T=1 采样，复式牌 1000 副
+  **+484±418（贪心胜 56%）**，与一次代际提升同量级。历史 Elo 池/竞技场全是 T=1 口径，贪心口径绝对值整体上移
+  （相对排序未验证）。实战（雀魂）与对外对比用 T=0；`run_arena_dnn.py --dnn_temperature_a/_b` 支持每边独立温度。
