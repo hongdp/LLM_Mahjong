@@ -11,6 +11,8 @@ Endpoints:
     GET  /api/metrics?exp=NAME            -> tensorboard scalars
     GET  /api/rollouts?exp=NAME&epoch=N   -> parsed games for one epoch
     POST /api/sync?exp=NAME               -> rsync live logs/tensorboard from the VM
+    GET  /api/dnn_dashboards              -> recorded DNN self-play dashboards (record_games.py)
+    GET  /api/dnn_dashboard?file=REL      -> one dashboard JSON (stages × games × steps)
 """
 
 import argparse
@@ -462,6 +464,54 @@ def arena_status():
     return out
 
 
+# ---------------------------------------------------------------- DNN self-play dashboards
+
+def list_dnn_dashboards():
+    """JSON files written by scripts/record_games.py: experiments/**/arena_dashboard*.json
+    (top level and one directory deep). Returns newest first."""
+    out = []
+    if not os.path.isdir(EXP_ROOT):
+        return out
+    cands = []
+    for name in os.listdir(EXP_ROOT):
+        full = os.path.join(EXP_ROOT, name)
+        if os.path.isfile(full) and re.match(r'arena_dashboard.*\.json$', name):
+            cands.append(name)
+        elif os.path.isdir(full):
+            for f in os.listdir(full):
+                if re.match(r'arena_dashboard.*\.json$', f):
+                    cands.append(os.path.join(name, f))
+    for rel in cands:
+        full = os.path.join(EXP_ROOT, rel)
+        try:
+            with open(full, encoding="utf-8") as fh:
+                head = fh.read(4096)
+            if '"models"' not in head:
+                continue
+            d = json.load(open(full, encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        out.append({
+            "file": rel,
+            "stages": [m.get("stage") for m in d.get("models", [])],
+            "games": d.get("games"),
+            "decisions": sum(len(g.get("steps", [])) for m in d.get("models", [])
+                             for g in m.get("games", [])),
+            "mtime": os.path.getmtime(full),
+            "size_mb": round(os.path.getsize(full) / 1e6, 2),
+        })
+    out.sort(key=lambda r: -r["mtime"])
+    return out
+
+
+def dnn_dashboard_path(rel):
+    """Resolve a listing-relative path; refuse anything outside EXP_ROOT."""
+    full = os.path.realpath(os.path.join(EXP_ROOT, rel))
+    if not full.startswith(os.path.realpath(EXP_ROOT) + os.sep) or not full.endswith(".json"):
+        return None
+    return full if os.path.isfile(full) else None
+
+
 # ---------------------------------------------------------------- http plumbing
 
 _rollout_cache = {}
@@ -505,6 +555,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(list_experiments())
         elif u.path == "/api/arena":
             self._json(arena_status())
+        elif u.path == "/api/dnn_dashboards":
+            self._json(list_dnn_dashboards())
+        elif u.path == "/api/dnn_dashboard":
+            path = dnn_dashboard_path(q.get("file", ""))
+            if not path:
+                self._json({"error": "not found"}, 404)
+                return
+            self._file(path, "application/json; charset=utf-8")
         elif u.path == "/api/metrics":
             exp = os.path.basename(q.get("exp", ""))
             self._json(read_metrics(exp))
