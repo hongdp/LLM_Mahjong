@@ -51,8 +51,12 @@ from src.agents.dnn.mjai_bridge import MjaiDnnBot, load_policy   # noqa: E402
 
 
 class State:
-    def __init__(self, ckpt, device, temperature, log_path):
+    def __init__(self, ckpt, device, temperature, log_path, name=None):
         self.ckpt = ckpt
+        self.temperature = temperature
+        # human-readable model name shown in MahjongCopilot's model bar:
+        # "<experiment dir>/<file>" unless --name is given
+        self.name = name or "/".join(os.path.normpath(ckpt).split(os.sep)[-2:])
         self.policy = load_policy(ckpt, device, temperature)
         self.bot = MjaiDnnBot(self.policy)
         self.lock = threading.Lock()
@@ -179,7 +183,8 @@ def make_handler(state: State):
 
         def do_GET(self):
             if self.path == "/health":
-                self._send(200, {"ok": True, "ckpt": state.ckpt,
+                self._send(200, {"ok": True, "ckpt": state.ckpt, "model_name": state.name,
+                                 "mode": "greedy" if state.temperature <= 0 else f"sample T={state.temperature:g}",
                                  "decisions": state.bot.n_decisions,
                                  "uptime_s": round(time.time() - state.started)})
             elif self.path == "/last":
@@ -244,16 +249,18 @@ def main():
     ap.add_argument("--temperature", type=float, default=0.0,
                     help="0 = greedy (argmax); >0 samples")
     ap.add_argument("--log", default="experiments/majsoul_sessions/mjai_session.jsonl")
+    ap.add_argument("--name", default=None,
+                    help="model label shown in MahjongCopilot (default: <exp dir>/<file>)")
     ap.add_argument("--games-dir", default=None,
                     help="per-game JSON records (default: <log dir>/games)")
     a = ap.parse_args()
     torch.set_num_threads(2)
     if a.log:
         os.makedirs(os.path.dirname(a.log), exist_ok=True)
-    state = State(a.ckpt, a.device, a.temperature, a.log)
+    state = State(a.ckpt, a.device, a.temperature, a.log, a.name)
     state.games_dir = a.games_dir or (os.path.join(os.path.dirname(a.log), "games") if a.log else None)
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(state))
-    print(f"[serve_mjai_bot] {a.ckpt} on http://{a.host}:{a.port}  log={a.log}  games={state.games_dir}", flush=True)
+    print(f"[serve_mjai_bot] {state.name} ({a.ckpt}) on http://{a.host}:{a.port}  log={a.log}  games={state.games_dir}", flush=True)
     srv.serve_forever()
 
 

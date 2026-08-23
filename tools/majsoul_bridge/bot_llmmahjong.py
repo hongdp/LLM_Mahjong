@@ -26,6 +26,8 @@ class BotLlmMahjong(Bot):
         self.ignore_next_turn_self_reach: bool = False
         info = self._get("/health")
         self.ckpt = info.get("ckpt", "?")
+        self.model_name = info.get("model_name") or self.ckpt.split("/")[-1]
+        self.mode = info.get("mode", "")
         LOGGER.info("LLM_Mahjong bot server OK: %s", info)
 
     @property
@@ -34,7 +36,7 @@ class BotLlmMahjong(Bot):
 
     @property
     def info_str(self) -> str:
-        return f"{self.name} [{self.ckpt.split('/')[-1]}] @ {self.url}"
+        return f"{self.model_name} ({self.mode}) @ {self.url}"
 
     # ---- http ----
     def _get(self, path: str) -> dict:
