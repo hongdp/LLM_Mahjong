@@ -229,3 +229,11 @@
   torch cu129 wheel 原生支持 Blackwell（sm_120）。L4 上 handset_xl 是 GPU 封顶（单行前向 206 µs vs 4080 95 µs）。
 - **（2026-08-23 再犯）`pkill -f` 模式出现在本 shell 命令行（含 heredoc 正文）就会自杀（exit 144）**：把 kill 脚本先单独写进文件，
   再用一条不含模式字符串的命令执行。
+- **（2026-08-23 用户规则）任务 launch 之后必须确认其性能符合预期，否则立刻查问题**：exp27-B（handset_xl）发射后
+  GPU 100%、第一轮 3.8 min、第二轮 14 min 不出——不是"大模型就慢"，而是 rank 偏置 `bias[:, bucket]` 的高级索引反向在
+  GPU 上对 20 个槽位做 1.1 亿次原子累加（30 s/minibatch）。发射清单：①前 3 轮的 局/s 与基准对照（训练口径 ≈ rollout
+  基准的 40–50%）；②GPU 利用率/显存与预期量级对照；③对不上就 py-spy dump 看卡在哪一行。
+- **（2026-08-23）云机取代码改为 `git clone` 公开仓库 + 固定 SHA**（`scripts/phase2_dnn/launch_g4_git.sh`）：比 scp 整目录快、
+  可追溯；脚本硬门：SHA 必须已在 origin/master，否则拒绝发射（实验改动先 push 再发）。
+- **（2026-08-23 坑）在云机上 `pkill run_dnn_cloud.sh` 会触发 runner 的 EXIT trap → `shutdown -h` → flex VM 直接 TERMINATED**。
+  要重启某个 run：只 kill 训练器进程并先摘掉 trap，或干脆删机重建（更干净）。
