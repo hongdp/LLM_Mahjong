@@ -23,6 +23,7 @@ MC 用 mitmproxy 抓雀魂 websocket（liqi protobuf）→ 翻译成 **MJAI 协�
 | `scripts/analyze_majsoul_session.py` | 会话日志 → 顺位 / 和牌率 / 放铳率 / 立直率 / 副露率 |
 | `tools/majsoul_bridge/bot_llmmahjong.py` | MC 侧插件（HTTP 客户端，实现 MC 的 `Bot` 接口） |
 | `tools/majsoul_bridge/install.py` | 一键把插件装进 MC 检出（注册 factory / settings / 转发局结果） |
+| `tools/majsoul_bridge/WINDOWS.md` + `mahjongcopilot_windows.patch` | **Windows 打牌机实录**：SxS Chromium 起不来 → 用系统 Chrome；mitm 缓冲 46 MB wasm → 流式透传；证书装用户存储免管理员；新版 Unity 客户端兼容情况；排障速查 |
 | `tests/test_mjai_bridge.py` | 单测：随机 + 偏副露自对弈 80 局逐决策保真、红五簿记、抢杠 |
 
 ## 两种模式
@@ -54,6 +55,7 @@ MC 用 mitmproxy 抓雀魂 websocket（liqi protobuf）→ 翻译成 **MJAI 协�
    cd ~/MahjongCopilot && python -m venv venv && source venv/bin/activate
    pip install -r requirements.txt && playwright install chromium
    ```
+   Windows 打牌机还需要对 MC 打三处补丁（`git apply mahjongcopilot_windows.patch`），详见 [WINDOWS.md](WINDOWS.md)。
 2. **安装插件**（幂等，可重复执行）
    ```bash
    python tools/majsoul_bridge/install.py ~/MahjongCopilot
