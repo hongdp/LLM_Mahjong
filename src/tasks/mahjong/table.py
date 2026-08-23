@@ -73,6 +73,60 @@ def _wait_candidates(tiles: List[str]):
                     cand.add(base + r + d)
     return sorted(cand)
 
+def _decompositions(counts: List[int], n_sets: int):
+    """Yield every standard reading of a 34-count hand as `n_sets` sets
+    (koutsu / shuntsu) plus one pair. Each reading is a list of
+    ("set"|"seq"|"pair", first_tile_index)."""
+    def rec(i, sets_left, pair_used, acc):
+        while i < 34 and counts[i] == 0:
+            i += 1
+        if i == 34:
+            if sets_left == 0 and pair_used:
+                yield list(acc)
+            return
+        c = counts[i]
+        if not pair_used and c >= 2:
+            counts[i] -= 2
+            acc.append(("pair", i))
+            yield from rec(i, sets_left, True, acc)
+            acc.pop(); counts[i] += 2
+        if sets_left == 0:
+            return
+        if c >= 3:
+            counts[i] -= 3
+            acc.append(("set", i))
+            yield from rec(i, sets_left - 1, pair_used, acc)
+            acc.pop(); counts[i] += 3
+        if i < 27 and i % 9 <= 6 and counts[i + 1] > 0 and counts[i + 2] > 0:
+            counts[i] -= 1; counts[i + 1] -= 1; counts[i + 2] -= 1
+            acc.append(("seq", i))
+            yield from rec(i, sets_left - 1, pair_used, acc)
+            acc.pop(); counts[i] += 1; counts[i + 1] += 1; counts[i + 2] += 1
+    yield from rec(0, n_sets, False, [])
+
+
+def _tile_only_as_triplet(tiles: List[str], tile: str, n_sets: int) -> bool:
+    """RCR 3.12 (2): in every winning reading of `tiles`, `tile` is a koutsu
+    (never part of a run, never the pair). False if no standard reading
+    exists (chiitoitsu/kokushi readings can't hold a triplet anyway)."""
+    counts = [0] * 34
+    for t in tiles:
+        counts[_tile34(t)] += 1
+    k = _tile34(tile)
+    found = False
+    for reading in _decompositions(counts, n_sets):
+        found = True
+        if ("pair", k) in reading:
+            return False
+        # A run holding the tile is only fine when the reading also has the
+        # koutsu (then the run uses the 4th copy, i.e. the tile is the wait
+        # itself: 1111m23m -> 111m + 123m keeps the in-hand triplet intact).
+        if (("set", k) not in reading
+                and any(kind == "seq" and i <= k <= i + 2 for kind, i in reading)):
+            return False
+    return found
+
+
 
 @_functools.lru_cache(maxsize=262144)
 def _shanten_cached(key: tuple, num_melds: int) -> int:
@@ -457,22 +511,25 @@ class PyMahjongTable(MahjongEngineAPI):
         # (1) the drawn tile is the fourth copy
         if self.last_drawn[player_id] != tile:
             return False
-        # (2) the four tiles may only be read as a triplet. Approximated
-        # conservatively: refuse if the tile could join a run at all. This
-        # can forbid a legal ankan but never allows an illegal one.
-        if tile[-1] != 'z':
-            val, suit = int(tile[:-1]), tile[-1]
-            hand = self.hands[player_id]
-            if any(f"{val + d}{suit}" in hand
-                   for d in (-2, -1, 1, 2) if 1 <= val + d <= 9):
-                return False
-        # (3) the wait may not change
         before = list(self.hands[player_id])
         before.remove(self.last_drawn[player_id])
-        waits_before = self._waits_of(before, len(self.melds[player_id]))
+        n_melds = len(self.melds[player_id])
+        waits_before = self._waits_of(before, n_melds)
+        if not waits_before:
+            return False
+        # (2) the tile may only be read as a triplet: in every winning
+        # decomposition of the riichi hand (for every wait) it must sit in
+        # a koutsu, never in a run or as the pair. Exact enumeration —
+        # before 2026-08-23 this was approximated by "refuse if any
+        # neighbouring tile is in hand", which also refused legal kans
+        # such as 2345555s (234s + 555s + tanki) on the 4th 5s.
+        if not all(_tile_only_as_triplet(before + [w], tile, 4 - n_melds)
+                   for w in waits_before):
+            return False
+        # (3) the wait may not change
         after = [t for t in self.hands[player_id] if t != tile]
-        waits_after = self._waits_of(after, len(self.melds[player_id]) + 1)
-        return waits_before == waits_after and bool(waits_before)
+        waits_after = self._waits_of(after, n_melds + 1)
+        return waits_before == waits_after
 
     def _waits_of(self, tiles: List[str], n_melds: int) -> set:
         if self._shanten(tiles, n_melds) != 0:

@@ -114,5 +114,17 @@
    "promoted": "2026-08-16 via full-pool 100-deal rating; teacher-prior yardstick, top anchor"
   }
  },
- "engine_git": "5c66d11"
+ "engine_git": "5c66d11",
+ "engine": {
+  "fingerprint": "d24241ea4b1f2577",
+  "git": "985f47d",
+  "files": [
+   "table.py",
+   "shanten.py",
+   "claims.py",
+   "wrapper.py",
+   "arena.py"
+  ],
+  "note": "epoch-1 engine (conservative riichi-ankan rule); stamped retroactively 2026-08-23"
+ }
 }
