@@ -55,3 +55,31 @@ class TestHandSet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_vectorized_worker_matches_single_game_logic():
+    """play_game_gen + batched replies must produce the same games as
+    play_game when fed the same greedy policy (deterministic at T=0)."""
+    import torch
+    from src.agents.dnn.selfplay import play_game, play_game_gen, make_step
+    net = ZOO["cnn_m_r"][0]().eval()
+    for seed in (11, 12, 13):
+        g1 = play_game(net, temperature=0.0, deal_seed=seed)
+        gen = play_game_gen(deal_seed=seed)
+        table, reqs = next(gen)
+        while True:
+            replies = []
+            for pid, actions in reqs:
+                from src.agents.dnn.encoder import encode_state, legal_mask
+                p, s = encode_state(table, pid, variant="v1r")
+                m, lookup = legal_mask(actions)
+                idx, lp = net.act(p[None], s[None], m[None], temperature=0.0)
+                step, _ = make_step(table, pid, actions, "v1r", int(idx), float(lp))
+                replies.append((step, lookup[int(idx)]))
+            try:
+                table, reqs = gen.send(replies)
+            except StopIteration as e:
+                g2 = e.value
+                break
+        assert g1.result == g2.result and g1.points == g2.points
+        assert [len(t) for t in g1.trajectories.values()] == [len(t) for t in g2.trajectories.values()]

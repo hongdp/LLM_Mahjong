@@ -47,6 +47,9 @@ def main():
     ap.add_argument("--gamma", type=float, default=0.995)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--games_per_worker", type=int, default=1,
+                    help="perf 2026-08-23: K games interleaved per rollout "
+                         "process, one batched RPC per round (gpu_infer only)")
     ap.add_argument("--rollout_temps", default=None,
                     help="exp28: comma-separated temperatures; each seat of each "
                          "rollout game samples at one of them (behaviour logprob "
@@ -263,6 +266,7 @@ def main():
         save("games_0", 0)
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
                temperature=args.temperature, gamma=args.gamma,
+               games_per_worker=args.games_per_worker,
                rollout_temps=([float(x) for x in args.rollout_temps.split(",")]
                               if args.rollout_temps else None),
                shaping=False, seed=args.seed,

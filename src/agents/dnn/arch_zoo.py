@@ -16,6 +16,7 @@ action space used everywhere else.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
                                     N_PLANES_V1R, N_PLANES_V3R,
@@ -235,6 +236,32 @@ class ConvFormer(TilesTransformer):
 # ----------------------------------------------------------------------
 # exp27: hand-as-a-SET encoder (tile instances, no positional encoding)
 # ----------------------------------------------------------------------
+class SetAttnBlock(nn.Module):
+    """Pre-LN attention block over a compact token set with a per-sample
+    bias [B, L, L] (bucket ids -> learned per-head bias) and a key padding
+    mask, via fused scaled_dot_product_attention."""
+
+    def __init__(self, d, heads, n_buckets):
+        super().__init__()
+        self.h, self.dh = heads, d // heads
+        self.ln1 = nn.LayerNorm(d)
+        self.ln2 = nn.LayerNorm(d)
+        self.qkv = nn.Linear(d, 3 * d)
+        self.proj = nn.Linear(d, d)
+        self.bias = nn.Parameter(torch.zeros(heads, n_buckets))
+        self.ffn = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
+
+    def forward(self, x, bucket, keep):
+        B, L, _ = x.shape
+        q, k, v = self.qkv(self.ln1(x)).reshape(B, L, 3, self.h, self.dh).permute(2, 0, 3, 1, 4)
+        # [B, H, L, L] additive mask: rank bias + -inf on padded keys
+        bias = self.bias[:, bucket].permute(1, 0, 2, 3)
+        bias = bias.masked_fill(~keep[:, None, None, :], float("-inf"))
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=bias.to(q.dtype))
+        x = x + self.proj(y.transpose(1, 2).reshape(B, L, -1))
+        return x + self.ffn(self.ln2(x))
+
+
 class HandSetEncoder(nn.Module):
     """Permutation-invariant encoder over the player's own tile INSTANCES.
 
@@ -247,8 +274,14 @@ class HandSetEncoder(nn.Module):
     attention bias (same-suit rank distance / honor / cross-suit buckets),
     which is content-based and keeps permutation equivariance. With
     rel_bias=False this is a pure set transformer (the ablation).
-    Output: [CLS] embedding (d) after `layers` pre-LN attention blocks.
+
+    Perf (2026-08-23 rollout review): the 136 candidate slots are compacted
+    to the <= MAX_TOKENS present ones before attention (a hand has <= 14
+    tiles + <= 16 meld tiles), and attention runs through fused SDPA —
+    the 137-slot fp32 version was GPU-bound at 15 games/s.
+    Output: [CLS] embedding (d) after `layers` attention blocks.
     """
+    MAX_TOKENS = 32
 
     def __init__(self, d=128, layers=4, heads=4, rel_bias=True, max_copies=4):
         super().__init__()
@@ -258,47 +291,49 @@ class HandSetEncoder(nn.Module):
         self.flag_proj = nn.Linear(3, d)            # [rank/9 number, red, meld]
         self.cls = nn.Parameter(torch.zeros(1, 1, d))
         n_buckets = 3 + 17
-        self.blocks = nn.ModuleList([RelBiasBlock(d, heads, n_buckets) for _ in range(layers)])
+        self.blocks = nn.ModuleList([SetAttnBlock(d, heads, n_buckets) for _ in range(layers)])
         self.ln = nn.LayerNorm(d)
-        # static slot tables: slot s = copy * 34 + tile
         tiles = torch.arange(TILE_TYPES).repeat(max_copies)
         copies = torch.arange(max_copies).repeat_interleave(TILE_TYPES)
         rank = torch.where(tiles < 27, (tiles % 9).float() / 8.0, torch.full_like(tiles, 0.5, dtype=torch.float))
         self.register_buffer("slot_tile", tiles, persistent=False)
         self.register_buffer("slot_copy", copies, persistent=False)
         self.register_buffer("slot_rank", rank, persistent=False)
-        tb = _tile_buckets()                         # [35, 35], index 0 = global/CLS
-        idx = torch.cat([torch.zeros(1, dtype=torch.long), tiles + 1])
-        self.register_buffer("bucket", tb[idx][:, idx], persistent=False)   # [1+S, 1+S]
-        self.register_buffer("zero_bucket", torch.zeros_like(self.bucket), persistent=False)
+        self.register_buffer("tile_bucket", _tile_buckets(), persistent=False)   # [35, 35], 0 = CLS
 
     def forward(self, planes):
-        """planes [B, P, 34] from any variant whose first 4 planes are the
-        hand count>=k planes and plane 4 the own-meld presence plane
-        (v1 / v1r / v3 / v3r all are); red flag from the own-red plane when
-        present (v1r: plane 15, v3r: plane 50), else zeros."""
+        """planes [B, P, 34]: planes 0-3 = hand count>=k, plane 4 = own meld
+        presence (v1 / v1r / v3 / v3r); own-red plane when present (v1r:
+        plane 15, v3r: plane 50)."""
         B = planes.shape[0]
-        hand = planes[:, :4, :].reshape(B, -1) > 0.5                 # [B, 136] slot present
-        meld = planes[:, 4, :] > 0.5                                  # [B, 34]
+        dev = planes.device
+        hand = planes[:, :4, :].reshape(B, -1) > 0.5                  # [B, 136]
+        meld = planes[:, 4, :] > 0.5
         P = planes.shape[1]
         red_plane = planes[:, N_PLANES, :] if P == N_PLANES + 6 else (
-            planes[:, N_PLANES_V3, :] if P == N_PLANES_V3 + 6 else torch.zeros_like(meld, dtype=planes.dtype))
-        # meld tiles become copy-0 tokens with the meld flag (only if not already a hand token)
-        meld_slot = torch.cat([meld, torch.zeros(B, 3 * TILE_TYPES, dtype=torch.bool, device=planes.device)], 1)
-        present = hand | meld_slot                                    # [B, 136]
+            planes[:, N_PLANES_V3, :] if P == N_PLANES_V3 + 6 else torch.zeros_like(planes[:, 0, :]))
+        meld_slot = torch.cat([meld, torch.zeros(B, 3 * TILE_TYPES, dtype=torch.bool, device=dev)], 1)
+        present = hand | meld_slot
         is_meld = meld_slot & ~hand
-        red = torch.zeros_like(present, dtype=planes.dtype)
-        red[:, :TILE_TYPES] = red_plane * hand[:, :TILE_TYPES].to(planes.dtype)   # red copy = copy 0
-        S = present.shape[1]
-        x = (self.tile_embed(self.slot_tile)[None].expand(B, S, -1)
-             + self.copy_embed(self.slot_copy)[None]
-             + self.flag_proj(torch.stack([self.slot_rank[None].expand(B, S), red,
-                                           is_meld.to(planes.dtype)], -1)))
-        x = torch.cat([self.cls.expand(B, 1, -1), x], 1)             # [B, 1+S, d]
-        keep = torch.cat([torch.ones(B, 1, dtype=torch.bool, device=planes.device), present], 1)
-        bucket = self.bucket if self.rel_bias else self.zero_bucket
+        red = torch.zeros(B, 4 * TILE_TYPES, dtype=planes.dtype, device=dev)
+        red[:, :TILE_TYPES] = red_plane * hand[:, :TILE_TYPES].to(planes.dtype)
+        # compact: present slots first (stable), keep the first MAX_TOKENS
+        order = torch.argsort((~present).to(torch.int8), dim=1, stable=True)[:, :self.MAX_TOKENS]
+        keep_t = torch.gather(present, 1, order)                      # [B, T]
+        tile = self.slot_tile[order]                                  # [B, T]
+        x = (self.tile_embed(tile) + self.copy_embed(self.slot_copy[order])
+             + self.flag_proj(torch.stack([self.slot_rank[order],
+                                           torch.gather(red, 1, order),
+                                           torch.gather(is_meld, 1, order).to(planes.dtype)], -1)))
+        x = torch.cat([self.cls.expand(B, 1, -1), x], 1)              # [B, 1+T, d]
+        keep = torch.cat([torch.ones(B, 1, dtype=torch.bool, device=dev), keep_t], 1)
+        ids = torch.cat([torch.zeros(B, 1, dtype=torch.long, device=dev), tile + 1], 1)
+        if self.rel_bias:
+            bucket = self.tile_bucket[ids[:, :, None], ids[:, None, :]]   # [B, 1+T, 1+T]
+        else:
+            bucket = torch.zeros(B, ids.shape[1], ids.shape[1], dtype=torch.long, device=dev)
         for blk in self.blocks:
-            x = blk(x, bucket, key_mask=keep)
+            x = blk(x, bucket, keep)
         return self.ln(x[:, 0])
 
 

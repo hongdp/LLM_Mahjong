@@ -220,3 +220,93 @@ def returns_to_go(steps: List[DnnStep], gamma: float) -> List[float]:
         R = s.reward + gamma * R
         out.insert(0, R)
     return out
+
+
+# ----------------------------------------------------------------------
+# Generator form of play_game (vectorized rollout, perf 2026-08-23): the
+# driver yields decision requests and receives (DnnStep, action_str) pairs,
+# so one worker process can interleave K games and batch their requests
+# into a single inference RPC. Game logic is identical to play_game.
+# ----------------------------------------------------------------------
+def play_game_gen(deal_seed: Optional[int] = None, randomize_round: bool = True,
+                  shaping: bool = False, seat_model: Optional[dict] = None):
+    """Yields (table, [(pid, actions), ...]); `.send()` the list of
+    (DnnStep, action_str) back in the same order. Returns the DnnGame.
+    seat_model: {pid: model_id} (league); the caller routes each request.
+    Note: random.seed(deal_seed) must be applied by the caller right before
+    the table is built (done here) — K interleaved games share the global
+    RNG, so the engine's forced-discard fallback is the only later use."""
+    if deal_seed is not None:
+        random.seed(deal_seed)
+    table = PyMahjongTable(randomize_round=randomize_round)
+    table.text_obs = False
+    game = DnnGame()
+    guard = 0
+    while not table.finished and guard < 600:
+        guard += 1
+        pid = table.turn
+        actions = table.get_legal_actions(pid)
+        if not actions:
+            break
+        ((step, action_str),) = yield (table, [(pid, actions)])
+        if shaping:
+            step.phi = potential(table, pid)
+        _, rewards, done, info = table.step(pid, action_str)
+        step.reward = rewards[pid]
+        step.is_terminal = done
+        game.trajectories[pid].append(step)
+        if done:
+            break
+        if not (info.get("discarded") or info.get("chankan")):
+            continue
+        reqs = []
+        for offset in range(1, 4):
+            other = (pid + offset) % 4
+            options = table.get_interrupt_actions(other)
+            if len(options) == 1:
+                continue
+            reqs.append((other, options))
+        candidates, cand_steps = [], []
+        if reqs:
+            replies = yield (table, reqs)
+            for (other, _opts), (s, a_str) in zip(reqs, replies):
+                if shaping:
+                    s.phi = potential(table, other)
+                m = ACTION_RE.search(a_str)
+                candidates.append({"player_id": other, "parsed": a_str,
+                                   "type": m.group(1) if m else None, "reward": 0.0})
+                cand_steps.append(s)
+        executed, done = _resolve_claims(table, candidates)
+        for cand, s in zip(candidates, cand_steps):
+            s.reward = cand["reward"]
+            s.is_terminal = done and cand in executed
+            game.trajectories[cand["player_id"]].append(s)
+        if done:
+            break
+        if not executed:
+            if table.pending_kan:
+                table.resolve_pending_kan()
+            else:
+                _, r_done = table.advance_turn()
+                if r_done:
+                    break
+    if table.final_rewards:
+        for p in range(4):
+            if game.trajectories[p]:
+                last = game.trajectories[p][-1]
+                last.reward += table.final_rewards[p]
+                last.is_terminal = True
+    game.result = table.result_summary
+    game.points = list(table.points)
+    game.riichi = [bool(table.riichi[p]) for p in range(4)]
+    game.n_melds = [len(table.melds[p]) for p in range(4)]
+    return game
+
+
+def make_step(table, pid, actions, variant, idx, lp, cmode="none") -> "DnnStep":
+    """DnnStep for a decision whose action index/logprob were produced
+    elsewhere (the batched RPC path)."""
+    planes, scalars = encode_state(table, pid, variant=variant)
+    mask, lookup = legal_mask(actions)
+    return DnnStep(planes=planes, scalars=scalars, mask=mask, action_idx=idx,
+                   logprob=lp, cfeats=critic_features(table, pid, cmode)), lookup

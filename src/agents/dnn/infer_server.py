@@ -95,7 +95,7 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
     ready.set()
     wait_s = wait_ms / 1000.0
     try:
-        _serve(shared, req_q, events, net, device, max_batch, wait_s, gen)
+        _serve(shared, req_q, events, net, device, max_batch, wait_s, gen, cfg)
     except BaseException as e:          # never die silently: unblock workers
         import traceback; traceback.print_exc()
         shared.out_idx[:] = -1
@@ -105,10 +105,17 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
         raise
 
 
-def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen):
+def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen, cfg=None):
     sem, stop = req_q                       # (Semaphore, Event)
     n_slots = shared.pending.shape[0]
-    target = max(1, min(max_batch, n_slots // 2))   # adaptive: half the slots
+    # adaptive window: serve once half the request SOURCES have posted.
+    # rows_per_worker > 1 (vectorized workers, 2026-08-23): a worker posts
+    # ~K rows per round out of its 3K-row block, so "half the slots" was
+    # never reached and every batch waited the full window (40 vs 78 games/s).
+    rows = int((cfg or {}).get("_rows_per_worker", 1) or 1)
+    n_workers = n_slots // rows
+    expected_per_worker = max(1, rows // 3) if rows > 1 else 1
+    target = max(1, min(max_batch, (n_workers // 2) * expected_per_worker))
     # the flag array is mutated by other processes while we scan it: never
     # run multi-threaded torch ops on it (torch.nonzero hit an internal
     # assert); snapshot through numpy instead.
@@ -236,8 +243,11 @@ class InferenceServer:
 
     def __init__(self, state_np, cfg, n_slots: int, n_planes: int,
                  n_scalars: int, device: str = "cuda", max_batch: int = 256,
-                 wait_ms: float = 4.0):
+                 wait_ms: float = 4.0, rows_per_worker: int = 1):
         from src.agents.dnn.encoder import MAX_PLANES, MAX_SCALARS
+        self.rows_per_worker = rows_per_worker
+        n_slots = n_slots * rows_per_worker
+        cfg = dict(cfg, _rows_per_worker=rows_per_worker)
         # buffers sized for the widest hosted encoder; each model reads its own width
         self.shared = _Shared(n_slots, max(n_planes, MAX_PLANES), max(n_scalars, MAX_SCALARS))
         self.req_q = (_CTX.Semaphore(0), _CTX.Event())   # (requests, stop)
@@ -251,7 +261,7 @@ class InferenceServer:
         if not ready.wait(timeout=120):
             raise RuntimeError("inference server failed to start")
         HANDLES.update(shared=self.shared, req_q=self.req_q, events=self.events,
-                       pid=self.proc.pid)
+                       pid=self.proc.pid, rows=self.rows_per_worker)
 
     def stop(self):
         self.req_q[1].set()
@@ -275,8 +285,43 @@ class RemotePolicy:
         return self
 
     @torch.no_grad()
+    def act_batch(self, planes, scalars, mask, temps, model_ids):
+        """Vectorized rollout (perf 2026-08-23): B rows in this worker's slot
+        block [rank*R, rank*R+B), one semaphore release per row, one wait
+        for the whole block. Returns (idx[B], lp[B])."""
+        B = planes.shape[0]
+        R = HANDLES.get("rows", 1)
+        if B > R:
+            raise ValueError(f"worker posted {B} rows but owns {R}")
+        lo = self.rank * R
+        sl = slice(lo, lo + B)
+        sh = self.shared
+        sh.planes[sl, :planes.shape[1]].copy_(planes)
+        sh.scalars[sl, :scalars.shape[1]].copy_(scalars)
+        sh.mask[sl].copy_(mask)
+        sh.temp[sl] = temps
+        sh.model_id[sl] = model_ids
+        want = sh.done_gen[sl].clone() + 1
+        sh.pending[sl] = 1
+        for _ in range(B):
+            self.req_q[0].release()
+        with self.cond:
+            while bool((sh.done_gen[sl] < want).any()):
+                if not self.cond.wait(timeout=5.0):
+                    pid = HANDLES.get("pid")
+                    if pid is not None:
+                        try:
+                            os.kill(pid, 0)
+                        except OSError:
+                            raise RuntimeError("inference server died")
+        out = sh.out_idx[sl].clone()
+        if bool((out < 0).any()):
+            raise RuntimeError("inference server reported failure")
+        return out, sh.out_lp[sl].clone()
+
+    @torch.no_grad()
     def act(self, planes, scalars, mask, temperature: float = 1.0):
-        r = self.rank
+        r = self.rank * HANDLES.get("rows", 1)
         self.shared.planes[r, :planes.shape[1]].copy_(planes[0])
         self.shared.scalars[r, :scalars.shape[1]].copy_(scalars[0])
         self.shared.mask[r].copy_(mask[0])

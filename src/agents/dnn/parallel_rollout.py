@@ -22,9 +22,10 @@ import multiprocessing as mp
 
 import numpy as np
 import torch
+from src.agents.dnn.encoder import encode_state, legal_mask
 
 from src.agents.dnn.net import MahjongPolicyNet
-from src.agents.dnn.selfplay import apply_shaping, play_game, returns_to_go
+from src.agents.dnn.selfplay import DnnStep, critic_features, apply_shaping, play_game, returns_to_go
 from src.agents.dnn.yaku_features import completion_labels
 
 
@@ -111,40 +112,7 @@ def _worker(rank, n_games, seeds, state_np, cfg):
         g = play_game(net, temperature=temperature, device="cpu",
                       deal_seed=seed, shaping=cfg["shaping"],
                       critic_feats=cmode, seat_nets=seat_nets)
-        labels = completion_labels(g.result or "") if cmode == "hazard" else None
-        eps = []
-        for pid in range(4):
-            if pid not in learner_seats:
-                continue                       # opponents' trajectories are not ours
-            steps = g.trajectories[pid]
-            if not steps:
-                continue
-            if cfg["shaping"]:
-                apply_shaping(steps, cfg["gamma"])
-            rets = returns_to_go(steps, cfg["gamma"])
-            # ship compact tensors, not the whole step objects
-            # numpy on the wire: torch tensors travel via shared-memory
-            # file descriptors, which is fragile across fork + conda run
-            # (observed: SocketClient FileNotFoundError). Arrays pickle.
-            ep = {
-                "planes": torch.stack([s.planes for s in steps]).numpy(),
-                "scalars": torch.stack([s.scalars for s in steps]).numpy(),
-                "mask": torch.stack([s.mask for s in steps]).numpy(),
-                "actions": np.array([s.action_idx for s in steps], dtype=np.int64),
-                "old_logprobs": np.array([s.logprob for s in steps], dtype=np.float32),
-                "returns": np.array(rets, dtype=np.float32),
-                "rewards": np.array([s.reward for s in steps], dtype=np.float32),
-                "key": (seed, pid),
-            }
-            if cmode != "none":
-                ep["cfeats"] = torch.stack([s.cfeats for s in steps]).numpy()
-            if labels is not None:
-                # one settled-fact label vector per (game, seat); the trainer
-                # broadcasts it over the episode's steps for the BCE channel
-                ep["hlabels"] = np.array(labels[pid], dtype=np.float32)
-            eps.append(ep)
-        payload.append({"episodes": eps, "result": g.result or "",
-                        "league": bool(opp)})
+        payload.append(_package_game(g, learner_seats, seed, cfg, cmode, bool(opp)))
     return payload
 
 
@@ -173,10 +141,12 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
                 tagged.append(dict(entry, encoder_variant=variant_of_arch(arch)))
             cfg["league"] = tagged
         n_pl, n_sc = variant_shape(variant)
+        K = int(cfg.get("games_per_worker", 1) or 1)
         server = InferenceServer(state_np, cfg, n_slots=workers, n_planes=n_pl,
                                  n_scalars=n_sc, device=cfg.get("infer_device", "cuda"),
                                  max_batch=cfg.get("infer_max_batch", 256),
-                                 wait_ms=cfg.get("infer_wait_ms", 4.0))
+                                 wait_ms=cfg.get("infer_wait_ms", 4.0),
+                                 rows_per_worker=3 * K if K > 1 else 1)
         state_np = {}                      # workers don't need weights
     ctx = mp.get_context("fork")
     args, lo = [], 0
@@ -224,3 +194,118 @@ def apply_group_baseline(episodes, gamma: float) -> None:
             m = (n - np.arange(n, dtype=np.float32))
             tail = m if gamma == 1.0 else (1 - gamma ** m) / (1 - gamma)
             episodes[i]["returns"] = rets - d * tail
+
+
+def _package_game(g, learner_seats, seed, cfg, cmode, league):
+    """Compact numpy episodes for one finished game (both worker paths)."""
+    labels = completion_labels(g.result or "") if cmode == "hazard" else None
+    eps = []
+    for pid in range(4):
+        if pid not in learner_seats:
+            continue                       # opponents' trajectories are not ours
+        steps = g.trajectories[pid]
+        if not steps:
+            continue
+        if cfg["shaping"]:
+            apply_shaping(steps, cfg["gamma"])
+        rets = returns_to_go(steps, cfg["gamma"])
+        # ship compact tensors, not the whole step objects
+        # numpy on the wire: torch tensors travel via shared-memory
+        # file descriptors, which is fragile across fork + conda run
+        # (observed: SocketClient FileNotFoundError). Arrays pickle.
+        ep = {
+            "planes": torch.stack([s.planes for s in steps]).numpy(),
+            "scalars": torch.stack([s.scalars for s in steps]).numpy(),
+            "mask": torch.stack([s.mask for s in steps]).numpy(),
+            "actions": np.array([s.action_idx for s in steps], dtype=np.int64),
+            "old_logprobs": np.array([s.logprob for s in steps], dtype=np.float32),
+            "returns": np.array(rets, dtype=np.float32),
+            "rewards": np.array([s.reward for s in steps], dtype=np.float32),
+            "key": (seed, pid),
+        }
+        if cmode != "none":
+            ep["cfeats"] = torch.stack([s.cfeats for s in steps]).numpy()
+        if labels is not None:
+            # one settled-fact label vector per (game, seat); the trainer
+            # broadcasts it over the episode's steps for the BCE channel
+            ep["hlabels"] = np.array(labels[pid], dtype=np.float32)
+        eps.append(ep)
+    return {"episodes": eps, "result": g.result or "", "league": league}
+
+
+def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
+    """perf 2026-08-23: K games interleaved per process; every round the
+    pending decisions of all K games go to the GPU server in ONE batched
+    RPC (rows = K * 3 >= max requests per round). Hides the RPC latency
+    that left single-game workers idle ~80% of the time and gives the
+    server larger batches. Game logic: play_game_gen == play_game."""
+    from src.agents.dnn.selfplay import play_game_gen, make_step
+    variant = cfg.get("encoder_variant", "v1")
+    pool_variant = {j + 1: e.get("encoder_variant", "v1") for j, e in enumerate(cfg.get("league") or [])}
+    temps_list = cfg.get("rollout_temps")
+    payload = []
+    queue = list(range(n_games))
+    active = {}            # game idx -> dict(gen, pending, seed, learner, opp, temps)
+
+    def start(i):
+        seed = seeds[i] if seeds else None
+        learner_seats, opp = league_plan(seed, cfg)
+        if temps_list:
+            rng = random.Random((seed or 0) * 7919 + i)
+            temps = {p: rng.choice(temps_list) for p in range(4)}
+        else:
+            temps = {p: cfg["temperature"] for p in range(4)}
+        gen = play_game_gen(deal_seed=seed, shaping=cfg["shaping"])
+        try:
+            table, reqs = next(gen)
+        except StopIteration as e:
+            payload.append(_package_game(e.value, learner_seats, seed, cfg, cmode, bool(opp)))
+            return
+        active[i] = {"gen": gen, "table": table, "reqs": reqs, "seed": seed,
+                     "learner": learner_seats, "opp": opp, "temps": temps}
+
+    while queue and len(active) < K:
+        start(queue.pop(0))
+    while active:
+        # gather every pending request across the active games
+        rows = []          # (game idx, req idx, pid, actions, model_id, variant)
+        for gi, st in active.items():
+            for ri, (pid, actions) in enumerate(st["reqs"]):
+                mid = (st["opp"] or {}).get(pid)
+                model_id = 0 if mid is None else mid + 1
+                rows.append((gi, ri, pid, actions, model_id, pool_variant.get(model_id, variant)))
+        planes, scalars, masks, lookups, temps, mids = [], [], [], [], [], []
+        for gi, ri, pid, actions, model_id, var in rows:
+            st = active[gi]
+            pl, sc = encode_state(st["table"], pid, variant=var)
+            mask, lookup = legal_mask(actions)
+            planes.append(pl); scalars.append(sc); masks.append(mask); lookups.append(lookup)
+            temps.append(float(st["temps"][pid])); mids.append(model_id)
+        maxp = max(p.shape[0] for p in planes)
+        P = torch.zeros(len(rows), maxp, planes[0].shape[1])
+        for k, pl in enumerate(planes):
+            P[k, :pl.shape[0]] = pl
+        maxs = max(sc.shape[0] for sc in scalars)
+        S = torch.zeros(len(rows), maxs)
+        for k, sc in enumerate(scalars):
+            S[k, :sc.shape[0]] = sc
+        M = torch.stack(masks)
+        idx, lp = net.act_batch(P, S, M, torch.tensor(temps), torch.tensor(mids, dtype=torch.int32))
+        # distribute replies per game and advance each generator
+        replies = {gi: [None] * len(active[gi]["reqs"]) for gi in active}
+        for k, (gi, ri, pid, actions, model_id, var) in enumerate(rows):
+            a_idx = int(idx[k])
+            step = DnnStep(planes=planes[k], scalars=scalars[k], mask=masks[k],
+                           action_idx=a_idx, logprob=float(lp[k]),
+                           cfeats=critic_features(active[gi]["table"], pid, cmode))
+            replies[gi][ri] = (step, lookups[k][a_idx])
+        for gi in list(active):
+            st = active[gi]
+            try:
+                st["table"], st["reqs"] = st["gen"].send(replies[gi])
+            except StopIteration as e:
+                payload.append(_package_game(e.value, st["learner"], st["seed"], cfg, cmode, bool(st["opp"])))
+                del active[gi]
+                if queue:
+                    start(queue.pop(0))
+    return payload

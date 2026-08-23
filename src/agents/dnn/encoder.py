@@ -136,15 +136,25 @@ def legal_mask(actions: List[str]) -> Tuple[torch.Tensor, Dict[int, str]]:
     On a (type, key_tile) collision the FIRST action wins and the clash is
     reported by the caller-visible size mismatch (len(lookup) < len(actions)).
     """
-    mask = torch.zeros(ACTION_DIM, dtype=torch.bool)
+    # perf (2026-08-23 rollout review): action strings repeat (a few hundred
+    # distinct), so the regex parse is memoized; the mask is built in numpy
+    # (torch.zeros + item assignment was ~0.1 ms/decision).
+    m = np.zeros(ACTION_DIM, dtype=np.bool_)
     lookup: Dict[int, str] = {}
     for a in actions:
-        idx = action_to_index(a)
+        idx = _ACTION_INDEX_CACHE.get(a)
+        if idx is None and a not in _ACTION_INDEX_CACHE:
+            idx = action_to_index(a)
+            if len(_ACTION_INDEX_CACHE) < 4096:
+                _ACTION_INDEX_CACHE[a] = idx
         if idx is None or idx in lookup:
             continue
-        mask[idx] = True
+        m[idx] = True
         lookup[idx] = a
-    return mask, lookup
+    return torch.from_numpy(m), lookup
+
+
+_ACTION_INDEX_CACHE: Dict[str, Optional[int]] = {}
 
 
 def _counts_plane(tiles: List[str]) -> torch.Tensor:
