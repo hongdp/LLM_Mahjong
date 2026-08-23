@@ -222,3 +222,10 @@
   ≈ 15 局/s/$；a2-highgpu-1g A100 flex（$2.0/h）只有 12 vCPU ≈ 15 局/s ≈ 7.5 局/s/$——Phase-1 的"A100 flex 最划算"
   只对 LLM 解码成立。省钱顺序：本机 24 核 + 4080（78 局/s，免费）> spot g2（~$0.9/h，需自动复活 + `--resume`）>
   换 vCPU/GPU 比更高的机型。VM 跑完直接删除（盘费 $10/台/月）。
+- **（2026-08-23 实测）云端默认机型改为 g4-standard-48 flex-start（$2.25/h，48 vCPU + RTX PRO 6000）**：
+  同一 K=32 向量化 rollout 下 cnn_m_r **279 局/s**（L4 g2-32：104）、handset_xl **159.5**（L4：36）——每美元 3–5× 于
+  g2 按需，且 flex 7 天内不抢占。要点：**只用 flex**（按需 $4.5/h 性价比崩）；盘必须 hyperdisk-balanced（pd-balanced 被拒）；
+  `--provisioning-model=FLEX_START --instance-termination-action=DELETE --max-run-duration=12h`；us-central1-b 秒拿到容量；
+  torch cu129 wheel 原生支持 Blackwell（sm_120）。L4 上 handset_xl 是 GPU 封顶（单行前向 206 µs vs 4080 95 µs）。
+- **（2026-08-23 再犯）`pkill -f` 模式出现在本 shell 命令行（含 heredoc 正文）就会自杀（exit 144）**：把 kill 脚本先单独写进文件，
+  再用一条不含模式字符串的命令执行。
