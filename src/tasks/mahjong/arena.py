@@ -57,6 +57,8 @@ def _fill_with_dnn(net, pairs, device="cpu", temperature: float = 1.0):
         action = lookup.get(int(idx))
         if action is None:                     # cannot happen with masking
             action = r.legal[0]
+        if hasattr(net, "override"):           # diagnostic wrappers (overrides.py)
+            action = net.override(table, r.player_id, r.legal, action)
         r.raw = action
         r.parsed = action
 
