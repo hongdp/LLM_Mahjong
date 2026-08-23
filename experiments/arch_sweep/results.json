@@ -1,0 +1,51 @@
+{
+ "cnn_s": {
+  "val_agreement": 0.8039331657548425,
+  "params": 1040785,
+  "cpu_batch1_ms": 0.5903339385986328,
+  "order_planes": false,
+  "train_s": 24.0
+ },
+ "cnn_m": {
+  "val_agreement": 0.8139878752033122,
+  "params": 1940049,
+  "cpu_batch1_ms": 0.6351995468139648,
+  "order_planes": false,
+  "train_s": 29.1
+ },
+ "cnn_l": {
+  "val_agreement": 0.8196436492680763,
+  "params": 3935569,
+  "cpu_batch1_ms": 2.4201369285583496,
+  "order_planes": false,
+  "train_s": 28.0
+ },
+ "cnn_m_order": {
+  "val_agreement": 0.8186455714919414,
+  "params": 1940817,
+  "cpu_batch1_ms": 1.261434555053711,
+  "order_planes": true,
+  "train_s": 30.7
+ },
+ "vit_tiny": {
+  "val_agreement": 0.7389102469318349,
+  "params": 113481,
+  "cpu_batch1_ms": 0.8588600158691406,
+  "order_planes": false,
+  "train_s": 26.4
+ },
+ "vit_small": {
+  "val_agreement": 0.8934644388584948,
+  "params": 819849,
+  "cpu_batch1_ms": 2.3052549362182617,
+  "order_planes": false,
+  "train_s": 51.7
+ },
+ "vit_small_order": {
+  "val_agreement": 0.8905811030607719,
+  "params": 820361,
+  "cpu_batch1_ms": 3.340291976928711,
+  "order_planes": true,
+  "train_s": 47.6
+ }
+}

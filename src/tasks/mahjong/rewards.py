@@ -253,6 +253,38 @@ class MahjongPotentialReward(BaseRewardModel):
         return rewards
 
 
+class MahjongSettlementOnly(BaseRewardModel):
+    """Pure-objective training: NO shaping. Steps carry only the legality
+    constraints (no-action-tag -10, ghost discard -5); all learning signal
+    comes from the engine's terminal settlement already merged into the
+    trajectory. Motivation (2026-08-02): with a competent SFT prior the
+    dense PBRS channel dominates transient learning dynamics (arena showed
+    large style migration with no strength gain over the SFT anchor); this
+    model lets the settlement gradient speak alone. Pair with
+    --covariate_baseline and large game batches to manage variance."""
+
+    FORMAT_PENALTY = MahjongPotentialReward.FORMAT_PENALTY
+    GHOST_TILE_PENALTY = MahjongPotentialReward.GHOST_TILE_PENALTY
+    HAND_RE = MahjongStepReward.HAND_RE
+
+    def compute_reward(self, prompts, responses, **kwargs):
+        rewards = []
+        for prompt, response in zip(prompts, responses):
+            score = 0.0
+            match = ACTION_RE.search(visible_text(response))
+            if not match:
+                score += self.FORMAT_PENALTY
+            else:
+                a_type, tile, _w = match.groups()
+                if a_type in ("discard", "riichi") and tile:
+                    hm = self.HAND_RE.search(prompt)
+                    if hm and tile not in hm.group(1).split():
+                        score += self.GHOST_TILE_PENALTY
+            rewards.append(torch.tensor(score, device=self.device,
+                                        dtype=torch.float32))
+        return rewards
+
+
 # Modular reward selection (CLAUDE.md: registry + BaseRewardModel, never
 # hardcoded into the training loop). Configs pick via "reward_model".
 def _potential_value(**kwargs):
@@ -264,6 +296,7 @@ REWARD_MODELS = {
     "step": MahjongStepReward,            # legacy absolute shaping (v2 runs)
     "potential": MahjongPotentialReward,  # energy-consistent PBRS
     "potential_value": _potential_value,  # PBRS + dora term in the energy
+    "settlement": MahjongSettlementOnly,  # constraints only; pure objective
 }
 
 

@@ -1,0 +1,6 @@
+{
+  "n_states": 500,
+  "llm_agreement": 0.592,
+  "llm_illegal_rate": 0.0,
+  "llm_no_action_rate": 0.0
+}

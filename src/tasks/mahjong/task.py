@@ -20,11 +20,20 @@ class MahjongTask(BaseTask):
         if name not in REWARD_MODELS:
             raise ValueError(f"Unknown reward_model '{name}'. "
                              f"Available: {list(REWARD_MODELS)}")
-        self.step_reward_model = REWARD_MODELS[name](device=self.device)
+        self.gamma = float(kwargs.get('gamma', 0.99))
+        self.step_reward_model = REWARD_MODELS[name](device=self.device,
+                                                     gamma=self.gamma)
         print(f"🏅 Reward model: {name} ({type(self.step_reward_model).__name__})")
         # Prompt template variant: computed value facts (自家宝牌 line).
         # Must match the template the SFT adapter was trained on.
         self.value_facts = bool(kwargs.get('value_facts', False))
+        self.no_think = bool(kwargs.get('no_think', False))
+        # >1 replays each wall K times (common random numbers) so the buffer
+        # can cancel deal luck with an empirical group baseline.
+        self.duplicate_deals = int(kwargs.get('duplicate_deals', 1))
+        if self.duplicate_deals > 1:
+            print(f"🎴 Duplicate deals: {self.duplicate_deals} replicas per wall")
+        self._deal_epoch = 0
         if self.value_facts:
             print("💠 Prompt value facts: ON (自家宝牌 line in private state)")
         # >1 routes rollouts through the batched scheduler (near-linear
@@ -32,6 +41,14 @@ class MahjongTask(BaseTask):
         self.parallel_games = int(kwargs.get('parallel_games', 1))
         if self.parallel_games > 1:
             print(f"⚡ Parallel rollout: {self.parallel_games} concurrent games")
+        # Round randomization: sample round wind (东/南) and dealer seat per
+        # episode instead of always playing 东1局 with player 0 as dealer.
+        # Only the VALUES in the 场况/自风 lines change, not the template,
+        # so it stays compatible with existing SFT adapters — but SFT data
+        # regenerated with the same flag covers the other winds properly.
+        self.randomize_round = bool(kwargs.get('randomize_round', True))
+        if self.randomize_round:
+            print("🀄 Round randomization: ON (场风 东/南 × 庄家 0-3)")
         # Deal-luck control variate: subtract a fitted function of the
         # initial hand quality from episode returns before normalization.
         self.covariate_baseline = bool(kwargs.get('covariate_baseline', False))
@@ -44,23 +61,37 @@ class MahjongTask(BaseTask):
         print(f"🎲 Rolling out {num_episodes} Mahjong games...")
 
         # Run the interactive graph (batched scheduler when parallel > 1)
+        deal_seeds = None
+        if self.duplicate_deals > 1:
+            K = self.duplicate_deals
+            n_deals = max(1, num_episodes // K)
+            self._deal_epoch += 1
+            base = 10_000_000 + self._deal_epoch * 1000
+            # each wall repeated K times, back to back
+            deal_seeds = [base + i for i in range(n_deals) for _ in range(K)]
+        episode_groups = []
         if self.parallel_games > 1:
-            episodes = run_rollout_batched(
+            episodes, episode_groups = run_rollout_batched(
                 num_episodes, model, tokenizer, exp_dir,
                 capture_logprobs=capture_logprobs,
                 value_facts=self.value_facts,
-                parallel=self.parallel_games)
+                no_think=self.no_think,
+                deal_seeds=deal_seeds,
+                parallel=self.parallel_games,
+                randomize_round=self.randomize_round)
         else:
             episodes = run_rollout(num_episodes, model, tokenizer, exp_dir,
                                    capture_logprobs=capture_logprobs,
-                                   value_facts=self.value_facts)
+                                   value_facts=self.value_facts,
+                                   no_think=self.no_think,
+                                   randomize_round=self.randomize_round)
         
-        buffer = ReplayBuffer(gamma=0.99)
+        buffer = ReplayBuffer(gamma=self.gamma)
         
         # We need to apply our Step-level heuristic rewards to the raw trajectory steps 
         # (since table engine only gave sparse rewards or basic XML validation)
         # We batch process all prompts and actions to calculate the step reward.
-        for episode in episodes:
+        for ep_idx, episode in enumerate(episodes):
             prompts = [step.prompt_text for step in episode]
             actions = [step.action_text for step in episode]
             
@@ -71,13 +102,15 @@ class MahjongTask(BaseTask):
             for step, s_reward in zip(episode, step_rewards):
                 step.reward += s_reward.item()
 
+            gkey = (episode_groups[ep_idx]
+                    if ep_idx < len(episode_groups) else None)
             if self.covariate_baseline and episode:
                 from src.tasks.mahjong.rewards import initial_hand_energy
                 buffer.add_episode(
-                    episode,
+                    episode, group_key=gkey,
                     covariate=initial_hand_energy(episode[0].prompt_text))
             else:
-                buffer.add_episode(episode)
+                buffer.add_episode(episode, group_key=gkey)
             
         print(f"📊 Collected {len(buffer.episodes)} player trajectories.")
         return buffer

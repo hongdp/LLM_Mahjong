@@ -20,10 +20,10 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
-from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content
+from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content, get_system_prompt
 from src.core.chat_format import visible_text, render_generation_prompt
 from src.core.rollout import TrajectoryStep
-from src.tasks.mahjong.orchestrator import _PRIORITY, _extract_action
+from src.tasks.mahjong.claims import _resolve_claims, _extract_action
 
 
 @dataclass
@@ -38,29 +38,30 @@ class _Req:
     old_lp: Optional[list] = None
 
 
-def _mk_request(table, player_id, legal, model, tokenizer) -> _Req:
+def _mk_request(table, player_id, legal, model, tokenizer,
+                sys_prompt=SYSTEM_PROMPT) -> _Req:
     obs = table._format_state(player_id)
     user_content = build_user_content(obs, legal)
     if model and tokenizer:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_content},
         ]
         prompt = render_generation_prompt(tokenizer, messages)
     else:
-        prompt = f"System: {SYSTEM_PROMPT}\nUser: {user_content}"
+        prompt = f"System: {sys_prompt}\nUser: {user_content}"
     return _Req(player_id=player_id, prompt=prompt, legal=legal)
 
 
 def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
-                model, tokenizer):
+                model, tokenizer, sys_prompt=SYSTEM_PROMPT):
     """Generator: yields [_Req, ...]; expects the same list back with
     raw/parsed/gen_ids/old_lp filled. Mirrors orchestrator node logic."""
     while True:
         # ---- turn phase (orchestrator.turn_node) ----
         player_id = table.turn
         legal = table.get_legal_actions(player_id)
-        req = _mk_request(table, player_id, legal, model, tokenizer)
+        req = _mk_request(table, player_id, legal, model, tokenizer, sys_prompt)
         (req,) = yield [req]
 
         _, rewards, done, info = table.step(player_id, req.parsed or "")
@@ -71,7 +72,9 @@ def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
         ))
         if done:
             return
-        if not info.get('discarded', False):
+        # A discard opens the call window; an added kan opens a
+        # chankan-only window (RCR 4.2.1.12).
+        if not (info.get('discarded', False) or info.get('chankan')):
             continue
 
         # ---- interrupt phase (orchestrator.interrupt_node) ----
@@ -81,7 +84,7 @@ def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
             options = table.get_interrupt_actions(pid)
             if len(options) == 1:   # skip-only: don't bother the LLM
                 continue
-            reqs.append(_mk_request(table, pid, options, model, tokenizer))
+            reqs.append(_mk_request(table, pid, options, model, tokenizer, sys_prompt))
 
         candidates = []
         if reqs:
@@ -97,33 +100,21 @@ def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
                     "reward": 0.0, "gen_ids": req.gen_ids, "old_lp": req.old_lp,
                 })
 
-        executed, done = None, False
-        for cand in sorted(candidates, key=lambda c: _PRIORITY.get(c["type"], 9)):
-            if cand["parsed"] is None:
-                cand["reward"] = table.FORMAT_PENALTY
-                continue
-            if cand["type"] == "skip" or cand["type"] is None:
-                continue
-            if executed is not None:
-                continue   # lost the priority race: not applied, no penalty
-            _, rewards, i_done, info = table.step_interrupt(
-                cand["player_id"], cand["parsed"])
-            cand["reward"] = rewards[cand["player_id"]]
-            if info.get("interrupt", False):
-                executed = cand
-                done = i_done
+        executed, done = _resolve_claims(table, candidates)
 
         for cand in candidates:
             trajectories[cand["player_id"]].append(TrajectoryStep(
                 prompt_text=cand["prompt"], action_text=cand["raw"],
                 reward=cand["reward"],
-                is_terminal=done and executed is cand,
+                is_terminal=done and cand in executed,
                 gen_token_ids=cand["gen_ids"], old_logprobs=cand["old_lp"],
             ))
 
-        if executed is not None:
+        if executed:
             if done:
                 return
+        elif table.pending_kan:
+            table.resolve_pending_kan()
         else:
             _, r_done = table.advance_turn()
             if r_done:
@@ -131,7 +122,8 @@ def _drive_game(table: PyMahjongTable, trajectories: Dict[int, list],
 
 
 def _batch_generate(model, tokenizer, reqs: List[_Req],
-                    capture: bool, max_batch: int = 24):
+                    capture: bool, max_batch: int = 24,
+                    temperature: float = 0.9):
     """Fills raw/parsed(/gen_ids/old_lp) on every request, batching the
     LLM calls. Falls back to the random policy without a model."""
     if model is None or tokenizer is None:
@@ -148,8 +140,9 @@ def _batch_generate(model, tokenizer, reqs: List[_Req],
         enc = tokenizer([r.prompt for r in chunk], return_tensors="pt",
                         padding=True).to(model.device)
         tokenizer.padding_side = old_side
-        gen_kwargs = dict(max_new_tokens=256, do_sample=True,
-                          temperature=0.9, top_p=0.95, pad_token_id=eos)
+        gen_kwargs = dict(max_new_tokens=256, do_sample=temperature > 0,
+                          temperature=max(temperature, 1e-5), top_p=0.95,
+                          pad_token_id=eos)
         with torch.no_grad():
             if capture:
                 out = model.generate(**enc, **gen_kwargs,
@@ -192,7 +185,11 @@ def _log_batch(exp_dir, game_idx, reqs: List[_Req]):
 def run_rollout_batched(num_games: int, model=None, tokenizer=None,
                         exp_dir: str = None, capture_logprobs: bool = False,
                         value_facts: bool = False,
-                        parallel: int = 4) -> List[List[TrajectoryStep]]:
+                        no_think: bool = False,
+                        deal_seeds=None,
+                        parallel: int = 4,
+                        randomize_round: bool = False
+                        ) -> List[List[TrajectoryStep]]:
     """Drop-in alternative to orchestrator.run_rollout with concurrent games.
     Semantics per game are identical; only scheduling differs."""
     log_dir = exp_dir or "./logs"
@@ -201,6 +198,7 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
         f"=== BATCHED ROLLOUT: {num_games} games, parallel={parallel} ===\n")
 
     all_episodes: List[List[TrajectoryStep]] = []
+    episode_groups: List = []      # (deal_seed, seat) per episode, when duplicating
     next_game = 0
     active: Dict[int, dict] = {}
 
@@ -222,6 +220,8 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
         for pid in range(4):
             if trajectories[pid]:
                 all_episodes.append(trajectories[pid])
+                if deal_seeds is not None:
+                    episode_groups.append((deal_seeds[gid % len(deal_seeds)], pid))
         if table.result_summary:
             with open(os.path.join(log_dir, "live_rollout.txt"), "a",
                       encoding="utf-8") as f:
@@ -230,9 +230,15 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
     while next_game < num_games or active:
         # top up the pool
         while next_game < num_games and len(active) < parallel:
-            table = PyMahjongTable(value_facts=value_facts)
+            if deal_seeds is not None:
+                # Common random numbers: identical wall for every replica of
+                # this deal, so a group baseline can cancel deal luck.
+                random.seed(deal_seeds[next_game % len(deal_seeds)])
+            table = PyMahjongTable(value_facts=value_facts,
+                                   randomize_round=randomize_round)
             trajectories = {i: [] for i in range(4)}
-            gen = _drive_game(table, trajectories, model, tokenizer)
+            gen = _drive_game(table, trajectories, model, tokenizer,
+                              get_system_prompt(no_think))
             gid = next_game
             next_game += 1
             try:
@@ -262,4 +268,4 @@ def run_rollout_batched(num_games: int, model=None, tokenizer=None,
             except StopIteration:
                 finalize(gid)
 
-    return all_episodes
+    return all_episodes, episode_groups

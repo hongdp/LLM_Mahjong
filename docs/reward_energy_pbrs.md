@@ -66,10 +66,11 @@ F_{n−1} =    0    − ψ_{n−2}        （终局 afterstate 能量 := 0，
 CLAUDE.md 模块化红线）。实现：`MahjongPotentialReward`；
 测试：`tests/test_potential_reward.py`（telescoping / 反刷分 / 步级判别 / 约束项，6 项全绿）。
 
-## 状态
+## 状态（2026-08-02 更新）
 
-- 代码已合入，**默认关闭**（`step`）。
-- 进行中的 GCP run `v2_engine_full_run_20260802_005918` 使用旧奖励，不受影响
- （其代码在启动时已同步，本变更也不改默认行为）。
-- 启用它属于**新实验设计**：需新的 EXPERIMENT.md、预注册成功标准并经用户确认后
-  才能开跑（建议与本轮 run 的结果做同基线对比）。
+- **已是现役奖励**：exp1 三臂全部使用势函数系（基线/Arm A 用 `potential`，
+  Arm B 用 `potential_value` = +0.3×宝牌持有项，PBRS 保证不变，见单测）。
+- `step` 仅为历史复现保留。
+- 相关扩展：起手质量协变量基线（`--covariate_baseline`，已实现默认关）、
+  critic value head（同状态基线的摊销版，待方差分解数据定夺）——设计空间见
+  `docs/v3_threaded_context_design.md` 附录 A。

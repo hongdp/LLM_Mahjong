@@ -89,3 +89,39 @@ class TestPPOClipLoss(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestKLRefPenalty(unittest.TestCase):
+    def test_zero_at_identical(self):
+        from src.core.ppo import kl_ref_penalty
+        lp = -torch.rand((2, 5))
+        mask = torch.ones((2, 5))
+        self.assertAlmostEqual(kl_ref_penalty(lp, lp.clone(), mask).item(), 0.0, places=7)
+
+    def test_positive_and_grows_with_divergence(self):
+        from src.core.ppo import kl_ref_penalty
+        lp = -torch.rand((1, 6))
+        mask = torch.ones((1, 6))
+        small = kl_ref_penalty(lp, lp - 0.1, mask).item()
+        big = kl_ref_penalty(lp, lp - 0.5, mask).item()
+        self.assertGreater(small, 0.0)
+        self.assertGreater(big, small)
+
+    def test_gradient_pulls_toward_ref(self):
+        from src.core.ppo import kl_ref_penalty
+        new = (-torch.rand((1, 4))).requires_grad_(True)
+        ref = new.detach() - 0.3          # ref says these tokens LESS likely
+        mask = torch.ones((1, 4))
+        kl_ref_penalty(new, ref, mask).backward()
+        # d k3 / d new = (1 - exp(ref-new)); ref<new => exp<1 => grad>0
+        # minimizing pushes new DOWN toward ref
+        self.assertTrue(torch.all(new.grad > 0))
+
+    def test_mask_respected(self):
+        from src.core.ppo import kl_ref_penalty
+        new = -torch.rand((1, 4))
+        ref = new - 1.0
+        mask = torch.tensor([[1.0, 1.0, 0.0, 0.0]])
+        full = kl_ref_penalty(new, ref, torch.ones_like(mask)).item()
+        half = kl_ref_penalty(new, ref, mask).item()
+        self.assertAlmostEqual(full, half, places=6)  # same per-token value

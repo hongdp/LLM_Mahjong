@@ -32,9 +32,15 @@ VM_EXP_ROOT = "LLM_Mahjong/experiments"
 # Experiment-name prefix -> ssh host alias (longest prefix wins; VM_HOST is
 # the fallback). Three concurrent A100 runs live on three VMs.
 VM_HOSTS = {
+    "exp4_critic": "mahjong-flex-c4.us-central1-b.workstation-185016",
+    "exp2_settlement": "mahjong-flex-s.us-central1-b.workstation-185016",
+    "exp2_pbrs": "mahjong-flex-p.us-east1-b.workstation-185016",
     "v2_engine_ppo_value_run": "mahjong-a100-b.europe-west4-a.workstation-185016",
     "v2_engine_ppo_run": "mahjong-a100-e.us-east1-b.workstation-185016",
     "tune_": "mahjong-a100-e.us-east1-b.workstation-185016",
+    "arena_base": "mahjong-a100.us-central1-b.workstation-185016",
+    "arena_ppo": "mahjong-a100-e.us-east1-b.workstation-185016",
+    "arena_value": "mahjong-a100-b.europe-west4-a.workstation-185016",
 }
 
 
@@ -228,8 +234,13 @@ def parse_live_file(path):
             if cur_gid not in open_games:
                 open_games[cur_gid] = {}
                 order.append(cur_gid)
-            steps = open_games[cur_gid].setdefault(pid, [])
-            step = {"step": len(steps), "reward": 0.0, "terminal": False}
+            game = open_games[cur_gid]
+            steps = game.setdefault(pid, [])
+            # file order == real chronological order within a game: expose it
+            # so the frontend can replay the table in true turn order
+            step = {"step": len(steps), "reward": 0.0, "terminal": False,
+                    "player": pid,
+                    "seq": sum(len(v) for v in game.values())}
             step.update(state)
             step["think"] = think
             step["action"] = {"type": a_type, "tile": a_tile, "with": a_with,
@@ -361,6 +372,96 @@ def sync_from_vm(exp_name):
         return {"ok": False, "stderr": "rsync timed out"}
 
 
+
+
+# ---------------------------------------------------------------- arena
+ARENA_MATCHES = [
+    {"tag": "BASE: RL ep26 vs SFT", "host": "mahjong-a100.us-central1-b.workstation-185016",
+     "json": "arena_base.json"},
+    {"tag": "ARM-A: PPO ep24 vs SFT", "host": "mahjong-a100-e.us-east1-b.workstation-185016",
+     "json": "arena_ppo.json"},
+    {"tag": "ARM-B: PPO+value ep25 vs value-SFT", "host": "mahjong-a100-b.europe-west4-a.workstation-185016",
+     "json": "arena_value.json"},
+]
+_arena_cache = {"t": 0.0, "data": None}
+_ARENA_LINE = re.compile(r'seed=\d+ diff=([+-][\d.]+) wins A/B=(\d+)/(\d+)')
+
+
+def arena_status():
+    import time
+    with _cache_lock:
+        if _arena_cache["data"] is not None and time.time() - _arena_cache["t"] < 25:
+            return _arena_cache["data"]
+    hdr_re = re.compile(r"^=== ARENA seed=(\d+) orient=(\d) A_seats=\[(\d), (\d)\] "
+                        r"result=(.*) ===$")
+    pts_re = re.compile(r"点数: \[([\d, -]+)\]")
+    win_re = re.compile(r"玩家(\d) (?:荣和|自摸)")
+    out = []
+    for m in ARENA_MATCHES:
+        name = m["json"].replace(".json", "")
+        row = {"tag": m["tag"], "state": "unreachable", "deals": 0, "games": 0,
+               "mean_diff": None, "wins_a": 0, "wins_b": 0, "verdict": None}
+        try:
+            r = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", m["host"],
+                 f"cat ~/{m['json']} 2>/dev/null; echo ===T===; "
+                 f"grep '^=== ARENA' ~/LLM_Mahjong/experiments/{name}/"
+                 f"mahjong_epoch_1_rollouts.txt 2>/dev/null; echo ===PS===; "
+                 f"pgrep -f run_arena >/dev/null && echo RUN || echo IDLE"],
+                capture_output=True, text=True, timeout=25, stdin=subprocess.DEVNULL)
+            body = r.stdout
+            jpart, _, rest = body.partition("===T===")
+            tpart, _, ps = rest.partition("===PS===")
+            if jpart.strip().startswith("{"):
+                d = json.loads(jpart)
+                row.update(state="done", deals=d["deals"], games=2 * d["deals"],
+                           mean_diff=d["mean_diff"], ci95=d.get("ci95"),
+                           wins_a=d["wins_a"], wins_b=d["wins_b"],
+                           verdict=d["verdict"])
+            else:
+                games = {}
+                for line in tpart.splitlines():
+                    hm = hdr_re.match(line.strip())
+                    if not hm:
+                        continue
+                    seed, orient = int(hm.group(1)), int(hm.group(2))
+                    a = {int(hm.group(3)), int(hm.group(4))}
+                    res = hm.group(5)
+                    pm = pts_re.search(res)
+                    pts = [int(x) for x in pm.group(1).split(",")] if pm else None
+                    games[(seed, orient)] = (a, pts, res)
+                wa = wb = 0
+                diffs = []
+                seeds = {k[0] for k in games}
+                for sd in seeds:
+                    pair = [games.get((sd, 0)), games.get((sd, 1))]
+                    for g in pair:
+                        if not g:
+                            continue
+                        a, pts, res = g
+                        wm = win_re.search(res)
+                        if wm:
+                            if int(wm.group(1)) in a:
+                                wa += 1
+                            else:
+                                wb += 1
+                    if all(pair) and pair[0][1] and pair[1][1]:
+                        d0 = sum(p for i, p in enumerate(pair[0][1]) if i in pair[0][0]) - 50000
+                        d1 = sum(p for i, p in enumerate(pair[1][1]) if i in pair[1][0]) - 50000
+                        diffs.append(d0 + d1)
+                row.update(state="running" if "RUN" in ps else "starting",
+                           games=len(games), deals=len(diffs),
+                           mean_diff=(sum(diffs) / len(diffs)) if diffs else None,
+                           wins_a=wa, wins_b=wb)
+        except Exception as ex:
+            row["error"] = str(ex)[:120]
+        out.append(row)
+    with _cache_lock:
+        _arena_cache["t"] = __import__("time").time()
+        _arena_cache["data"] = out
+    return out
+
+
 # ---------------------------------------------------------------- http plumbing
 
 _rollout_cache = {}
@@ -402,6 +503,8 @@ class Handler(BaseHTTPRequestHandler):
                        "text/html; charset=utf-8")
         elif u.path == "/api/experiments":
             self._json(list_experiments())
+        elif u.path == "/api/arena":
+            self._json(arena_status())
         elif u.path == "/api/metrics":
             exp = os.path.basename(q.get("exp", ""))
             self._json(read_metrics(exp))

@@ -1,0 +1,7 @@
+{
+  "n_states": 500,
+  "dnn_agreement": 0.628,
+  "llm_agreement": 0.498,
+  "llm_illegal_rate": 0.01,
+  "llm_no_action_rate": 0.0
+}

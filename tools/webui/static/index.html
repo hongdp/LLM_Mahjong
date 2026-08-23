@@ -122,6 +122,7 @@
   .schip .sname { font-weight:650; }
   .schip .sriichi { color:#ffada8; font-weight:700; letter-spacing:1px; }
   .schip.me-chip { outline:1.5px solid rgba(255,255,255,.55); }
+  .schip.acting { outline:2px solid #ffd76a; box-shadow:0 0 10px rgba(255,215,106,.45); }
   .sriver { display:flex; flex-wrap:nowrap; gap:2.5px; align-items:center;
             min-height:27px; }
   .smelds { display:flex; gap:4px; flex:none; }
@@ -197,14 +198,24 @@
   details summary { cursor:pointer; font-size:12px; color:var(--muted); }
   .legalrow { margin-top:10px; }
   .empty { color:var(--muted); padding:30px 0; text-align:center; }
+
+  /* ---- tabs ---- */
+  .tabbar { display:flex; gap:6px; margin:16px 0 4px; border-bottom:1px solid var(--grid); }
+  .tabbtn { border:none; background:none; padding:9px 16px; font-size:14px;
+            color:var(--ink2); cursor:pointer; border-bottom:2px solid transparent;
+            border-radius:8px 8px 0 0; }
+  .tabbtn:hover { background:var(--surface); border-color:var(--grid); }
+  .tabbtn.active { color:var(--ink); font-weight:650; border-bottom:2px solid var(--series); }
+  .tabpane { display:none; } .tabpane.active { display:block; }
+  body.tab-arena .exp-scope { display:none; }
 </style>
 </head>
 <body>
 <header>
   <h1>🀄 LLM Mahjong 训练检视台</h1>
-  <select id="expSel" title="experiment"></select>
-  <button id="syncBtn" title="rsync 该实验的日志/曲线（从 GCP VM）">⟳ 从 VM 同步</button>
-  <label class="hint"><input type="checkbox" id="autoRef"> 每
+  <select id="expSel" class="exp-scope" title="作用于 训练监控/牌局复盘 两个页签"></select>
+  <button id="syncBtn" class="exp-scope" title="rsync 所选实验的日志/曲线（从 GCP VM）">⟳ 从 VM 同步</button>
+  <label class="hint exp-scope"><input type="checkbox" id="autoRef"> 每
     <input type="number" id="refSec" value="60" min="5" max="3600" step="5"
            style="width:56px;font:inherit;color:var(--ink);background:var(--surface);
                   border:1px solid var(--border);border-radius:6px;padding:2px 6px;">
@@ -213,19 +224,42 @@
   <button id="themeBtn" title="theme">◐</button>
 </header>
 
-<div class="kpis" id="kpis"></div>
+<div class="tabbar">
+  <button class="tabbtn" data-tab="arena">🏆 竞技场</button>
+  <button class="tabbtn" data-tab="monitor">📈 训练监控</button>
+  <button class="tabbtn" data-tab="replay">🀄 牌局复盘</button>
+</div>
 
-<h2>训练曲线</h2>
-<div class="charts" id="charts"></div>
 
+<div class="tabpane" id="tab-arena">
+  <h2>三场对战 <span class="hint" id="arenaState"></span></h2>
+  <div class="kpis" id="arenaCards"></div>
+  <div class="controls" style="margin-top:12px">
+    <button id="arenaSyncBtn">⟳ 同步战报牌谱</button>
+    <span class="hint">牌谱同步后，去「牌局复盘」页签选 arena_base / arena_ppo / arena_value 逐局回看（A 方座位见每局标头）</span>
+  </div>
+</div>
+
+<div class="tabpane" id="tab-monitor">
+  <div class="kpis" id="kpis"></div>
+  <h2>训练曲线</h2>
+  <div class="charts" id="charts"></div>
+</div>
+
+<div class="tabpane" id="tab-replay">
 <h2>牌局检视</h2>
 <div class="controls">
   <label>epoch <select id="epochSel"></select></label>
   <label>对局 <select id="gameSel"></select></label>
   <label>视角 <select id="playerSel"></select></label>
+  <button id="playBtn" title="按真实行动顺序自动播放整局（桌盘固定为所选视角）">▶ 播放</button>
+  <label class="hint"><input type="number" id="playSec" value="1" min="0.2" max="60" step="0.2"
+    style="width:56px;font:inherit;color:var(--ink);background:var(--surface);
+           border:1px solid var(--border);border-radius:6px;padding:2px 6px;"> 秒/步</label>
   <span class="hint" id="trajSummary"></span>
 </div>
 <div id="inspector"></div>
+</div><!-- /tab-replay -->
 
 <script>
 "use strict";
@@ -280,12 +314,28 @@ function tileRow(codes, opts={}){
   });
   return row;
 }
-function meldBoxes(melds, size){
+function meldBoxes(melds, size, sources){
+  /* sources[i] (optional): {rot, tile} — display the claimed tile sideways at
+     position rot, mahjong-style: left = from 上家, middle = 对面, right = 下家 */
   const frag = document.createDocumentFragment();
-  (melds||[]).forEach(m=>{
+  (melds||[]).forEach((m,mi)=>{
     const box = el("span","meldbox");
-    box.title = m.type;
-    m.tiles.forEach(t=>box.append(tileEl(t, size||"mini")));
+    const src = sources?.[mi];
+    let tiles = m.tiles;
+    if (src){
+      const k = tiles.indexOf(src.tile);
+      if (k >= 0){
+        tiles = [...tiles];
+        tiles.splice(k, 1);
+        tiles.splice(Math.min(src.rot, tiles.length), 0, src.tile);
+      }
+    }
+    box.title = m.type + (src ? `（来自${["","下家","对面","上家"][src.rel]||"?"}）` : "");
+    tiles.forEach((t,ti)=>{
+      const e = tileEl(t, size||"mini");
+      if (src && ti === src.rot) e.classList.add("sideways");
+      box.append(e);
+    });
     frag.append(box);
   });
   return frag;
@@ -510,6 +560,7 @@ async function loadRollouts(){
 }
 $("#gameSel").onchange = e=>{ CUR.game=+e.target.value; fillPlayers(); };
 function fillPlayers(){
+  resetPlay();
   const ps=$("#playerSel"); ps.innerHTML="";
   const g=CUR.games[CUR.game]||[];
   g.forEach((ep,i)=>{
@@ -605,6 +656,29 @@ function shortExplain(st){
   }
   return a.type||"";
 }
+function riverGrid(river){
+  const rv=el("div","sriver");
+  (river||[]).forEach(t=>{
+    const e=tileEl(t.t,"tiny");
+    if (t.riichi) e.classList.add("sideways");
+    rv.append(e);
+  });
+  return rv;
+}
+function seatBlock(name, pts, riichi, melds, river, isMe, meldSrc){
+  const b=el("div","seat");
+  const chip=el("div","schip"+(isMe?" me-chip":""));
+  chip.append(el("span","sname",name));
+  chip.append(el("span","",pts+"点"));
+  if (riichi) chip.append(el("span","sriichi","立直"));
+  b.append(chip);
+  if (melds?.length){
+    const m=el("div","smelds"); m.append(meldBoxes(melds,"tiny",meldSrc)); b.append(m);
+  }
+  b.append(riverGrid(river));
+  return b;
+}
+
 function renderInspector(){
   const host=$("#inspector"); host.innerHTML="";
   const game=CUR.games[CUR.game];
@@ -663,9 +737,11 @@ function renderInspector(){
 }
 
 function syncStep(){
+  stopPlay();                       // manual navigation interrupts playback
   const steps=CUR._steps||[];
   if (!steps.length) return;
   CUR.step=Math.max(0, Math.min(CUR.step, steps.length-1));
+  PLAY.anchor={pi:CUR.player, si:CUR.step};   // next ▶ plays from here
   CUR._bars?.forEach((b,i)=>b.classList.toggle("cur", i===CUR.step));
   if (CUR._slider) CUR._slider.value=CUR.step;
   if (CUR._lbl) CUR._lbl.textContent=stepLabel(steps, CUR.step);
@@ -689,30 +765,10 @@ function renderStepView(){
   const selfW=W2I[me.seat]??0;
   const mb=el("div","mboard");
 
-  function riverGrid(river){
-    const rv=el("div","sriver");
-    (river||[]).forEach(t=>{
-      const e=tileEl(t.t,"tiny");
-      if (t.riichi) e.classList.add("sideways");
-      rv.append(e);
-    });
-    return rv;
-  }
-  function seatBlock(name, pts, riichi, melds, river, isMe){
-    const b=el("div","seat");
-    const chip=el("div","schip"+(isMe?" me-chip":""));
-    chip.append(el("span","sname",name));
-    chip.append(el("span","",pts+"点"));
-    if (riichi) chip.append(el("span","sriichi","立直"));
-    b.append(chip);
-    if (melds?.length){
-      const m=el("div","smelds"); m.append(meldBoxes(melds,"tiny")); b.append(m);
-    }
-    b.append(riverGrid(river));
-    return b;
-  }
-
   /* one row per seat, ordered 对面 → 上家 → 下家, then center strip, then 自家 */
+  const game=CUR.games[CUR.game]||[];
+  const tl=timelineFor(game);
+  const claims=claimSources(tl);
   const RELNAME={1:"下家",2:"对面",3:"上家"};
   const opps=(st.opponents||[]).map(op=>({
     ...op, rel:((W2I[op.seat]??0)-selfW+4)%4}));
@@ -720,7 +776,8 @@ function renderStepView(){
     const op=opps.find(o=>o.rel===rel);
     if (!op) return;
     mb.append(seatBlock(`${RELNAME[rel]}·${op.seat}`,op.points,
-      op.riichi||(op.river||[]).some(t=>t.riichi), op.melds, op.river, false));
+      op.riichi||(op.river||[]).some(t=>t.riichi), op.melds, op.river, false,
+      meldSources(op.melds, claims[op.idx])));
   });
 
   /* center info strip */
@@ -740,14 +797,18 @@ function renderStepView(){
   if (st.terminal) c.append(el("div","crow","终局步"));
   mb.append(c);
 
-  /* self row: reconstructed river (prompt only lists opponents' rivers,
-     so rebuild ours from earlier discard/riichi actions), hand below. */
-  const ownRiver=steps.slice(0,CUR.step)
-    .map(s=>s.action)
-    .filter(a=>a&&(a.type==="discard"||a.type==="riichi")&&a.tile)
-    .map(a=>({t:a.tile,riichi:a.type==="riichi"}));
+  /* self row: the prompt only lists opponents' rivers, so derive ours via
+     the game timeline (engine snapshots — keeps claimed tiles out). */
+  const ti=tl.findIndex(x=>x.pi===CUR.player && x.si===CUR.step);
+  const ownRiver = ti>=0
+    ? actorRiver(tl, ti, tl[ti], game)
+    : steps.slice(0,CUR.step)
+        .map(s=>s.action)
+        .filter(a=>a&&(a.type==="discard"||a.type==="riichi")&&a.tile)
+        .map(a=>({t:a.tile,riichi:a.type==="riichi"}));
   const selfBlock=seatBlock(`自家·${me.seat||"?"}`,me.points??"?",
-    !!me.riichi, me.melds, ownRiver, true);
+    !!me.riichi, me.melds, ownRiver, true,
+    meldSources(me.melds, claims[CUR.player]));
   mb.append(selfBlock);
   const hand=el("div","shand");
   const hl=(st.action?.type==="discard"||st.action?.type==="riichi")?st.action.tile:null;
@@ -813,6 +874,310 @@ function renderStepView(){
   host.append(board);
 }
 
+/* ------------------------------------------------ game playback */
+/* Replays a whole game in true turn order on a fixed-perspective table.
+   live data carries an exact per-game sequence (`seq`, file order); epoch
+   logs don't, so fall back to wall-count ordering (draws consume the wall
+   monotonically; interrupt offers sort after the draw they react to). */
+const PLAY={timer:null, idx:0, tl:[], game:null, anchor:null};
+
+function totalMelds(st){
+  return (st.self?.melds?.length||0) +
+    (st.opponents||[]).reduce((s,op)=>s+(op.melds?.length||0),0);
+}
+function buildTimeline(game){
+  const entries=[];
+  (game||[]).forEach((ep,pi)=>ep.steps.forEach((st,si)=>entries.push({pi,si,st})));
+  if (entries.length && entries.every(x=>x.st.seq!==undefined))
+    entries.sort((a,b)=>a.st.seq-b.st.seq);
+  else entries.sort((a,b)=>{
+    /* no explicit order in epoch logs — reconstruct from monotone state:
+       wall shrinks with every draw; calls (pon/chi) don't draw, so ties on
+       wall are ordered by table-wide meld count (only ever grows), which
+       puts the fed discard + offer prompts before the caller's post-meld
+       discard; then draw-steps before the offers they trigger */
+    const wa=a.st.global?.wall??-1, wb=b.st.global?.wall??-1;
+    if (wa!==wb) return wb-wa;
+    const ma=totalMelds(a.st), mb=totalMelds(b.st);
+    if (ma!==mb) return ma-mb;
+    const ta=isTurnStep(a.st), tb=isTurnStep(b.st);
+    if (ta!==tb) return ta?-1:1;
+    return a.pi-b.pi;
+  });
+  return entries;
+}
+
+function handAfter(st){
+  const h=[...(st.self?.hand||[])];
+  const a=st.action||{};
+  if ((a.type==="discard"||a.type==="riichi") && a.tile){
+    const k=h.indexOf(a.tile); if (k>=0) h.splice(k,1);
+  }
+  return h;
+}
+
+/* timeline for the current game, cached (playback reuses its own copy) */
+function timelineFor(game){
+  if (PLAY.game===game && PLAY.tl.length) return PLAY.tl;
+  if (CUR._tlGame!==game){ CUR._tlGame=game; CUR._tl=buildTimeline(game); }
+  return CUR._tl;
+}
+
+/* who fed each call: scan the timeline pairing every successful pon/chi/kan
+   with the discard it claimed; rel = (discarder-caller)%4: 1下家 2对面 3上家 */
+function claimSources(tl){
+  const out={0:[],1:[],2:[],3:[]};
+  let last=null;                       // most recent unclaimed discard
+  (tl||[]).forEach(e=>{
+    const a=e.st.action||{};
+    if ((a.type==="discard"||a.type==="riichi") && a.tile)
+      last={pi:e.pi, tile:a.tile};
+    else if (["pon","chi","kan"].includes(a.type) && a.tile && last &&
+             last.tile===a.tile && last.pi!==e.pi){
+      out[e.pi].push({type:a.type, tile:a.tile,
+                      rel:((last.pi-e.pi)+4)%4});
+      last=null;
+    }
+  });
+  return out;
+}
+
+/* align a player's meld list (prompt order == claim order) with its claim
+   records; returns per-meld {rot, tile, rel} or null (e.g. closed kan) */
+function meldSources(melds, claims){
+  let ci=0;
+  return (melds||[]).map(m=>{
+    const rec=(claims||[])[ci];
+    if (rec && rec.type===m.type && m.tiles.includes(rec.tile)){
+      ci++;
+      const n=m.tiles.length;
+      return {tile:rec.tile, rel:rec.rel,
+              rot:rec.rel===3?0:rec.rel===2?Math.min(1,n-1):n-1};
+    }
+    return null;
+  });
+}
+
+/* The actor's own river isn't in its prompt. Rebuilding it from past discard
+   actions alone would resurrect tiles that were claimed away (the engine
+   removes a pon/chi'd tile from the discarder's river) — so prefer the most
+   recent OTHER player's prompt, which carries the engine's authoritative view
+   of the actor's river, then append the actor's discards made since that
+   snapshot (dropping one again if a later claim took it). */
+function actorRiver(tl, i, e, game){
+  for (let k=i-1;k>=0;k--){
+    const o=tl[k];
+    if (o.pi===e.pi) continue;
+    const op=(o.st.opponents||[]).find(x=>x.idx===e.pi);
+    if (!op) continue;
+    const base=(op.river||[]).map(t=>({...t}));
+    for (let j=k+1;j<i;j++){
+      const t=tl[j], a=t.st.action||{};
+      if (t.pi===e.pi && (a.type==="discard"||a.type==="riichi") && a.tile)
+        base.push({t:a.tile, riichi:a.type==="riichi", mine:true});
+      else if (t.pi!==e.pi && ["pon","chi","kan"].includes(a.type) &&
+               base.length && base[base.length-1].mine &&
+               base[base.length-1].t===a.tile)
+        base.pop();
+    }
+    return base;
+  }
+  return (game[e.pi]?.steps||[]).slice(0,e.si)
+    .map(s=>s.action)
+    .filter(a=>a&&(a.type==="discard"||a.type==="riichi")&&a.tile)
+    .map(a=>({t:a.tile,riichi:a.type==="riichi"}));
+}
+
+function renderPlayback(i){
+  const host=document.getElementById("stepHost");
+  const game=CUR.games[CUR.game]||[];
+  const e=PLAY.tl[i];
+  if (!host||!e) return;
+  host.innerHTML="";
+  const st=e.st, g=st.global||{};
+
+  /* player idx -> seat data at this moment (actor's prompt covers the
+     other three; the actor's own river comes from the latest snapshot) */
+  const info={};
+  info[e.pi]={seat:st.self?.seat, points:st.self?.points, riichi:!!st.self?.riichi,
+    melds:st.self?.melds||[],
+    river:actorRiver(PLAY.tl, i, e, game)};
+  (st.opponents||[]).forEach(op=>{
+    info[op.idx]={seat:op.seat, points:op.points,
+      riichi:op.riichi||(op.river||[]).some(t=>t.riichi),
+      melds:op.melds||[], river:op.river||[]};
+  });
+
+  const V=CUR.player;
+  const board=el("div","board");
+  const tbl=el("div","card");
+  const mb=el("div","mboard");
+
+  /* center info strip on top */
+  const c=el("div","mcenter");
+  c.append(el("div","kyoku",`${g.kyoku||"?"}`));
+  const dr=el("div","crow"); dr.append(el("span","","宝牌指示"));
+  dr.append(tileEl(g.dora_ind||"","tiny")); c.append(dr);
+  c.append(el("div","crow",`余牌 ${g.wall??"?"}`));
+  c.append(el("div","crow",`供托 ${g.kyotaku??"?"}`));
+  c.append(el("div","crow",`▶ ${i+1}/${PLAY.tl.length}`));
+  mb.append(c);
+
+  /* viewer's hand: exact on their own steps, last-known otherwise */
+  const hand=el("div","shand");
+  let vhand=[], hl=null;
+  if (e.pi===V){
+    vhand=st.self?.hand||[];
+    const a=st.action||{};
+    hl=(a.type==="discard"||a.type==="riichi")?a.tile:null;
+  } else {
+    for (let k=i;k>=0;k--) if (PLAY.tl[k].pi===V){ vhand=handAfter(PLAY.tl[k].st); break; }
+  }
+  let hlDone=false;
+  vhand.forEach(t=>{
+    const te=tileEl(t,"big");
+    if (hl && !hlDone && t===hl){ te.classList.add("chosen"); hlDone=true; }
+    hand.append(te);
+  });
+
+  /* seat rows top→bottom in turn order 东→南→西→北 (dealer first), so the
+     acting highlight sweeps straight down each 巡; viewer's hand sits
+     directly under their own row */
+  const claims=claimSources(PLAY.tl.slice(0, i+1));
+  ["东","南","西","北"].forEach(w=>{
+    const p=Object.keys(info).map(Number).find(q=>info[q]?.seat===w);
+    if (p===undefined) return;
+    const d=info[p];
+    const isV=p===V;
+    const blk=seatBlock(`${w}家·P${p}${isV?"·自家":""}`,d.points,d.riichi,
+      d.melds,d.river,isV,meldSources(d.melds, claims[p]));
+    if (p===e.pi) blk.querySelector(".schip").classList.add("acting");
+    mb.append(blk);
+    if (isV) mb.append(hand);
+  });
+  tbl.append(mb); board.append(tbl);
+
+  /* right: acting player's output */
+  const out=el("div","card");
+  const title=el("div","title",`模型输出 — P${e.pi}（${st.self?.seat||"?"}）`);
+  const kindBadge=el("span","badge"+(isTurnStep(st)?" me":""),
+    isTurnStep(st) ? "🀄 摸切决策" : "✋ 副露/荣和询问");
+  kindBadge.style.marginLeft="8px";
+  title.append(kindBadge);
+  out.append(title);
+  const act=el("div","actline");
+  const a=st.action||{};
+  const chip=el("span","actchip"+(a.bad_format?" bad":""));
+  const verb={discard:"打",riichi:"立直打",pon:"碰",chi:"吃",kan:"杠",ron:"荣和",
+              tsumo:"自摸",skip:"过"}[a.type]||a.type||"（无动作标签）";
+  chip.append(el("span","",verb));
+  if (a.tile) chip.append(tileEl(a.tile,"mini"));
+  act.append(chip);
+  act.append(el("span","hint",`合法动作 ${st.legal?.length||0} 个`));
+  out.append(act);
+  if (st.think){ const t=el("div","think"); t.textContent=st.think; out.append(t); }
+  else out.append(el("div","hint","（无 think 内容）"));
+  board.append(out);
+  host.append(board);
+
+  /* keep the per-player reward strip/slider in sync when the viewer acts */
+  if (e.pi===V){
+    CUR.step=e.si;
+    CUR._bars?.forEach((b,k)=>b.classList.toggle("cur", k===CUR.step));
+    if (CUR._slider) CUR._slider.value=CUR.step;
+  }
+  if (CUR._lbl) CUR._lbl.textContent=`播放 ${i+1}/${PLAY.tl.length} · P${e.pi} ${verb}`;
+}
+
+function playSeconds(){
+  const v=+$("#playSec").value;
+  return (v>=0.2 && v<=60) ? v : 1;
+}
+function playTick(){
+  if (PLAY.idx>=PLAY.tl.length-1){ stopPlay(); return; }
+  renderPlayback(++PLAY.idx);
+}
+function stopPlay(){
+  if (PLAY.timer){ clearInterval(PLAY.timer); PLAY.timer=null; }
+  const b=$("#playBtn"); if (b) b.textContent="▶ 播放";
+}
+function resetPlay(){        // game/viewpoint changed: forget any resume state
+  stopPlay();
+  PLAY.game=null; PLAY.tl=[]; PLAY.idx=0; PLAY.anchor=null;
+}
+function startPlay(){
+  const game=CUR.games[CUR.game];
+  if (!game) return;
+  if (PLAY.game!==game){     // fresh game: always start from the beginning
+    PLAY.game=game; PLAY.tl=buildTimeline(game); PLAY.idx=0;
+  }
+  if (!PLAY.tl.length){ PLAY.game=null; return; }
+  if (PLAY.anchor){          // user scrubbed to a step: play from there
+    const k=PLAY.tl.findIndex(x=>x.pi===PLAY.anchor.pi && x.si===PLAY.anchor.si);
+    if (k>=0) PLAY.idx=k;
+    PLAY.anchor=null;
+  }
+  if (PLAY.idx>=PLAY.tl.length-1) PLAY.idx=0;   // finished: replay from start
+  $("#playBtn").textContent="⏸ 暂停";
+  renderPlayback(PLAY.idx);
+  PLAY.timer=setInterval(playTick, playSeconds()*1000);
+}
+$("#playBtn").onclick=()=>{ PLAY.timer ? stopPlay() : startPlay(); };
+$("#playSec").onchange=()=>{
+  if (PLAY.timer){ clearInterval(PLAY.timer);
+    PLAY.timer=setInterval(playTick, playSeconds()*1000); }
+};
+
+
+async function loadArena(){
+  let rows; try { rows = await jget("/api/arena"); } catch(e){ return; }
+  const host = $("#arenaCards"); host.innerHTML = "";
+  let running = 0;
+  rows.forEach(r=>{
+    const c = el("div","tilecard");
+    c.append(el("div","lbl", r.tag));
+    const v = el("div","val");
+    if (r.mean_diff != null){
+      const s = r.mean_diff > 0 ? "+" : "";
+      v.textContent = `${s}${Math.round(r.mean_diff)}`;
+      v.style.color = r.mean_diff > 0 ? "var(--series)" : (r.mean_diff < 0 ? "var(--neg)" : "");
+    } else v.textContent = "—";
+    c.append(v);
+    const d = el("div","delta");
+    if (r.state === "done"){
+      d.textContent = `✅ ${r.verdict} · ${r.deals}副 · 胜 A${r.wins_a}/B${r.wins_b} · ±${Math.round(r.ci95||0)}`;
+    } else {
+      d.textContent = `${r.state==="running"?"🏃":"⏳"} ${r.games||0}/64 局 · ${r.deals}/32 配对 · 胜 A${r.wins_a}/B${r.wins_b}`;
+      running++;
+    }
+    c.append(d);
+    host.append(c);
+  });
+  $("#arenaState").textContent = running ? `（配对点差 = RL方总点数−50000，双向合计；${running} 场进行中）`
+                                         : "（全部完赛）";
+}
+
+
+/* ------------------------------------------------ tabs */
+function setTab(name){
+  document.querySelectorAll(".tabbtn").forEach(b=>b.classList.toggle("active", b.dataset.tab===name));
+  document.querySelectorAll(".tabpane").forEach(p=>p.classList.toggle("active", p.id==="tab-"+name));
+  document.body.className = "tab-" + name;
+  localStorage.setItem("mj_tab", name);
+}
+document.querySelectorAll(".tabbtn").forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+setTab(localStorage.getItem("mj_tab") || "arena");
+
+$("#arenaSyncBtn").onclick = async ()=>{
+  const b=$("#arenaSyncBtn"); b.disabled=true; b.textContent="同步中…";
+  try {
+    for (const e of ["arena_base","arena_ppo","arena_value"]){
+      await fetch("/api/sync?exp="+e, {method:"POST"});
+    }
+    await loadExperiments();
+  } finally { b.disabled=false; b.textContent="⟳ 同步战报牌谱"; }
+};
+
 /* ------------------------------------------------ sync + refresh */
 $("#syncBtn").onclick = async ()=>{
   const b=$("#syncBtn"); b.disabled=true; b.textContent="同步中…";
@@ -858,7 +1223,7 @@ async function refreshAll(keepSelection){
     $("#epochSel").value=prevEpoch; await loadRollouts();
   }
 }
-(async ()=>{ await loadExperiments(); await loadMetrics(); await loadEpochs(); })();
+(async ()=>{ await loadExperiments(); await loadMetrics(); await loadEpochs(); await loadArena(); setInterval(loadArena, 30000); })();
 </script>
 </body>
 </html>

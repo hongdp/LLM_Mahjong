@@ -32,7 +32,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
-from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content
+from src.tasks.mahjong.prompts import SYSTEM_PROMPT, build_user_content, get_system_prompt
 from src.tasks.mahjong.shanten import (TileEfficiency, pad_for_melds,
                                        dora_from_indicator)
 
@@ -42,6 +42,9 @@ RIICHI_PROB = 0.8
 MELD_PROB = 0.25     # gate applies only to shanten-REDUCING melds
 SKIP_SAMPLE_PROB = 0.3
 KAN_PROB = 0.3
+# Match the training default (MahjongTask.randomize_round) so the teacher
+# covers every 场风/自风 combination the policy will meet at rollout time.
+RANDOMIZE_ROUND = True
 
 
 def _shanten(tiles: list, n_melds: int) -> int:
@@ -157,7 +160,12 @@ def meld_shanten_delta(table, pid: int, action_xml: str):
 MELD_NAME = {"pon": "碰", "kan": "杠", "chi": "吃"}
 
 
+NO_THINK = False   # set from --no_think in main()
+
+
 def make_response(think: str, action_xml: str) -> str:
+    if NO_THINK:
+        return action_xml
     return f"<think>\n{think}\n</think>\n{action_xml}"
 
 
@@ -165,13 +173,14 @@ def make_sample(game_id: int, player_id: int, obs: str,
                 legal_actions: list, action_xml: str, think: str) -> dict:
     user_content = build_user_content(obs, legal_actions)
     response = make_response(think, action_xml)
+    sys_prompt = get_system_prompt(NO_THINK)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": sys_prompt},
         {"role": "user", "content": user_content},
         {"role": "assistant", "content": response},
     ]
     flat_text = (
-        f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+        f"<|im_start|>system\n{sys_prompt}<|im_end|>\n"
         f"<|im_start|>user\n{user_content}<|im_end|>\n"
         f"<|im_start|>assistant\n{response}<|im_end|>"
     )
@@ -219,7 +228,12 @@ def pick_turn_action(table, pid: int, hand: list, legal_actions: list):
 def pick_interrupt_action(table, i_id: int, options: list):
     """Teacher decision for the interrupt phase.
     Returns (action_xml, think, is_claim) or None to emit no sample."""
-    claim_tile = table.last_discard.replace('*', '') if table.last_discard else ""
+    # During a chankan window the contested tile is the added kan's tile,
+    # not the stale last discard (RCR 4.2.1.12).
+    if table.pending_kan:
+        claim_tile = table.pending_kan["tile"]
+    else:
+        claim_tile = table.last_discard.replace('*', '') if table.last_discard else ""
     ron = next((a for a in options if 'ron' in a), None)
     if ron is not None:
         return ron, win_think(table, i_id, claim_tile, is_tsumo=False), True
@@ -253,7 +267,8 @@ def pick_interrupt_action(table, i_id: int, options: list):
 
 
 def simulate_game(game_id: int) -> list:
-    table = PyMahjongTable(value_facts=VALUE_AWARE)
+    table = PyMahjongTable(value_facts=VALUE_AWARE,
+                           randomize_round=RANDOMIZE_ROUND)
     samples = []
 
     for _ in range(400):  # safety cap; games end naturally well before
@@ -270,10 +285,11 @@ def simulate_game(game_id: int) -> list:
         _, _, done, info = table.step(player_id, action_xml)
         if done:
             break
-        if not info.get("discarded", False):
-            continue  # kan: same player keeps the turn
+        if not (info.get("discarded", False) or info.get("chankan")):
+            continue  # ankan: same player keeps the turn
 
-        # --- INTERRUPT PHASE (priority: ron > kan/pon > chi) ---
+        # --- INTERRUPT PHASE (ron first, then pon/kan over chi) ---
+        # An added kan opens a ron-only window here (chankan, RCR 4.2.1.12).
         claims = []
         for offset in range(1, 4):
             i_id = (player_id + offset) % 4
@@ -305,9 +321,14 @@ def simulate_game(game_id: int) -> list:
                 return samples
 
         if not interrupted:
-            _, done = table.advance_turn()
-            if done:
-                break
+            if table.pending_kan:
+                # Nobody robbed the kan: it completes and the same player
+                # carries on to their post-rinshan discard.
+                table.resolve_pending_kan()
+            else:
+                _, done = table.advance_turn()
+                if done:
+                    break
 
     return samples
 
@@ -320,10 +341,14 @@ def main():
     parser.add_argument("--value_facts", action="store_true",
                         help="Value-aware template + teacher: 自家宝牌 line "
                              "in prompts, dora-keeping tie-break in CoT.")
+    parser.add_argument("--no_think", action="store_true",
+                        help="exp3 ablation corpus: responses are the bare "
+                             "action tag; system prompt forbids thinking.")
     args = parser.parse_args()
 
-    global VALUE_AWARE
+    global VALUE_AWARE, NO_THINK
     VALUE_AWARE = args.value_facts
+    NO_THINK = args.no_think
     random.seed(args.seed)
     out_dir = os.path.dirname(args.out)
     if out_dir:

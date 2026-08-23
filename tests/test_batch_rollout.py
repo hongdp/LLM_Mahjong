@@ -12,7 +12,7 @@ class TestBatchRollout(unittest.TestCase):
 
     def test_invariants_random_policy(self):
         random.seed(7)
-        episodes = run_rollout_batched(3, model=None, tokenizer=None,
+        episodes, _groups = run_rollout_batched(3, model=None, tokenizer=None,
                                        exp_dir="/tmp/claude-1000/batch_ro_test",
                                        parallel=3)
         # 4 trajectories per game
@@ -33,12 +33,12 @@ class TestBatchRollout(unittest.TestCase):
 
     def test_value_facts_flag_reaches_prompts(self):
         random.seed(11)
-        episodes = run_rollout_batched(1, model=None, tokenizer=None,
+        episodes, _groups = run_rollout_batched(1, model=None, tokenizer=None,
                                        exp_dir="/tmp/claude-1000/batch_ro_test2",
                                        parallel=1, value_facts=True)
         self.assertTrue(any("自家宝牌" in s.prompt_text
                             for ep in episodes for s in ep))
-        episodes = run_rollout_batched(1, model=None, tokenizer=None,
+        episodes, _groups = run_rollout_batched(1, model=None, tokenizer=None,
                                        exp_dir="/tmp/claude-1000/batch_ro_test3",
                                        parallel=1, value_facts=False)
         self.assertFalse(any("自家宝牌" in s.prompt_text
@@ -52,7 +52,7 @@ class TestBatchRollout(unittest.TestCase):
         seq = run_rollout(1, model=None, tokenizer=None,
                           exp_dir="/tmp/claude-1000/batch_ro_test4")
         random.seed(3)
-        bat = run_rollout_batched(1, model=None, tokenizer=None,
+        bat, _groups = run_rollout_batched(1, model=None, tokenizer=None,
                                   exp_dir="/tmp/claude-1000/batch_ro_test5",
                                   parallel=1)
         self.assertEqual(len(seq), 4)
