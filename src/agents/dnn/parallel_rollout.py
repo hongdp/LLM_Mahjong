@@ -153,8 +153,7 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
     server = None
     if cfg.get("gpu_infer"):
         from src.agents.dnn.infer_server import InferenceServer
-        from src.agents.dnn.encoder import (N_PLANES, N_PLANES_V3, N_SCALARS,
-                                            N_SCALARS_V3)
+        from src.agents.dnn.encoder import variant_shape, variant_of_arch
         variant = getattr(net, "encoder_variant", "v1")
         cfg = dict(cfg, encoder_variant=variant)
         if cfg.get("league") and cfg.get("gpu_infer_opponents"):
@@ -163,10 +162,9 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
             for entry in cfg["league"]:
                 blob = torch.load(entry["path"], map_location="cpu")
                 arch = blob.get("arch") or ""
-                tagged.append(dict(entry, encoder_variant="v3" if arch.endswith("_v3") else "v1"))
+                tagged.append(dict(entry, encoder_variant=variant_of_arch(arch)))
             cfg["league"] = tagged
-        n_pl, n_sc = ((N_PLANES_V3, N_SCALARS_V3) if variant == "v3"
-                      else (N_PLANES, N_SCALARS))
+        n_pl, n_sc = variant_shape(variant)
         server = InferenceServer(state_np, cfg, n_slots=workers, n_planes=n_pl,
                                  n_scalars=n_sc, device=cfg.get("infer_device", "cuda"),
                                  max_batch=cfg.get("infer_max_batch", 256),

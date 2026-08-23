@@ -219,11 +219,23 @@ def main():
     start_games, start_iter, log = 0, 0, []
     if args.resume:
         blob = torch.load(args.resume, map_location=dev)
-        net.load_state_dict(blob["state_dict"])
-        if "optimizer" in blob:
+        widened = any(k in blob["state_dict"] and v.dim() > 0
+                      and tuple(blob["state_dict"][k].shape) != tuple(v.shape)
+                      for k, v in net.state_dict().items())
+        if widened:
+            # pre-red (272-action) checkpoint: policy head widened to the
+            # 374-action space (net.load_compatible); Adam moments no longer
+            # match the parameter shapes, so they restart.
+            from src.agents.dnn.net import load_compatible
+            load_compatible(net, blob["state_dict"])
+            print("   legacy action head widened 272->374 (optimizer moments restart)",
+                  flush=True)
+        else:
+            net.load_state_dict(blob["state_dict"])
+        if "optimizer" in blob and not widened:
             opt.load_state_dict(blob["optimizer"])
             print("   optimizer moments restored", flush=True)
-        else:
+        elif not widened:
             print("   (checkpoint has no optimizer state; Adam moments restart)",
                   flush=True)
         start_games = int(blob.get("games", 0))

@@ -10,7 +10,8 @@ consumer GPU, which is the whole point of the comparison.
 import torch
 import torch.nn as nn
 
-from src.agents.dnn.encoder import ACTION_DIM, N_PLANES, N_SCALARS, TILE_TYPES  # noqa: F401
+from src.agents.dnn.encoder import (ACTION_DIM, LEGACY_ACTION_DIM, LEGACY_ACTION_TYPES,  # noqa: F401
+                                    ACTION_TYPES, N_PLANES, N_SCALARS, TILE_TYPES)
 
 
 class ResBlock(nn.Module):
@@ -145,6 +146,8 @@ def load_compatible(net: nn.Module, state: dict) -> list:
     namespaced under "value"/"hazard_head" (all of ours are).
     """
     model_sd = net.state_dict()
+    state = {k: _widen_legacy_head(k, v, model_sd[k]) if k in model_sd else v
+             for k, v in state.items()}
     ok = {k: v for k, v in state.items()
           if k in model_sd and tuple(model_sd[k].shape) == tuple(v.shape)}
     net.load_state_dict(ok, strict=False)
@@ -153,3 +156,46 @@ def load_compatible(net: nn.Module, state: dict) -> list:
     if bad:
         raise RuntimeError(f"policy keys failed to load: {bad[:5]}")
     return [k for k in model_sd if k not in ok]
+
+
+# Pre-red checkpoints (2026-08-23 Majsoul rules) have 8 action types / 272
+# logits; the live space has 11 / 374. Their policy heads are widened so
+# the old indices keep their weights and the new types get a sane prior:
+#   discard0 / riichi0 (play the RED five) copy the plain discard / riichi
+#   rows minus 1.0 logit (keep the red when a plain copy exists, still
+#   discardable when it is the only copy); kyuushu gets -20 (never).
+_NEW_TYPE_SRC = {"discard0": ("discard", -1.0), "riichi0": ("riichi", -1.0),
+                 "kyuushu": (None, -20.0)}
+
+
+def _widen_legacy_head(key: str, old: torch.Tensor, new_ref: torch.Tensor) -> torch.Tensor:
+    n_old, n_new = len(LEGACY_ACTION_TYPES), len(ACTION_TYPES)
+    if tuple(old.shape) == tuple(new_ref.shape) or old.dim() == 0:
+        return old
+    is_bias = old.dim() == 1
+    # per-tile heads: [n_types, d] / [n_types]; flat heads: [types*34, d] / [types*34]
+    if old.shape[0] == n_old and new_ref.shape[0] == n_new:
+        per_tile = True
+    elif old.shape[0] == LEGACY_ACTION_DIM and new_ref.shape[0] == ACTION_DIM:
+        per_tile = False
+    else:
+        return old
+    if not is_bias and tuple(old.shape[1:]) != tuple(new_ref.shape[1:]):
+        return old
+    out = torch.zeros(new_ref.shape, dtype=old.dtype)
+    out[:old.shape[0]] = old
+    for ti, name in enumerate(ACTION_TYPES[n_old:], start=n_old):
+        src, delta = _NEW_TYPE_SRC[name]
+        if per_tile:
+            rows, src_rows = slice(ti, ti + 1), (None if src is None else slice(
+                LEGACY_ACTION_TYPES.index(src), LEGACY_ACTION_TYPES.index(src) + 1))
+        else:
+            rows = slice(ti * TILE_TYPES, (ti + 1) * TILE_TYPES)
+            src_rows = None if src is None else slice(
+                LEGACY_ACTION_TYPES.index(src) * TILE_TYPES,
+                (LEGACY_ACTION_TYPES.index(src) + 1) * TILE_TYPES)
+        if src_rows is not None:
+            out[rows] = old[src_rows]
+        if is_bias:
+            out[rows] += delta
+    return out
