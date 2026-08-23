@@ -2,8 +2,7 @@
 
 English | [中文](README.md)
 
-**North star (goal a)**: inspired by **AlphaZero** (not the original AlphaGo) — pure self-play with zero
-human/teacher knowledge. Starting from random initialization, the model must discover the full skill stack
+**North star (goal a)**: inspired by **AlphaZero** — pure self-play with zero human/teacher knowledge. Starting from random initialization, the model must discover the full skill stack
 on its own (tile efficiency → riichi/closed-hand play → hand value → defense) and climb toward human expert
 level; the emergence of defense is a milestone, and reaching the goal is the goal itself. Goals (b) — learning
 new mahjong knowledge from the model — and (c) — transferring the methodology — come later. Purity rules:
