@@ -40,6 +40,8 @@ scripts/
 └── phase2_vertex/           # Vertex AI（未启用）
 
 tools/webui/                 # 本地训练检视台（曲线 + 雀魂式复盘 + 实时视图）
+tools/majsoul_bridge/        # 雀魂实战桥接（MahjongCopilot 插件 + 安装器 + 运行手册）
+src/agents/dnn/mjai_bridge.py # MJAI 协议 bot：引擎影子桌复用编码器/合法动作（scripts/serve_mjai_bot.py 提供 HTTP）
 configs/                     # 训练配置 JSON（传给 trainer --config）
 experiments/<name>_<ts>/     # 每次训练的输出（记录入 git，重产物不入）
 ```

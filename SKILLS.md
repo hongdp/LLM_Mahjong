@@ -195,3 +195,13 @@
   走 GPU 服务」以省小模型 ~10% 开销，用户否决——统一用 `--gpu_infer`（学习者）+ `--gpu_infer_opponents`
   （联赛池）让各 run 的吞吐/对局构成可比。实测归因：exp22 比 exp17-C 快 1.55×（29→45 局/s）几乎全部
   来自引擎优化；GPU 服务对 2M 小模型零贡献、对 ≥10M 模型 ~10×。
+- **（2026-08-23 基建）雀魂实战桥接 = MJAI 协议 bot + 引擎影子桌**（`src/agents/dnn/mjai_bridge.py`，手册
+  `tools/majsoul_bridge/README.md`）：仿 MahjongCopilot，它负责抓包/翻译/点击，我们只实现 `react(mjai_event)`。
+  关键决策：影子桌**继承真实引擎类**、由事件驱动而非另写观测翻译——编码器与合法动作生成零改动，训练/实战
+  观测分布天然一致；保真由「引擎自对弈→MJAI 流→影子桌」逐决策张量对比守护（400 局 7004 决策逐位一致）。
+  坑：MJAI 杠后单发岭上 `tsumo`（引擎隐式摸）→ 按 tsumo 事件计活牌；抢杠要在 kakan 写入前判定；MC 不转发
+  局结果（安装器补丁转发 `end_kyoku`/`end_game` 才能计顺位）；引擎无红五 → 折叠观测、出牌优先留红五。
+  评估须走 ml-experiment-tracking（预注册 `experiments/exp24_majsoul_live_prereg`），发射需用户账号与浏览器。
+- **（2026-08-23 exp25）出牌温度是被忽略的强度杠杆**：同一冠军 checkpoint 贪心(T=0) vs T=1 采样，复式牌 1000 副
+  **+484±418（贪心胜 56%）**，与一次代际提升同量级。历史 Elo 池/竞技场全是 T=1 口径，贪心口径绝对值整体上移
+  （相对排序未验证）。实战（雀魂）与对外对比用 T=0；`run_arena_dnn.py --dnn_temperature_a/_b` 支持每边独立温度。
