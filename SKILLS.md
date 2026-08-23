@@ -237,3 +237,7 @@
   可追溯；脚本硬门：SHA 必须已在 origin/master，否则拒绝发射（实验改动先 push 再发）。
 - **（2026-08-23 坑）在云机上 `pkill run_dnn_cloud.sh` 会触发 runner 的 EXIT trap → `shutdown -h` → flex VM 直接 TERMINATED**。
   要重启某个 run：只 kill 训练器进程并先摘掉 trap，或干脆删机重建（更干净）。
+- **（2026-08-23 用户规则）探索更大模型时不得直接下"scale 没用"的结论**：先用多个指标确认训练效率正常——熵平台高度/出现时机
+  （熵奖励是否压过了策略梯度）、decisive_rate/胜率的上升斜率、approx_kl、EV、梯度范数——再仔细调 hparams（熵系数、LR、
+  batch、warmup），只有在调过之后仍不及小模型才算架构结论。exp27-C（6.6M CNN）在冠军配方下熵平台 1.2 且回升、
+  decisive 只有 A 的一半，正是"配方卡住"而非"架构不行"的典型；exp15 vit-scale 的平台结论需重新审视。
