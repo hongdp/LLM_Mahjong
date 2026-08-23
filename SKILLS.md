@@ -172,3 +172,10 @@
   DNN 路径关掉 LLM 文本观测 + numpy 编码器 + tile_to_34 查表。护栏：固定种子贪心轨迹 sha256
   （`scratchpad/snapshot_traj.py` 思路）必须逐字节一致 + 全套测试。引擎份额 77%→~45%，
   下一步 GPU 批推理（scale-up 前置）。档案 experiments/perf_rollout_20260822。
+- **（2026-08-23 基建）雀魂实战桥接 = MJAI 协议 bot + 引擎影子桌**（`src/agents/dnn/mjai_bridge.py`，手册
+  `tools/majsoul_bridge/README.md`）：仿 MahjongCopilot，它负责抓包/翻译/点击，我们只实现 `react(mjai_event)`。
+  关键决策：影子桌**继承真实引擎类**、由事件驱动而非另写观测翻译——编码器与合法动作生成零改动，训练/实战
+  观测分布天然一致；保真由「引擎自对弈→MJAI 流→影子桌」逐决策张量对比守护（400 局 7004 决策逐位一致）。
+  坑：MJAI 杠后单发岭上 `tsumo`（引擎隐式摸）→ 按 tsumo 事件计活牌；抢杠要在 kakan 写入前判定；MC 不转发
+  局结果（安装器补丁转发 `end_kyoku`/`end_game` 才能计顺位）；引擎无红五 → 折叠观测、出牌优先留红五。
+  评估须走 ml-experiment-tracking（预注册 `experiments/exp24_majsoul_live_prereg`），发射需用户账号与浏览器。
