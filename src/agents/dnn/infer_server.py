@@ -60,6 +60,12 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
                  wait_ms, ready):
     torch.set_num_threads(2)
     torch.backends.cudnn.benchmark = bool(int(os.environ.get("INFER_CUDNN_BENCH", "0")))
+    # Precision policy: by default keep PyTorch's GPU defaults (TF32 convs)
+    # so rollout logprobs match the trainer's GPU update path; set
+    # INFER_STRICT_FP32=1 for CPU-vs-GPU equivalence checks.
+    if os.environ.get("INFER_STRICT_FP32"):
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_tf32 = False
     if cfg.get("arch"):
         from src.agents.dnn.arch_zoo import ZOO
         net = ZOO[cfg["arch"]][0]()
