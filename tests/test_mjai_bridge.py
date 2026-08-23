@@ -203,3 +203,67 @@ class ChankanTest(unittest.TestCase):
         self.assertEqual(tb_bot.table.riichi[2], True)
         self.assertEqual(tb_bot.table.kyotaku, 1000)
         self.assertEqual(tb_bot.table.points[2], 24000)
+
+
+class RecordTest(unittest.TestCase):
+    """Both modes keep a structured record: per decision the state, probs,
+    V, the pick, our reaction and what was ACTUALLY executed (assist mode:
+    the human may override)."""
+
+    def _bot(self):
+        bot = MjaiDnnBot(lambda tb, pid, acts: (acts[0], {a: 1.0 / len(acts) for a in acts}, 0.25), seat=1)
+        bot.react({"type": "start_game", "id": 1})
+        bot.react({"type": "start_kyoku", "bakaze": "E", "dora_marker": "1m", "honba": 0, "kyoku": 1,
+                   "kyotaku": 0, "oya": 0, "scores": [25000] * 4,
+                   "tehais": [["?"] * 13, ["1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s", "E", "E", "S", "W"],
+                              ["?"] * 13, ["?"] * 13]})
+        bot.react({"type": "tsumo", "actor": 0, "pai": "?"})
+        bot.react({"type": "dahai", "actor": 0, "pai": "9p", "tsumogiri": True})
+        return bot
+
+    def test_override_and_claim_pass(self):
+        bot = self._bot()
+        r = bot.react({"type": "tsumo", "actor": 1, "pai": "N"})
+        d = bot.last_decision
+        self.assertEqual(r["type"], "dahai")
+        self.assertEqual(d["state"]["hand"][-1], "N")
+        self.assertEqual(d["value"], 0.25)
+        self.assertAlmostEqual(sum(d["probs"].values()), 1.0)
+        self.assertIsNone(d["executed"])
+        # human discards something else
+        bot.react({"type": "dahai", "actor": 1, "pai": "W", "tsumogiri": False})
+        self.assertEqual(d["executed"], {"type": "dahai", "pai": "W", "tsumogiri": False})
+        self.assertEqual(d["executed_action"], '<action type="discard" tile="3z" />')
+        self.assertTrue(d["override"])
+        # opponent discards E: pon offered, policy picks acts[0] = skip; window closes on next tsumo
+        bot.react({"type": "tsumo", "actor": 2, "pai": "?"})
+        r = bot.react({"type": "dahai", "actor": 2, "pai": "E", "tsumogiri": True})
+        d2 = bot.last_decision
+        self.assertEqual(d2["phase"], "claim")
+        self.assertEqual(r["type"], "none")
+        bot.react({"type": "tsumo", "actor": 3, "pai": "?"})
+        self.assertEqual(d2["executed"], {"type": "none"})
+        self.assertFalse(d2["override"])
+        # the record tree
+        ky = bot.game_record["kyokus"][0]
+        self.assertEqual(len(ky["decisions"]), 2)
+        self.assertEqual(ky["start"]["kyoku"], 1)
+
+    def test_riichi_and_game_end(self):
+        bot = self._bot()
+        bot.react({"type": "tsumo", "actor": 1, "pai": "N"})
+        d = bot.last_decision
+        # human declares riichi with N instead
+        bot.react({"type": "reach", "actor": 1})
+        bot.react({"type": "dahai", "actor": 1, "pai": "N", "tsumogiri": True})
+        self.assertEqual(d["executed"]["reach"], True)
+        self.assertEqual(d["executed_action"], '<action type="riichi" tile="4z" />')
+        ended = []
+        bot.on_game_end = ended.append
+        bot.react({"type": "end_kyoku", "liqi_name": "ActionHule",
+                   "liqi_data": {"hules": [{"seat": 1, "zimo": True}], "deltaScores": [-2000, 6000, -2000, -2000]}})
+        self.assertEqual(bot.game_record["kyokus"][0]["result"]["liqi_data"]["hules"][0]["seat"], 1)
+        bot.react({"type": "end_game", "liqi_data": {"result": {"players": [{"seat": 1, "totalPoint": 40000}]}}})
+        self.assertEqual(len(ended), 1)
+        self.assertEqual(ended[0]["end_game"]["result"]["players"][0]["seat"], 1)
+        self.assertIsNone(bot.game_record)

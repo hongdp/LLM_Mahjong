@@ -34,6 +34,19 @@ MC 用 mitmproxy 抓雀魂 websocket（liqi protobuf）→ 翻译成 **MJAI 协�
 两种模式下 MC 自己的 GUI/悬浮层也会显示我们的建议（通过 MJAI `meta` 概率），面板信息更全。
 服务端只由 `--temperature` 决定采样/贪心，是否自动点击只由 MC 的开关决定，可随时切换而不重启服务。
 
+## 牌局留底（两种模式相同）
+服务端 `--log` 的 JSONL 里除原始事件外，每次决策在结果确定后写一条 `"kind": "decision"`；每个半庄结束
+（`end_game`，或下一局 `/start`）再把整局写成 `<log目录>/games/game_<ts>_seat<N>.json`（`--games-dir` 可改）。
+每条决策包含：
+- `state`：决策前的完整观测——手牌（含红五标识）、摸牌、四家副露/牌河/牌河事件（巡目/摸切/立直宣言/被鸣）、
+  宝牌、立直与立直巡、点数、供托、余牌、场风/局/本场、振听等；
+- `actions` / `probs` / `value`：合法动作、策略概率分布、V(s)；`chosen`：策略选中（贪心或采样）；
+- `reaction`：发给 MC 的 MJAI 反应；
+- `executed`：**牌桌上实际发生的动作**（辅助模式你手动打的牌；或被雀魂拒绝后的超时摸切）、
+  `executed_action`（引擎动作格式）、`override`（实际 ≠ 策略选择）。
+- 每局附 `start`（start_kyoku）与 `result`（liqi 和牌/流局数据），整局附 `end_game` 终局。
+`scripts/analyze_majsoul_session.py` 会额外汇报 recorded decisions / 人工覆盖率 / 平均 V / 平均 p(选中)。
+
 ## 运行步骤
 1. **准备 MC**（Python 3.12，独立 venv；Linux 上 tkinter 需要 `python3-tk`）
    ```bash

@@ -164,6 +164,8 @@ class ShadowTable(PyMahjongTable):
         self.last_tile_mjai = None
         self.my_drawn_mjai = None
         self._waits_cache.clear()
+        self.kyoku_meta = {"bakaze": msg.get("bakaze"), "kyoku": msg.get("kyoku"),
+                           "honba": msg.get("honba"), "kyotaku": msg.get("kyotaku")}
 
     def tsumo(self, actor: int, pai: str) -> None:
         self._close_interrupt_window()
@@ -303,6 +305,30 @@ class ShadowTable(PyMahjongTable):
     def dora(self, marker: str) -> None:
         self.dora_indicators.append(mjai_to_engine(marker))
 
+    def snapshot(self) -> dict:
+        """Full observer-side game state (JSON-serialisable) for the record."""
+        from src.tasks.mahjong.shanten import dora_from_indicator
+        me = self.me
+        return {
+            "seat": me, "dealer": self.dealer, "round_wind": self.round_wind_idx,
+            "kyoku": getattr(self, "kyoku_meta", {}),
+            "turn": self.turn, "wall": len(self.wall),
+            "hand": list(self.my_tiles_mjai), "drawn": self.my_drawn_mjai,
+            "hand_engine": list(self.hands[me]),
+            "melds": {p: [{"type": m["type"], "tiles": list(m["tiles"]), "from": m.get("from")}
+                          for m in self.melds[p]] for p in range(4)},
+            "rivers": {p: list(self.discards[p]) for p in range(4)},
+            "river_events": {p: [list(e) for e in self.river_events[p]] for p in range(4)},
+            "dora_indicators": list(self.dora_indicators),
+            "dora": [dora_from_indicator(i) for i in self.dora_indicators],
+            "riichi": [bool(x) for x in self.riichi], "riichi_turn": list(self.riichi_turn),
+            "points": list(self.points), "kyotaku": self.kyotaku,
+            "last_discard": self.last_discard, "last_discarder": self.last_discarder,
+            "last_tile_mjai": self.last_tile_mjai,
+            "furiten": bool(self._is_furiten(me)) if self.hands[me] else False,
+            "kan_count": self.kan_count, "discard_count": list(self.discard_count),
+        }
+
     # ---- chankan legality --------------------------------------------
     def chankan_actions(self, actor: int, pai: str) -> List[str]:
         """Legal interrupt actions against `actor`'s added kan of `pai`,
@@ -368,15 +394,77 @@ class MjaiDnnBot:
         self.in_kyoku = False
         self.last_decision: Optional[dict] = None   # debugging / GUI
         self.phase: Optional[str] = None
+        # ---- structured record (both modes) ----
+        # game_record = {"seat", "kyokus": [{"start": start_kyoku msg, "decisions": [...],
+        #                "result": end_kyoku liqi data}], "end_game": ...}
+        # each decision: state snapshot BEFORE acting, legal actions, probs, V,
+        # the policy's pick, the MJAI reaction we returned, and `executed` =
+        # what actually happened at the table (differs from the pick when the
+        # human overrides in assist mode, or Majsoul rejected the action).
+        self.game_record: Optional[dict] = None
+        self._pending: Optional[dict] = None        # decision awaiting execution
+        self.on_game_end = None                     # callback(game_record)
         self.n_decisions = 0
         if seat is not None:
             self.start_game(seat)
 
     # ---- lifecycle ---------------------------------------------------
     def start_game(self, seat: int) -> None:
+        self._finish_game()
         self.seat = int(seat)
         self.table = ShadowTable(self.seat)
         self.in_kyoku = False
+        self.game_record = {"seat": self.seat, "kyokus": [], "end_game": None}
+
+    def _finish_game(self) -> None:
+        rec = self.game_record
+        if rec and rec["kyokus"] and self.on_game_end:
+            self.on_game_end(rec)
+        self.game_record = None
+
+    @property
+    def current_kyoku(self) -> Optional[dict]:
+        if self.game_record and self.game_record["kyokus"]:
+            return self.game_record["kyokus"][-1]
+        return None
+
+    # execution reconciliation -------------------------------------------
+    _EXEC_TYPES = {"dahai", "reach", "chi", "pon", "daiminkan", "ankan", "kakan"}
+
+    def _settle_pending(self, executed: dict) -> None:
+        p = self._pending
+        if p is None:
+            return
+        p["executed"] = executed
+        xml = _event_to_action(executed, self.seat)
+        p["executed_action"] = xml
+        p["override"] = (xml is not None and _norm_action(xml) != _norm_action(p["chosen"]))
+        self._pending = None
+
+    def _reconcile(self, msg: dict) -> None:
+        """Called for every event BEFORE it is applied: decide what the
+        previous decision turned into."""
+        p = self._pending
+        if p is None:
+            return
+        t, actor = msg.get("type"), msg.get("actor")
+        me = self.seat
+        if actor == me and t in self._EXEC_TYPES:
+            if t == "reach":
+                return                   # the riichi tile follows as dahai
+            if t == "dahai" and self.table.riichi_pending == me:
+                msg = dict(msg, reach=True)      # this dahai is the riichi tile
+            self._settle_pending(_event_summary(msg))
+        elif t == "end_kyoku":
+            ld = msg.get("liqi_data") or {}
+            hules = ld.get("hules") or []
+            if any(h.get("seat") == me for h in hules):
+                self._settle_pending({"type": "hora"})
+            else:
+                self._settle_pending({"type": "none"})
+        elif p["phase"] in ("claim", "chankan") and (actor != me or t == "tsumo"):
+            # someone else's event (or our own draw) closed the window: we passed
+            self._settle_pending({"type": "none"})
 
     def react_batch(self, msgs: List[dict]) -> Optional[dict]:
         out = None
@@ -398,12 +486,27 @@ class MjaiDnnBot:
         if self.table is None:
             raise RuntimeError("react() before start_game")
         tb = self.table
+        self._reconcile(msg)
 
         if t == "start_kyoku":
             tb.start_kyoku(msg)
             self.in_kyoku = True
+            if self.game_record is not None:
+                self.game_record["kyokus"].append({"start": msg, "decisions": [], "result": None})
             return None
-        if t in ("end_kyoku", "end_game", "hora", "ryukyoku"):
+        if t == "end_kyoku":
+            self.in_kyoku = False
+            if self.current_kyoku is not None:
+                self.current_kyoku["result"] = {"liqi_name": msg.get("liqi_name"),
+                                                "liqi_data": msg.get("liqi_data")}
+            return None
+        if t == "end_game":
+            self.in_kyoku = False
+            if self.game_record is not None:
+                self.game_record["end_game"] = msg.get("liqi_data")
+            self._finish_game()
+            return None
+        if t in ("hora", "ryukyoku"):
             self.in_kyoku = False
             return None
         if not self.in_kyoku:
@@ -454,11 +557,24 @@ class MjaiDnnBot:
     # ---- decisions ---------------------------------------------------
     def _run_policy(self, actions: List[str], phase: str) -> Tuple[str, dict]:
         self.phase = phase                      # visible to the policy / tests
+        state = self.table.snapshot()
         chosen, dist, value = self.policy(self.table, self.seat, actions)
         self.n_decisions += 1
-        self.last_decision = {"phase": phase, "actions": actions, "chosen": chosen,
-                              "probs": dist, "value": value}
+        self.last_decision = {"n": self.n_decisions, "phase": phase, "actions": actions,
+                              "chosen": chosen, "probs": dist, "value": value,
+                              "state": state, "reaction": None,
+                              "executed": None, "executed_action": None, "override": None}
+        if self._pending is not None:           # previous one never resolved
+            self._pending["executed"] = {"type": "unknown"}
+        self._pending = self.last_decision
+        if self.current_kyoku is not None:
+            self.current_kyoku["decisions"].append(self.last_decision)
         return chosen, dist
+
+    def _finish_reaction(self, r: Optional[dict]) -> Optional[dict]:
+        if self.last_decision is not None:
+            self.last_decision["reaction"] = {k: v for k, v in (r or {}).items() if k != "meta"}
+        return r
 
     def _decide_turn(self) -> Optional[dict]:
         tb = self.table
@@ -491,7 +607,7 @@ class MjaiDnnBot:
             r = {"type": "dahai", "actor": me, "pai": pai,
                  "tsumogiri": pai == tb.my_drawn_mjai}
         r["meta"] = self._meta(dist)
-        return r
+        return self._finish_reaction(r)
 
     def _decide_interrupt(self) -> Optional[dict]:
         tb = self.table
@@ -519,7 +635,7 @@ class MjaiDnnBot:
         else:
             r = {"type": "none"}
         r["meta"] = self._meta(dist)
-        return r
+        return self._finish_reaction(r)
 
     def _decide_chankan(self, actor: int, pai: str) -> Optional[dict]:
         actions = self.table.chankan_actions(actor, pai)
@@ -531,7 +647,7 @@ class MjaiDnnBot:
         else:
             r = {"type": "none"}
         r["meta"] = self._meta(dist)
-        return r
+        return self._finish_reaction(r)
 
     def _physical_copies(self, engine_tile: str, n: int) -> List[str]:
         """n physical copies of `engine_tile` from our hand, plain first."""
@@ -575,3 +691,39 @@ class MjaiDnnBot:
             mask_bits |= 1 << i
             q_values.append(math.log(max(slots[i], 1e-9)))
         return {"q_values": q_values, "mask_bits": mask_bits}
+
+
+# ----------------------------------------------------------------------
+# Record helpers: what the table actually did, as an engine action
+# ----------------------------------------------------------------------
+def _event_summary(msg: dict) -> dict:
+    keep = ("type", "pai", "consumed", "tsumogiri", "target", "reach")
+    return {k: msg[k] for k in keep if k in msg}
+
+
+def _event_to_action(ev: dict, me: int) -> Optional[str]:
+    t = ev.get("type")
+    if t == "none":
+        return '<action type="skip" />'
+    if t == "hora":
+        return None                              # tsumo/ron indistinguishable here; fine
+    if t == "dahai":
+        kind = "riichi" if ev.get("reach") else "discard"
+        return f'<action type="{kind}" tile="{mjai_to_engine(ev["pai"])}" />'
+    if t == "chi":
+        a, b = [mjai_to_engine(c) for c in ev["consumed"]]
+        return f'<action type="chi" tile="{mjai_to_engine(ev["pai"])}" with="{a} {b}" />'
+    if t == "pon":
+        return f'<action type="pon" tile="{mjai_to_engine(ev["pai"])}" />'
+    if t in ("daiminkan", "kakan"):
+        return f'<action type="kan" tile="{mjai_to_engine(ev["pai"])}" />'
+    if t == "ankan":
+        return f'<action type="kan" tile="{mjai_to_engine(ev["consumed"][0])}" />'
+    return None
+
+
+def _norm_action(xml: str):
+    m = ACTION_RE.search(xml or "")
+    if not m:
+        return None
+    return (m.group(1), m.group(2), tuple(sorted((m.group(3) or "").split())))

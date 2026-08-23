@@ -99,6 +99,12 @@ def analyze(path):
                             game["rank"] = order.index(game["seat"]) + 1
             if kind == "out" and isinstance(data, dict):
                 game["decisions"][data.get("type")] += 1
+            if kind == "decision" and isinstance(data, dict):
+                game.setdefault("records", []).append({
+                    "phase": data.get("phase"), "value": data.get("value"),
+                    "override": bool(data.get("override")),
+                    "p_chosen": (data.get("probs") or {}).get(data.get("chosen")),
+                    "executed": (data.get("executed") or {}).get("type")})
     return games
 
 
@@ -133,6 +139,14 @@ def main():
         if deltas:
             print(f"mean score delta / kyoku: {statistics.mean(deltas):+.0f}  (n={len(deltas)})")
     print(f"decisions: {dict(dec)}")
+    recs = [r for gm in games for r in gm.get("records", [])]
+    if recs:
+        ov = sum(r["override"] for r in recs)
+        vs = [r["value"] for r in recs if isinstance(r["value"], (int, float))]
+        pc = [r["p_chosen"] for r in recs if isinstance(r["p_chosen"], (int, float))]
+        print(f"recorded decisions: {len(recs)}  human overrides: {ov} ({ov / len(recs):.1%})  "
+              f"mean V: {statistics.mean(vs):+.3f}  mean p(pick): {statistics.mean(pc):.3f}  "
+              f"executed: {dict(Counter(r['executed'] for r in recs))}")
     print()
     print("game  seat  kyokus  rank  final_points")
     for i, gm in enumerate(games):

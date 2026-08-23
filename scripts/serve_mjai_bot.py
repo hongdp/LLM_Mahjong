@@ -22,8 +22,14 @@ Two ways to use it with MahjongCopilot:
                 --temperature > 0 samples (the pick is highlighted, the
                 full distribution is always shown); 0 = greedy.
 
-Every event and reaction is appended to --log (JSONL) so a Majsoul
-session can be replayed offline and audited.
+Record keeping (both modes):
+  * --log  (JSONL): every raw event in/out, plus one "decision" line per
+    decision once its outcome is known: state snapshot before acting,
+    legal actions, policy probabilities, V(s), the policy's pick, our
+    reaction, and `executed` = what actually happened at the table
+    (`override`=true when a human played something else in assist mode).
+  * --games-dir: one self-contained JSON per game (all kyokus, decisions,
+    liqi round results, final result) written at end_game / next start.
 
 Usage:
   PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt <path.pt> --port 8765
@@ -53,6 +59,28 @@ class State:
         self.log = open(log_path, "a") if log_path else None
         self.started = time.time()
         self.history = []          # decisions of the current kyoku (panel)
+        self.games_dir = None
+        self.bot.on_game_end = self._write_game
+
+    def _write_game(self, rec):
+        if not self.games_dir:
+            return
+        os.makedirs(self.games_dir, exist_ok=True)
+        path = os.path.join(self.games_dir, f"game_{time.strftime('%Y%m%d_%H%M%S')}_seat{rec['seat']}.json")
+        clean = {**rec, "kyokus": [{**ky, "decisions": [{k: v for k, v in d.items() if k != "_logged"}
+                                                          for d in ky["decisions"]]} for ky in rec["kyokus"]]}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(clean, f, ensure_ascii=False, default=str)
+        self.record("game_file", path)
+
+    def flush_decisions(self):
+        """Log decisions whose outcome is now known (durable even if the
+        process dies before the game file is written)."""
+        for ky in (self.bot.game_record or {}).get("kyokus", []):
+            for d in ky["decisions"]:
+                if d["executed"] is not None and not d.get("_logged"):
+                    d["_logged"] = True
+                    self.record("decision", {k: v for k, v in d.items() if k != "_logged"})
 
     def snapshot(self):
         bot, tb = self.bot, self.bot.table
@@ -175,6 +203,7 @@ def make_handler(state: State):
                 with state.lock:
                     if self.path == "/start":
                         seat = int(body["seat"])
+                        state.flush_decisions()
                         state.bot.start_game(seat)
                         state.record("start", body)
                         self._send(200, {"ok": True, "seat": seat})
@@ -185,6 +214,7 @@ def make_handler(state: State):
                             state.history.clear()
                         r = state.bot.react(msg)
                         state.note_decision()
+                        state.flush_decisions()
                         state.record("out", r)
                         self._send(200, {"reaction": r})
                     elif self.path == "/react_batch":
@@ -194,6 +224,7 @@ def make_handler(state: State):
                             state.history.clear()
                         r = state.bot.react_batch(msgs)
                         state.note_decision()
+                        state.flush_decisions()
                         state.record("out", r)
                         self._send(200, {"reaction": r})
                     else:
@@ -213,13 +244,16 @@ def main():
     ap.add_argument("--temperature", type=float, default=0.0,
                     help="0 = greedy (argmax); >0 samples")
     ap.add_argument("--log", default="experiments/majsoul_sessions/mjai_session.jsonl")
+    ap.add_argument("--games-dir", default=None,
+                    help="per-game JSON records (default: <log dir>/games)")
     a = ap.parse_args()
     torch.set_num_threads(2)
     if a.log:
         os.makedirs(os.path.dirname(a.log), exist_ok=True)
     state = State(a.ckpt, a.device, a.temperature, a.log)
+    state.games_dir = a.games_dir or (os.path.join(os.path.dirname(a.log), "games") if a.log else None)
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(state))
-    print(f"[serve_mjai_bot] {a.ckpt} on http://{a.host}:{a.port}  log={a.log}", flush=True)
+    print(f"[serve_mjai_bot] {a.ckpt} on http://{a.host}:{a.port}  log={a.log}  games={state.games_dir}", flush=True)
     srv.serve_forever()
 
 
