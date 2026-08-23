@@ -269,3 +269,37 @@ class RecordTest(unittest.TestCase):
         self.assertEqual(len(ended), 1)
         self.assertEqual(ended[0]["end_game"]["result"]["players"][0]["seat"], 1)
         self.assertIsNone(bot.game_record)
+
+
+class KokushiRobsAnkanTest(unittest.TestCase):
+    def test_kokushi_hand_may_ron_an_ankan(self):
+        from src.tasks.mahjong.table import ACTION_RE as _RE
+        seen = {}
+
+        def policy(shadow, pid, acts):
+            seen["phase"] = bot.phase
+            ron = next((a for a in acts if 'type="ron"' in a), acts[0])
+            return ron, {a: 1.0 / len(acts) for a in acts}, 0.0
+
+        bot = MjaiDnnBot(policy, seat=2)
+        hand = ["1m", "9m", "1p", "9p", "1s", "9s", "S", "W", "N", "P", "F", "C", "C"]   # 国士 waiting E
+        bot.react({"type": "start_kyoku", "bakaze": "E", "dora_marker": "9s", "honba": 0,
+                   "kyoku": 1, "kyotaku": 0, "oya": 0, "scores": [25000] * 4,
+                   "tehais": [["?"] * 13, ["?"] * 13, hand, ["?"] * 13]})
+        bot.react({"type": "tsumo", "actor": 0, "pai": "?"})
+        bot.react({"type": "dahai", "actor": 0, "pai": "2m", "tsumogiri": True})
+        bot.react({"type": "tsumo", "actor": 1, "pai": "?"})
+        seen.clear()
+        reaction = bot.react({"type": "ankan", "actor": 1, "consumed": ["E"] * 4})
+        self.assertEqual(seen.get("phase"), "chankan")
+        self.assertEqual(reaction["type"], "hora")
+        # a non-kokushi observer gets no window on an ankan
+        bot2 = MjaiDnnBot(policy, seat=2)
+        hand2 = ["2m", "3m", "4m", "3p", "4p", "5p", "6s", "7s", "8s", "S", "S", "E", "E"]   # shanpon E/S
+        bot2.react({"type": "start_kyoku", "bakaze": "E", "dora_marker": "9s", "honba": 0,
+                    "kyoku": 1, "kyotaku": 0, "oya": 0, "scores": [25000] * 4,
+                    "tehais": [["?"] * 13, ["?"] * 13, hand2, ["?"] * 13]})
+        bot2.react({"type": "tsumo", "actor": 0, "pai": "?"})
+        bot2.react({"type": "dahai", "actor": 0, "pai": "2p", "tsumogiri": True})
+        bot2.react({"type": "tsumo", "actor": 1, "pai": "?"})
+        self.assertIsNone(bot2.react({"type": "ankan", "actor": 1, "consumed": ["E"] * 4}))

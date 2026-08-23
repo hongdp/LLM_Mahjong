@@ -160,7 +160,7 @@ class ShadowTable(PyMahjongTable):
         super().reset()
         self.text_obs = False
         self.dealer = int(msg["oya"])
-        self.round_wind_idx = min(WIND_IDX.get(msg.get("bakaze", "E"), 0), 1)
+        self.round_wind_idx = min(WIND_IDX.get(msg.get("bakaze", "E"), 0), 2)   # West kept (no more folding)
         from src.tasks.mahjong.table import WIND_CONST
         self.round_wind = WIND_CONST[self.round_wind_idx]
         self.round_number = self.dealer + 1
@@ -365,10 +365,11 @@ class ShadowTable(PyMahjongTable):
         }
 
     # ---- chankan legality --------------------------------------------
-    def chankan_actions(self, actor: int, pai: str) -> List[str]:
-        """Legal interrupt actions against `actor`'s added kan of `pai`,
-        evaluated BEFORE the kakan mutates the table."""
-        self.pending_kan = {"player": actor, "tile": mjai_to_engine(pai)}
+    def chankan_actions(self, actor: int, pai: str, ankan: bool = False) -> List[str]:
+        """Legal interrupt actions against `actor`'s added kan (or, for a
+        国士无双 hand, concealed kan) of `pai`, evaluated BEFORE the kan
+        mutates the table."""
+        self.pending_kan = {"player": actor, "tile": mjai_to_engine(pai), "ankan": ankan}
         try:
             return self.get_interrupt_actions(self.me)
         finally:
@@ -585,8 +586,11 @@ class MjaiDnnBot:
             tb.daiminkan(actor, msg["target"], msg["pai"], msg["consumed"])
             return None                                  # rinshan tsumo follows
         if t == "ankan":
+            reaction = None
+            if actor != me and can_act:                  # Majsoul: 国士 may rob an ankan
+                reaction = self._decide_chankan(actor, msg["consumed"][0], ankan=True)
             tb.ankan(actor, msg["consumed"])
-            return None
+            return reaction
         if t == "kakan":
             reaction = None
             if actor != me and can_act:
@@ -682,8 +686,8 @@ class MjaiDnnBot:
         r["meta"] = self._meta(dist)
         return self._finish_reaction(r)
 
-    def _decide_chankan(self, actor: int, pai: str) -> Optional[dict]:
-        actions = self.table.chankan_actions(actor, pai)
+    def _decide_chankan(self, actor: int, pai: str, ankan: bool = False) -> Optional[dict]:
+        actions = self.table.chankan_actions(actor, pai, ankan=ankan)
         if len(actions) <= 1:
             return None
         chosen, dist = self._run_policy(actions, "chankan")

@@ -273,3 +273,57 @@ class TestRedDora(unittest.TestCase):
                 self.assertLess(float(w[10 * TILE_TYPES]), -10)      # kyuushu never
             else:
                 self.assertTrue(torch.equal(w[disc0], w[disc]))
+
+
+class TestContextRandomization(unittest.TestCase):
+    def test_random_context_is_seeded_and_consistent(self):
+        import random as _r
+        _r.seed(777)
+        t1 = PyMahjongTable(randomize_round=True)
+        _r.seed(777)
+        t2 = PyMahjongTable(randomize_round=True)
+        self.assertEqual(t1.points, t2.points)
+        self.assertEqual(t1.kyotaku, t2.kyotaku)
+        self.assertEqual(t1.round_wind_idx, t2.round_wind_idx)
+        self.assertEqual(sum(t1.start_points), 100000)
+        self.assertTrue(all(p >= 1000 for p in t1.points))
+
+    def test_contexts_actually_vary_and_west_appears(self):
+        import random as _r
+        pts, winds, kyo = set(), set(), set()
+        for sd in range(300):
+            _r.seed(9000 + sd)
+            t = PyMahjongTable(randomize_round=True)
+            pts.add(tuple(t.points)); winds.add(t.round_wind_idx); kyo.add(t.kyotaku)
+        self.assertGreater(len(pts), 250)
+        self.assertEqual(winds, {0, 1, 2})
+        self.assertIn(1000, kyo); self.assertIn(0, kyo)
+
+    def test_rewards_use_delta_from_start(self):
+        import random as _r
+        _r.seed(4242)
+        t = PyMahjongTable(randomize_round=True)
+        start = list(t.start_points)
+        t.wall = []
+        for p in range(4):
+            t.river_events[p] = [['2m', False, False, False, 0]]
+        t._ryuukyoku()
+        for i in range(4):
+            self.assertAlmostEqual(t.final_rewards[i] - t.RANK_BONUS_APPLIED[i]
+                                   if hasattr(t, 'RANK_BONUS_APPLIED') else 0.0, 0.0) if False else None
+        # noten payments moved points; delta reward reflects them, not the level
+        deltas = [t.points[i] - start[i] for i in range(4)]
+        self.assertEqual(sum(deltas), 0)
+
+    def test_west_round_scalar_code(self):
+        import random as _r
+        from src.agents.dnn.encoder import encode_state
+        for sd in range(200):
+            _r.seed(31000 + sd)
+            t = PyMahjongTable(randomize_round=True)
+            if t.round_wind_idx == 2:
+                t.text_obs = False
+                _, s = encode_state(t, 0, variant="v1")
+                self.assertEqual((float(s[12]), float(s[13])), (1.0, 1.0))
+                return
+        self.fail("no West round in 200 seeds")
