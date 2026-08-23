@@ -1,110 +1,89 @@
-# LLM Mahjong — 基于 LLM 的多智能体日麻自对弈 RL 系统
+# LLM Mahjong — 纯自对弈日麻 RL（AlphaZero 路线）
 
-用 4 个共享权重的 LLM 座位进行四人立直麻将自对弈（POMDP），通过自研的解耦 RL 管线
-（批量并发 rollout → ReplayBuffer → REINFORCE / PPO）训练 Qwen3.5-2B + LoRA，
-从基础牌效率逐步进化到价值判断与防守。
+**北极星（目标 a）**：零人类/教师知识的纯自对弈——模型从随机初始化自己发现整套技能栈
+（牌效 → 立直/门清 → 价值 → 防守），向人类高手水平攀升；防守涌现是里程碑，抵达本身就是目标。
+（b) 从模型学到新麻将知识、(c) 方法论迁移是后续方向。纯度规则：教师系模型只做 Elo 标尺，
+永不进冠军谱系或训练对手池；情景课程（从对手立直局面开局）永久否决；联赛（对手=自身冻结历史）算纯。
 
-**必读文档**：
-- [SKILLS.md](SKILLS.md) — 项目经验/硬件约束/性能诊断（每次开发前先读）
-- [TASKS.md](TASKS.md) — 任务看板（持久快照，随里程碑更新）
-- [docs/reward_energy_pbrs.md](docs/reward_energy_pbrs.md) — 势函数奖励的数学与保证
-- [docs/v3_threaded_context_design.md](docs/v3_threaded_context_design.md) — 下一代串联上下文架构设计稿
-- [docs/engine_known_issues.md](docs/engine_known_issues.md) — 引擎规则保真度与有意延后项
-- [docs/mahjong_design_document.md](docs/mahjong_design_document.md) / [docs/implementation_plan.md](docs/implementation_plan.md) — 原始设计与三阶段部署方案
+**必读**：[SKILLS.md](SKILLS.md)（经验/硬件/教训，开发前先读）·
+[docs/roadmap_epoch3.md](docs/roadmap_epoch3.md)（当前路线图：队列/熵与随机性/能力出场顺序）·
+[experiments/INDEX.md](experiments/INDEX.md)（实验总账）
 
-## 架构总览
+## 两个阶段
+
+- **Phase 1（2026-05~08-14，已归档）**：LLM（Qwen + LoRA）+ 文本 rollout + PBRS/PPO。
+  结论：竞技场全 null、回报不可解码 → 路线退役，遗产 = 引擎、奖励 registry、竞技场协议、GCP 工作流。
+  档案：docs/report_exp1..exp5、`src/core/`、`scripts/phase1_ce/`。
+- **Phase 2（当前）**：小型专用网络（2–23M）+ 张量编码 + 纯自对弈 PPO。一条 1.0M 局训练 =
+  g4-standard-48 flex 上 ~85 分钟、~$3。
+
+## 架构（Phase 2 活跃部分）
 
 ```
-src/
-├── core/                    # 通用 RL 引擎（与游戏解耦）
-│   ├── trainer.py           # 主入口：SFT warm-up + RL 循环（REINFORCE 或 PPO）
-│   ├── ppo.py               # PPO clipped-surrogate 损失（纯张量，单测覆盖）
-│   ├── rollout.py           # ReplayBuffer / TrajectoryStep / Return-to-Go / 协变量基线
-│   ├── chat_format.py       # 唯一的模板渲染源（SFT 与 rollout 必须一致）
-│   ├── task.py / registry.py / base_reward.py
-└── tasks/mahjong/
-    ├── table.py             # 136 张牌桌引擎（真实算分/立直/振听/流局听牌费/结算分发）
-    ├── shanten.py           # 向听/受入/宝牌映射
-    ├── orchestrator.py      # LangGraph 顺序 rollout（legacy，parallel_games=1）
-    ├── batch_rollout.py     # N 局并发批量 rollout（生成器协议 + 批量 generate）
-    ├── rewards.py           # 奖励注册表：step / potential / potential_value / settlement
-    ├── arena.py             # 2v2 复式对战（按座位路由 adapter，原始点数评分）
-    └── task.py              # MahjongTask（collect_rollouts 入口）
-
+src/tasks/mahjong/
+├── table.py            # 136 张牌桌引擎；纪元 4 规则 = 雀魂单局对齐（赤宝牌/途中流局/双倍役满/
+│                       #   流局满贯/明杠宝牌时机/国士抢暗杠/抢杠振听）+ 场因素随机化
+│                       #   （东1 恒等起点，点差 σ=4500√k 随局数增长，供托/西场，奖励=起点差分+顺位奖）
+├── claims.py           # 响应窗口裁决（和>碰杠>吃、双响、三响流局）
+├── arena.py            # 复式牌竞技场（A−B 对称配对分差；同 seed 同场上下文）
+└── shanten.py          # 向听/受入/宝牌映射
+src/agents/dnn/
+├── encoder.py          # 观测编码 v1/v1r(+赤/役牌平面)/v3(完整公开记录)/v4(事件缓冲)；
+│                       #   374 动作空间（11 类型×34 关键牌，老 checkpoint 自动加宽）
+├── arch_zoo.py         # cnn_m_r(冠军 2M) / cnn_xl_r / handset_*(实例集合注意力) /
+│                       #   HandRiverFormer(exp30：手牌 token cross-attend 牌河事件序列) / ConvFormer / vit
+├── net.py              # 基类 + load_compatible（跨动作空间/变体的 checkpoint 加载）
+├── selfplay.py         # 自对弈（play_game / 生成器版 play_game_gen）、DnnGame 风格事实
+├── parallel_rollout.py # 多进程 rollout；向量化 worker（每进程 K 局一次批量 RPC，cnn 204 局/s 本机）
+├── infer_server.py     # GPU 批推理服务（共享内存槽位/CUDA graph 分桶/多模型托管）
+├── style_stats.py      # 能力指标聚合（和牌/放铳率与巡目、立直/副露率）——训练 TB 与评估共用
+└── mjai_bridge.py      # 雀魂实战桥接（MJAI 影子桌，编码器/合法动作零改动复用）
 scripts/
-├── generate_sft_data.py     # 忠实 CoT 教师语料（--value_facts 价值感知模式）
-├── analyze_defense_probe.py # 防守探针：对手立直后弃和率/放铳率
-├── audit_think_accuracy.py  # think 声明忠实度审计（vs 真实向听/受入计算器）
-├── run_arena.py             # 竞技场：两 adapter 复式对战 + 配对点差裁决
-├── phase1_ce/               # GCP 单卡 VM 工作流（start_vm / sync_code / run_training）
-└── phase2_vertex/           # Vertex AI（未启用）
-
-tools/webui/                 # 本地训练检视台（曲线 + 雀魂式复盘 + 实时视图）
-tools/majsoul_bridge/        # 雀魂实战桥接（MahjongCopilot 插件 + 安装器 + 运行手册）
-src/agents/dnn/mjai_bridge.py # MJAI 协议 bot：引擎影子桌复用编码器/合法动作（scripts/serve_mjai_bot.py 提供 HTTP）
-configs/                     # 训练配置 JSON（传给 trainer --config）
-experiments/<name>_<ts>/     # 每次训练的输出（记录入 git，重产物不入）
+├── train_dnn_ppo.py    # PPO 训练器（GAE λ=0.95、dup_k=8 复式牌 leave-one-out 基线、熵时间表/
+│                       #   目标熵对偶控制、混合温度行为策略 logprob、--gpu_infer、style/* TB 指标）
+├── run_elo_league.py   # Elo 锚点池（纪元 4 = 9 员，含引擎指纹守卫、--temperature 贪心评分）
+├── elo_ladder_watcher.py / watch_run.sh   # 训练中阶梯评分 + 心跳（每个长跑任务必挂）
+├── probe_defense.py / probe_decomposition.py / probe_conditional_entropy.py / eval_style_profile.py
+│                       # 探针族：防守 IQ / 牌效拆分 / 条件熵曲线 / 风格（--vs_anchors 生态无关读数）
+├── run_arena_dnn.py    # 复式竞技场（--override_* 诊断包装、每边独立温度）
+└── phase2_dnn/         # 云工作流：launch_g4_git.sh（G4 flex + git 固定 SHA 门）、run_dnn_cloud.sh
+tools/webui/            # 检视台：训练曲线 + 自对弈看板（逐步概率/V）+ 雀魂式复盘
+tools/majsoul_bridge/   # MahjongCopilot 插件（实战 = 冠军贪心；maka/顺位/放铳三把尺之一）
 ```
 
-## 奖励系统（registry 模式，`reward_model` 配置项选择）
+## 评估体系（三把尺）
 
-| 名称 | 说明 |
-|---|---|
-| `step` | 旧版绝对分塑形（可刷分，仅为历史复现保留） |
-| `potential` | **势函数塑形（PBRS）**：Φ=−2·向听+0.05·受入；折扣和 telescoping 到发牌常数——与终局结算严格一致、不可刷分、最优策略不变 |
-| `potential_value` | PBRS + 0.3×宝牌持有项（引导价值探索，保证不变） |
-| `settlement` | **纯目标**：零塑形，只保留格式 −10 / 幽灵牌 −5 合法性护栏（exp1 结论催生）|
+1. **Elo 锚点池**（`experiments/elo_league/`）：9 锚点 sign-MLE，bc_cnn 钉 1000；
+   **纪元规则**：引擎变更 ⇒ 历史对局作废、整池重校（anchors.json 带引擎内容指纹，评分自动拒绝错配）。
+   纪元 4 现役：教师参照线 bcrl14 1107.7，冠军 exp27A 1059（池内）/ T=0 候选 1121.8。
+2. **探针族**：defense_iq（防守条件化）、拆分探针（牌效最优一致率）、条件熵曲线（随机性是否跟着价值差走，
+   已验证三代模型均单调下降）、风格剖面（对固定锚点的和/铳/巡目）。
+3. **人类刻度**：雀魂实战（MahjongCopilot 桥接，贪心）——maka 档位（首读 C+，n=1）、顺位/放铳统计。
 
-终局结算 = 真实点差×0.001 + 顺位奖 ±2/±0.5（四家轨迹全部分发）；流局听牌费（场 3000）已实现。
-可选 `--covariate_baseline`：按起手质量回归消除发牌运气方差（默认关）。
+## 当前状态（2026-08-23）
 
-## 训练算法
-
-- `--rl_algo reinforce`（默认）：advantage-weighted NLL，每批 1 遍
-- `--rl_algo ppo`：clipped surrogate（ε=0.2）+ 每批 ≤3 遍复用 + approx-KL 早停；
-  无 critic（GRPO 风格：全 buffer 归一化 MC return，±5 截断）；rollout 时记录行为策略
-  原始 logits logprobs，按 token id 重建序列（无重分词漂移）
-- 精度：`--use_qlora`（nf4，16GB 卡）或 `--bf16_lora`（A100 推荐，解码 +55%）
-- `--parallel_games N`：N 局并发批量 rollout（A100 实测 24 路近线性，单局成本 5.2× 优化）
+- **冠军 = exp27-A**（cnn_m_r，纪元 3 原生：识赤宝牌/役牌平面）：从零 1.0M 局追平旧谱系 2.1M 局，
+  T=0 1121.8 为史上最高；实战部署一律 A 系贪心。
+- **纪元 4 生效**：规则审查修复 + 场因素随机化（给防守/顺位压力提供单局内学习信号）。
+- **进行中**：exp31 四臂（目标熵配方 × 规模复检，G4 flex）；exp30 HandRiverFormer 已预注册待发射。
+- **已否定的假设**（详见 INDEX）：教师先验路线、情景课程、输入 v3、GAE×ConvFormer 可加性、
+  攻击饱和自发防守、联赛催生防守、手牌实例集合优于 CNN、混合温度增益。
+- **防守现状**：defense_iq≈0 且与熵水平无关——瓶颈是信用不是采样；当前主攻 = 场上下文随机化 + 顺位压力，
+  下一步（需以场为单位重设计 reward，暂缓）= 多局结构。
 
 ## 快速开始
 
-**本地（RTX 4080 16GB，QLoRA）**：
 ```bash
 conda activate rlhf_mahjong
-python -m src.core.trainer --config configs/v2_ppo_smoke.json   # PPO+并发冒烟
-python -m unittest discover tests                               # 47 项单测
+python -m pytest tests -q                        # ~196 项
+# 本地训练（4080 实测 cnn_m_r ~100 局/s 训练口径）
+python scripts/train_dnn_ppo.py --arch cnn_m_r --total_games 1000000 --gpu_infer \
+  --games_per_worker 32 --infer_max_batch 512 --exp_dir experiments/my_run_$(date +%Y%m%d_%H%M%S)
+# 云端（G4 flex，先 push 再发射——脚本会校验 SHA 已在 origin/master）
+bash scripts/phase2_dnn/launch_g4_git.sh my-vm us-central1-b my_run $(git rev-parse HEAD) -- \
+  scripts/train_dnn_ppo.py --arch cnn_m_r ... --exp_dir experiments/my_run
+conda run -n rlhf_mahjong python tools/webui/server.py --port 8642   # 检视台
 ```
 
-**GCP Phase 1（A100 40GB，bf16）**：
-```bash
-VM_NAME=mahjong-a100 ZONE=us-central1-b bash scripts/phase1_ce/start_vm.sh
-VM_NAME=... bash scripts/phase1_ce/sync_code.sh    # 数据同步（代码建议走 git pull）
-ssh <vm> 'nohup bash LLM_Mahjong/scripts/phase1_ce/run_training.sh configs/v2_pbrs_run.json > ~/train_nohup.log 2>&1 &'
-# 完赛自动：上传 gs://llm-mahjong-experiments/<exp>/ → shutdown（EXIT trap，崩溃同样生效）
-```
-注意：A100 配额每区域 1 块，多 VM 并发需跨区域；VM 停机不保留 GPU 容量（详见 SKILLS.md）。
-
-**训练检视台**：
-```bash
-conda run -n rlhf_mahjong python tools/webui/server.py --port 8642
-```
-曲线（含 PPO 健康指标）、雀魂式逐步复盘（巡数/结算明细/奖励解读）、进行中对局实时视图、跨 VM 一键同步。
-「竞技场」页签 = DNN 自对弈看板：用 `scripts/record_games.py --ckpt STAGE=ckpt.pt … --out experiments/<exp>/arena_dashboard.json` 录制后，同一批牌山下逐步查看各训练阶段的动作概率、采样动作与 critic V（`experiments/**/arena_dashboard*.json` 自动列出）。
-
-## 主力配置
-
-| 配置 | 用途 |
-|---|---|
-| `configs/v2_pbrs_run.json` | 基线：PBRS + REINFORCE，50×12，bf16 |
-| `configs/v2_ppo_run.json` | Arm A：+PPO（对基线单变量） |
-| `configs/v2_ppo_value_run.json` | Arm B：PPO + 价值 bundle（potential_value + 价值事实模板 + 价值语料 adapter） |
-| `configs/v2_ppo_smoke.json` | 本地冒烟（1 epoch，4 局并发） |
-
-## 当前状态（2026-08-02）
-
-- **exp1「塑形三臂」已完成**（基线 PBRS+REINFORCE / +PPO / PPO+价值 bundle，infra rev3，ep24-26 停跑）：
-  竞技场裁决三臂均与各自 SFT 起点无显著差异，但行为风格大幅迁移 → 密集塑形主导学习方向。
-  完整结论见 [docs/report_exp1_shaping_arms_20260802.md](docs/report_exp1_shaping_arms_20260802.md)。
-- **exp2「settlement vs PBRS」提案中**（待批准）：纯结算奖励 vs 现行塑形，竞技场 64 副裁决。
-- 命名规范：实验用描述性名字（exp1/exp2…），`infra revN` 只指训练栈配置版本。
+**纪律**（CLAUDE.md 强制）：任何 run 先写 `EXPERIMENT.md`（目的/方法/成功标准）再发射；发射后核对吞吐符合预期；
+每个长跑任务挂心跳；VM 用完即删；奖励逻辑走 registry；新教训追加 SKILLS.md。
