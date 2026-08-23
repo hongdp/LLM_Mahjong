@@ -160,7 +160,7 @@ class ShadowTable(PyMahjongTable):
         super().reset()
         self.text_obs = False
         self.dealer = int(msg["oya"])
-        self.round_wind_idx = min(WIND_IDX.get(msg.get("bakaze", "E"), 0), 1)
+        self.round_wind_idx = min(WIND_IDX.get(msg.get("bakaze", "E"), 0), 2)   # West kept (no more folding)
         from src.tasks.mahjong.table import WIND_CONST
         self.round_wind = WIND_CONST[self.round_wind_idx]
         self.round_number = self.dealer + 1

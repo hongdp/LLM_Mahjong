@@ -225,7 +225,10 @@ class PyMahjongTable(MahjongEngineAPI):
     def reset(self) -> Dict[int, str]:
         if self.randomize_round:
             self.dealer = random.randrange(4)
-            self.round_wind_idx = random.randrange(2)   # 东场 / 南场
+            # 东 45% / 南 45% / 西 10% (西入 exists in Majsoul; the encoder
+            # spells West as both round-wind bits set)
+            r = random.random()
+            self.round_wind_idx = 0 if r < 0.45 else (1 if r < 0.9 else 2)
         else:
             self.dealer = 0
             self.round_wind_idx = 0
@@ -234,8 +237,26 @@ class PyMahjongTable(MahjongEngineAPI):
         self.round_number = self.dealer + 1
         self.turn = self.dealer
 
-        self.points = [25000, 25000, 25000, 25000]
-        self.kyotaku = 0
+        # Context randomization (user 2026-08-23): a single hand is played
+        # under a random MATCH context — unequal starting scores and carried
+        # riichi sticks — so placement pressure (protect a lead / push when
+        # behind) is learnable without the multi-hand structure. Rewards use
+        # the point DELTA from these starts; the placement bonus stays on
+        # final points. Deterministic in the deal seed (dup_k replicas share
+        # the context, so the group baseline removes its level effect).
+        if self.randomize_round:
+            spread = random.uniform(0.0, 12000.0)
+            pts = [25000.0 + spread * random.gauss(0.0, 1.0) for _ in range(4)]
+            pts = [max(1000, int(round(x / 100.0)) * 100) for x in pts]
+            pts[pts.index(max(pts))] += 100000 - sum(pts)   # exact total
+            self.points = pts
+            self.kyotaku = 1000 * random.choices(
+                (0, 1, 2, 3), weights=(70, 20, 8, 2))[0]
+        else:
+            self.points = [25000, 25000, 25000, 25000]
+            self.kyotaku = 0
+        self.start_points = list(self.points)
+        self.start_kyotaku = self.kyotaku
         # Visible river: a called tile leaves it (it now sits in a meld).
         self.discards = {i: [] for i in range(4)}
         # Permanent discard record for furiten (RCR 3.13.1): a tile you
@@ -1406,8 +1427,9 @@ class PyMahjongTable(MahjongEngineAPI):
         self._compute_final_rewards(houjuu_player=None)
 
     def _compute_final_rewards(self, houjuu_player):
+        start = getattr(self, "start_points", None) or [25000] * 4
         self.final_rewards = [
-            (self.points[i] - 25000) * self.REWARD_SCALE for i in range(4)
+            (self.points[i] - start[i]) * self.REWARD_SCALE for i in range(4)
         ]
         if houjuu_player is not None:
             self.final_rewards[houjuu_player] += self.HOUJUU_EXTRA

@@ -265,7 +265,10 @@ def encode_state(table, player_id: int,
     s[9] = table.kyotaku / 4.0
     s[10] = len(hand) / 14.0
     s[11] = len(table.melds[player_id]) / 4.0
-    s[12 + table.round_wind_idx] = 1.0       # 12-13: round wind
+    if table.round_wind_idx >= 2:            # West round: both bits set
+        s[12] = s[13] = 1.0
+    else:
+        s[12 + table.round_wind_idx] = 1.0   # 12-13: round wind
     seat_wind = (player_id - table.dealer) % 4
     s[14 + seat_wind] = 1.0                  # 14-17: seat wind
     s[18] = 1.0 if table.turn == player_id else 0.0
@@ -337,7 +340,10 @@ def _encode_v3(table, player_id: int, as_numpy: bool = False):
     s[9] = table.kyotaku / 4.0
     s[10] = len(hand) / 14.0
     s[11] = len(table.melds[player_id]) / 4.0
-    s[12 + table.round_wind_idx] = 1.0
+    if table.round_wind_idx >= 2:
+        s[12] = s[13] = 1.0
+    else:
+        s[12 + table.round_wind_idx] = 1.0
     s[14 + (player_id - table.dealer) % 4] = 1.0
     s[18] = 1.0 if table.turn == player_id else 0.0
     s[19] = 1.0 if table.last_discarder == (player_id - 1) % 4 else 0.0

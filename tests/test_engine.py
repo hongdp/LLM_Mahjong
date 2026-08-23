@@ -589,7 +589,7 @@ class TestRoundRandomization(unittest.TestCase):
             self.assertIn(f"{t.round_number}局", state)
             self.assertIn("自风: 东", state)      # the dealer's seat wind
         self.assertEqual(dealers, {0, 1, 2, 3})
-        self.assertEqual(winds, {0, 1})
+        self.assertTrue({0, 1} <= winds <= {0, 1, 2})   # West 10% since epoch 4
 
     def test_default_is_deterministic_east_one(self):
         t = PyMahjongTable()
@@ -704,7 +704,10 @@ class TestInvariants(unittest.TestCase):
             }), config={"recursion_limit": 2000})
             t = final['table']
             self.assertTrue(t.finished)
-            self.assertEqual(sum(t.points) + t.kyotaku, 100000)
+            # random context: initial kyotaku sticks come from previous
+            # (unplayed) hands, so the invariant is relative to the start
+            self.assertEqual(sum(t.points) + t.kyotaku,
+                             sum(t.start_points) + t.start_kyotaku)
             self.assertLessEqual(t.kan_count, t.MAX_KANS)
             self.assertLessEqual(len(t.dora_indicators), 5)
             self.assertIsNone(t.riichi_pending)
