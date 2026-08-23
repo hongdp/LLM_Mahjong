@@ -38,19 +38,20 @@ cd $env:USERPROFILE\MahjongCopilot; .\venv\Scripts\python.exe main.py
 
 **现象**：点「启动浏览器」报 `playwright._impl._errors.Error: spawn UNKNOWN`。直接运行 `ms-playwright\chromium-1105\chrome-win\chrome.exe` 报 "side-by-side configuration is incorrect"；事件日志 SideBySide：`Dependent Assembly 123.0.6312.4 could not be found`。重新 `playwright install chromium` 无效——是这个 Windows build 与 Chromium 123 的 SxS 兼容问题，不是下载损坏。
 
-**修法**：两处 `launch_persistent_context(...)` 加 `channel="chrome"`，Playwright 改用已安装的 Google Chrome。要求机器装有 Chrome（或改 `"msedge"`）。
+**修法**：两处 `launch_persistent_context(...)`（一处是启用 Chrome 扩展的分支，一处是普通分支）加 `channel="chrome"`，Playwright 改用系统安装的 Google Chrome（本机 151），其余参数（持久化 profile、代理、视口）不变。没装 Chrome 的机器可改成 `"msedge"`。
 
 ### 3.2 `mitm.py`：大响应流式透传
 
-**现象**：浏览器起来后雀魂黑屏 / 一直"正在下载网络资源"。抓请求发现卡在 `Build/chs_t-WebGL-release-4.0.46(46).wasm.gz`（10 MB，服务器带 `Content-Encoding: gzip`，解压后 46 MB）。mitmproxy 默认把整个 body 缓冲进内存并解码，Chrome 等不到。curl 走代理能下完只是因为它肯等。
+**现象**：浏览器起来后雀魂黑屏 / 一直"正在下载网络资源"。用 Playwright 挂 request/response 事件对比：不走代理 207 个响应，走代理只有 12 个，卡住的那个是 `Build/chs_t-WebGL-release-4.0.46(46).wasm.gz`（10 MB，服务器还带 `Content-Encoding: gzip`，解压后 46 MB）。mitmproxy 默认把整个响应 body 读进内存、按 Content-Encoding 解码、再交给 addon，Chrome 在这期间收不到任何字节，超时后游戏报错。curl 走代理能下完只是因为它肯等。
 
-**修法**：`DumpMaster` 创建后 `self.dump_master.options.update(stream_large_bodies="1m")`。注意必须在 `DumpMaster(...)` **之后**设——这个选项由默认 addon 注册，在 `options.Options(...)` 里直接传会 `KeyError: Unknown options`。MC 只需要拦 WebSocket 小消息，不受影响。
+**修法**：`_run_mitm_async` 里 `DumpMaster(...)` 构造**之后** `self.dump_master.options.update(stream_large_bodies="1m")`：超过 1 MB 的 body 不缓冲、不解码，边收边转发。MC 需要拦截的只是 WebSocket 对局消息（几百字节），完全不受影响。
+顺序很重要：这个选项由 mitmproxy 的默认 addon 注册，只有在 `DumpMaster` 构造完成后才存在。写进 `options.Options(listen_port=..., stream_large_bodies="1m")` 会让 mitm 线程直接抛 `KeyError: 'Unknown options: stream_large_bodies'`，代理起不来，浏览器报 `ERR_PROXY_CONNECTION_FAILED`。
 
 ### 3.3 `common/utils.py`：证书装进当前用户存储
 
 **现象**：游戏都进到登录界面了，MC 覆盖层左下角仍显示 **「主进程发生错误!」**。这不是游戏报错，是 `bot_manager._create_mitm_and_proxinject()` 里 `install_mitm_cert()` 返回 False 后置的 `main_thread_exception`（主循环其实照常跑）。根因：MC 用 `certutil -addstore Root` 往**系统**存储装 mitm CA，非管理员会 "requires elevation"。
 
-**修法**：`is_certificate_installed` / `install_root_cert` 的 certutil 都加 `-user`，改用当前用户的 Root 存储，无需管理员，Chrome 同样信任。首次会弹 Windows 的"是否安装此证书"确认框。手动装也可以：
+**修法**：`is_certificate_installed` / `install_root_cert` 的 certutil 都加 `-user`，改用当前用户（CurrentUser）的 Root 存储：不需要管理员；Chrome 同样信任用户存储里的根证书（实测能正常过 TLS）；首次安装会弹 Windows 的"您即将安装来自某 CA 的证书"确认框，点"是"。**查询那一处的 `-user` 同样必要**：检查函数查的是本机存储，否则即使证书已在用户存储里，MC 也判定"没装"，每次启动都会尝试安装、失败、再置错误标志。手动装也可以：
 
 ```powershell
 certutil -user -addstore Root $env:USERPROFILE\MahjongCopilot\mitm_config\mitmproxy-ca-cert.cer

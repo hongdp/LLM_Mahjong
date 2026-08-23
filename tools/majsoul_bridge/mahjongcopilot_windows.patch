@@ -1,5 +1,5 @@
 diff --git a/common/utils.py b/common/utils.py
-index 6a6f71b..e913166 100644
+index 6a6f71b..109a681 100644
 --- a/common/utils.py
 +++ b/common/utils.py
 @@ -167,7 +167,7 @@ def is_certificate_installed(cert_file:str) -> tuple[bool, str]:
@@ -7,7 +7,7 @@ index 6a6f71b..e913166 100644
          if sys.platform == "win32":
              # Use certutil to look up the certificate by its serial number in the Root store
 -            cmd = ['certutil', '-store', 'Root', serial_number]
-+            cmd = ['certutil', '-user', '-store', 'Root', serial_number]  # LLM_Mahjong: current-user store, no elevation
++            cmd = ['certutil', '-user', '-store', 'Root', serial_number]
              store_found_phrase = serial_number
          elif sys.platform == "darwin":
              # TODO test on MacOS
@@ -16,19 +16,19 @@ index 6a6f71b..e913166 100644
      if sys.platform == "win32":
          print(f'"{cert_file}"')
 -        full_command = ["certutil","-addstore","Root",cert_file]
-+        full_command = ["certutil","-user","-addstore","Root",cert_file]  # LLM_Mahjong: current-user store, no elevation
++        full_command = ["certutil","-user","-addstore","Root",cert_file]
          # full_command = [
          #     'powershell', '-Command', 
          #     f"Start-Process 'certutil' -ArgumentList '-addstore', 'Root', '{cert_file}' -Wait -Verb 'RunAs';"
 diff --git a/game/browser.py b/game/browser.py
-index ac8a0ee..f8acef5 100644
+index ac8a0ee..bb2d37a 100644
 --- a/game/browser.py
 +++ b/game/browser.py
 @@ -98,6 +98,7 @@ class GameBrowser:
                      chromium = playwright.chromium
                      self.context = chromium.launch_persistent_context(
                          user_data_dir=utils.sub_folder(Folder.BROWSER_DATA),
-+                        channel="chrome",   # LLM_Mahjong: bundled Chromium 123 fails SxS on Win11 26200; use installed Chrome
++                        channel="chrome",
                          headless=False,
                          viewport={'width': self.width, 'height': self.height},
                          proxy=proxy_object,
@@ -36,22 +36,19 @@ index ac8a0ee..f8acef5 100644
                      chromium = playwright.chromium
                      self.context = chromium.launch_persistent_context(
                          user_data_dir=utils.sub_folder(Folder.BROWSER_DATA),
-+                        channel="chrome",   # LLM_Mahjong: bundled Chromium 123 fails SxS on Win11 26200; use installed Chrome
++                        channel="chrome",
                          headless=False,
                          viewport={'width': self.width, 'height': self.height},
                          proxy=proxy_object,
 diff --git a/mitm.py b/mitm.py
-index 3fa23d2..cb8391a 100644
+index 3fa23d2..19a9582 100644
 --- a/mitm.py
 +++ b/mitm.py
-@@ -172,6 +172,11 @@ class MitmController:
+@@ -172,6 +172,8 @@ class MitmController:
              with_termlog=False,
              with_dumper=False,
          )
-+        # LLM_Mahjong: stream large bodies instead of buffering/decoding them —
-+        # Majsoul's 10 MB gzip wasm (46 MB decoded) otherwise stalls Chrome.
-+        # Must be set AFTER DumpMaster(): the option is registered by a default
-+        # addon, passing it to options.Options() raises "Unknown options".
++        # pass large bodies through without buffering (game wasm.gz is gzip-encoded, 46MB decoded)
 +        self.dump_master.options.update(stream_large_bodies="1m")
          try:
              LOGGER.info("Starting mitm server%s, proxy=%s", up_log_str, self.proxy_str)
