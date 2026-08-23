@@ -68,7 +68,7 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
     if os.environ.get("INFER_STRICT_FP32"):
         torch.backends.cudnn.allow_tf32 = False
         torch.backends.cuda.matmul.allow_tf32 = False
-    from src.agents.dnn.encoder import N_PLANES, N_PLANES_V3, N_SCALARS, N_SCALARS_V3
+    from src.agents.dnn.encoder import variant_shape
     from src.agents.dnn.net import load_compatible
     if cfg.get("arch"):
         from src.agents.dnn.arch_zoo import ZOO
@@ -85,8 +85,7 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
     hosted = []
     for m in models:
         m = m.to(device).eval()
-        v3 = getattr(m, "encoder_variant", "v1") == "v3"
-        n_pl, n_sc = (N_PLANES_V3, N_SCALARS_V3) if v3 else (N_PLANES, N_SCALARS)
+        n_pl, n_sc = variant_shape(getattr(m, "encoder_variant", "v1"))
         if device.startswith("cuda") and cfg.get("infer_cuda_graph", True):
             m = _GraphRunner(m, n_pl, n_sc, device, max_batch)
         hosted.append((m, n_pl, n_sc))
@@ -237,9 +236,9 @@ class InferenceServer:
     def __init__(self, state_np, cfg, n_slots: int, n_planes: int,
                  n_scalars: int, device: str = "cuda", max_batch: int = 256,
                  wait_ms: float = 4.0):
-        from src.agents.dnn.encoder import N_PLANES_V3, N_SCALARS_V3
+        from src.agents.dnn.encoder import MAX_PLANES, MAX_SCALARS
         # buffers sized for the widest hosted encoder; each model reads its own width
-        self.shared = _Shared(n_slots, max(n_planes, N_PLANES_V3), max(n_scalars, N_SCALARS_V3))
+        self.shared = _Shared(n_slots, max(n_planes, MAX_PLANES), max(n_scalars, MAX_SCALARS))
         self.req_q = (_CTX.Semaphore(0), _CTX.Event())   # (requests, stop)
         self.events = _CTX.Condition()                    # v3: one broadcast condition
         ready = _CTX.Event()

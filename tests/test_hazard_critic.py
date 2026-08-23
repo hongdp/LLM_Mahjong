@@ -15,6 +15,7 @@ import unittest
 
 import numpy as np
 import torch
+from src.agents.dnn.encoder import ACTION_DIM
 
 from src.agents.dnn.net import HazardHead, MahjongPolicyNet, load_compatible
 from src.agents.dnn.selfplay import CFEAT_DIM, play_game
@@ -134,7 +135,7 @@ class TestLoadCompatible(unittest.TestCase):
                 self.assertTrue(k.startswith("value"), k)
             x = torch.rand(2, plain.stem.in_channels, 34)
             s = torch.rand(2, plain.scalar_fc[0].in_features)
-            m = torch.ones(2, 272, dtype=torch.bool)
+            m = torch.ones(2, ACTION_DIM, dtype=torch.bool)
             self.assertTrue(torch.allclose(plain(x, s, m), src(x, s, m)))
 
     def test_policy_mismatch_raises(self):
@@ -159,7 +160,7 @@ class TestLoadCompatible(unittest.TestCase):
                 net = load_dnn(f.name, "cpu")
             x = torch.rand(2, net.stem.in_channels, 34)
             s = torch.rand(2, net.scalar_fc[0].in_features)
-            m = torch.ones(2, 272, dtype=torch.bool)
+            m = torch.ones(2, ACTION_DIM, dtype=torch.bool)
             self.assertTrue(torch.allclose(net(x, s, m), src(x, s, m)),
                             str(kw))
 
@@ -176,8 +177,9 @@ class TestTrainerCallCompat(unittest.TestCase):
                                             N_SCALARS_V3, TILE_TYPES)
         for name, (factory, order) in ZOO.items():
             net = factory().eval()
-            v3 = getattr(net, "encoder_variant", "v1") == "v3"
-            n_pl = N_PLANES_V3 if v3 else (N_PLANES_V2 if order else N_PLANES)
+            variant = getattr(net, "encoder_variant", "v1")
+            v3 = variant.startswith("v3")
+            n_pl = getattr(net, "in_planes", None) or (N_PLANES_V2 if order else N_PLANES)
             p = torch.rand(2, n_pl, TILE_TYPES)
             s = torch.rand(2, N_SCALARS_V3 if v3 else N_SCALARS)
             m = torch.ones(2, ACTION_DIM, dtype=torch.bool)

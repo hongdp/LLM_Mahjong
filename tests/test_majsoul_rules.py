@@ -160,3 +160,116 @@ class TestKanDoraTiming(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRedDora(unittest.TestCase):
+    def test_wall_has_one_red_five_per_suit(self):
+        t = _fresh()
+        everything = list(t.wall) + list(t.dead_wall)
+        for p in range(4):
+            everything += t.display_hand(p)
+        for suit in "mps":
+            self.assertEqual(everything.count(f"0{suit}"), 1, suit)
+            self.assertEqual(everything.count(f"5{suit}"), 3, suit)
+        self.assertEqual(len(everything), 136)
+
+    def test_red_five_is_a_distinct_discard_action(self):
+        t = _fresh()
+        rig(t, 0, ['5m', '5m', '2p', '3p', '4p', '6s', '7s', '8s', '1z', '1z', '1z', '3z', '4z', '7z'], drawn='7z')
+        t.red[0]["m"] = 1
+        acts = t.get_legal_actions(0)
+        self.assertIn('<action type="discard" tile="5m" />', acts)
+        self.assertIn('<action type="discard" tile="0m" />', acts)
+        # only the red copy left -> only the red spelling
+        t.hands[0].remove('5m')
+        acts = t.get_legal_actions(0)
+        self.assertNotIn('<action type="discard" tile="5m" />', acts)
+        self.assertIn('<action type="discard" tile="0m" />', acts)
+        t.turn = 0
+        t.step(0, '<action type="discard" tile="0m" />')
+        self.assertEqual(t.discards[0][-1], '0m')
+        self.assertEqual(t.red[0]["m"], 0)
+        self.assertTrue(t.last_discard_red)
+        self.assertEqual(t.last_discard, '5m')          # claims match on the plain spelling
+        self.assertEqual(t.river_events[0][-1][0], '0m')
+
+    def test_riichi_lock_tsumogiri_keeps_red_identity(self):
+        t = _fresh()
+        rig(t, 0, ['2m', '3m', '4m', '3p', '4p', '5p', '6s', '7s', '8s', '2z', '2z', '5s', '5s', '5m'], drawn='5m')
+        t.riichi[0] = True
+        t.red[0]["m"] = 1
+        t.last_drawn_red[0] = True
+        acts = t.get_legal_actions(0)
+        self.assertEqual([a for a in acts if 'discard' in a], ['<action type="discard" tile="0m" />'])
+        # discarding the plain spelling while locked is illegal
+        t.turn = 0
+        _, r, _, _ = t.step(0, '<action type="discard" tile="5m" />')
+        self.assertLess(r[0], 0)
+
+    def test_aka_dora_is_scored(self):
+        t = _fresh()
+        # tanyao hand holding a red 5p and a red 5s, tsumo on 5p
+        rig(t, 0, ['2m', '3m', '4m', '3p', '4p', '5p', '5p', '6p', '7p', '6s', '7s', '8s', '5s', '5s'], drawn='5p')
+        t.red[0]["p"] = 1
+        t.red[0]["s"] = 1
+        t.dora_indicators, t.ura_indicators = ['1z'], ['1z']
+        t.discard_count = [1, 1, 1, 1]
+        res = t._win_result(0, '5p', is_tsumo=True)
+        self.assertIsNotNone(res)
+        names = [str(y) for y in res.yaku]
+        self.assertTrue(any("Aka" in n for n in names), names)
+        base = t._win_result(0, '5p', is_tsumo=True).han
+        t.red[0]["p"] = 0
+        t.red[0]["s"] = 0
+        self.assertEqual(base, t._win_result(0, '5p', is_tsumo=True).han + 2)   # two aka dora
+
+    def test_ron_on_a_red_five_counts_it(self):
+        t = _fresh()
+        rig(t, 1, ['2m', '3m', '4m', '3p', '4p', '5p', '6p', '7p', '8p', '6s', '7s', '8s', '5s'])
+        t.discard_count = [2, 2, 2, 2]
+        t.last_discard, t.last_discarder, t.turn = '5s', 0, 0
+        t.last_discard_red = True
+        res = t._win_result(1, '5s', is_tsumo=False)
+        self.assertIsNotNone(res)
+        self.assertTrue(any("Aka" in str(y) for y in res.yaku))
+        t.last_discard_red = False
+        res2 = t._win_result(1, '5s', is_tsumo=False)
+        self.assertEqual(res.han, res2.han + 1)
+
+    def test_pon_uses_plain_copies_first(self):
+        t = _fresh()
+        rig(t, 1, ['5p', '5p', '5p', '2m', '3m', '4m', '6s', '7s', '8s', '1z', '1z', '3z', '4z'])
+        t.red[1]["p"] = 1
+        t.last_discard, t.last_discarder, t.turn = '5p', 0, 0
+        t.last_discard_red = False
+        t.wall = t.wall[:30]
+        _, _, _, info = t.step_interrupt(1, '<action type="pon" tile="5p" />')
+        self.assertTrue(info["interrupt"])
+        self.assertEqual(t.melds[1][-1]["red"], 0)
+        self.assertEqual(t.red[1]["p"], 1)                 # red stayed in hand
+        self.assertEqual(t.display_hand(1).count('0p'), 1)
+
+    def test_legacy_checkpoint_head_is_widened(self):
+        import torch
+        from src.agents.dnn.arch_zoo import ZOO
+        from src.agents.dnn.net import load_compatible
+        from src.agents.dnn.encoder import ACTION_DIM, LEGACY_ACTION_DIM, TILE_TYPES
+        net = ZOO["cnn_m"][0]()
+        sd = {k: v.clone() for k, v in net.state_dict().items()}
+        # fake a pre-red checkpoint: trim the flat head to 272 rows
+        hk = [k for k in sd if sd[k].dim() > 0 and sd[k].shape[0] == ACTION_DIM]
+        self.assertTrue(hk)
+        for k in hk:
+            sd[k] = sd[k][:LEGACY_ACTION_DIM]
+            torch.nn.init.normal_(sd[k])
+        load_compatible(net, sd)
+        new_sd = net.state_dict()
+        for k in hk:
+            w = new_sd[k]
+            d5m = 4                                      # 5m column
+            disc, disc0 = 0 * TILE_TYPES + d5m, 8 * TILE_TYPES + d5m
+            if w.dim() == 1:
+                self.assertAlmostEqual(float(w[disc0]), float(w[disc]) - 1.0, places=5)
+                self.assertLess(float(w[10 * TILE_TYPES]), -10)      # kyuushu never
+            else:
+                self.assertTrue(torch.equal(w[disc0], w[disc]))

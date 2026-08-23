@@ -30,12 +30,20 @@ def _meld_event(table, pid: int, before: int, discarder: int, called: str) -> Op
     if len(melds) == before:
         return None
     m = melds[-1]
-    tiles = [engine_to_mjai(t) for t in m["tiles"]]
-    consumed = list(tiles)
-    consumed.remove(engine_to_mjai(called))
+    called_mjai = engine_to_mjai(called, red=table.last_discard_red)
+    # reds in the meld beyond the called tile came from the caller's hand
+    reds_left = m.get("red", 0) - int(table.last_discard_red)
+    consumed = list(m["tiles"])
+    consumed.remove(called)          # the rest came from the caller's hand
+    out = []
+    for t in consumed:
+        if t[0] == "5" and t[-1] in "mps" and reds_left > 0:
+            out.append(engine_to_mjai(t, red=True)); reds_left -= 1
+        else:
+            out.append(engine_to_mjai(t))
     kind = {"chi": "chi", "pon": "pon", "kan": "daiminkan"}[m["type"]]
     return {"type": kind, "actor": pid, "target": discarder,
-            "pai": engine_to_mjai(called), "consumed": consumed}
+            "pai": called_mjai, "consumed": out}
 
 
 def play_game_mjai(table: PyMahjongTable, policies: Dict[int, Policy],
@@ -55,7 +63,8 @@ def play_game_mjai(table: PyMahjongTable, policies: Dict[int, Policy],
 
     def emit_tsumo(pid: int):
         emit({"type": "tsumo", "actor": pid,
-              "pai": engine_to_mjai(table.last_drawn[pid]) if pid == me else "?"})
+              "pai": (engine_to_mjai(table.last_drawn[pid], red=table.last_drawn_red[pid])
+                      if pid == me else "?")})
 
     def emit_new_dora(n_before: int):
         for ind in table.dora_indicators[n_before:]:
@@ -63,9 +72,10 @@ def play_game_mjai(table: PyMahjongTable, policies: Dict[int, Policy],
 
     # ---- start_kyoku ---------------------------------------------------
     tehais = [["?"] * 13 for _ in range(4)]
-    my_hand = list(table.hands[me])
+    my_hand = table.display_hand(me)              # reds spelled '0x'
     if me == table.dealer:
-        my_hand.remove(table.last_drawn[me])
+        my_hand.remove("0" + table.last_drawn[me][-1] if table.last_drawn_red[me]
+                       else table.last_drawn[me])
     tehais[me] = [engine_to_mjai(t) for t in my_hand]
     emit({"type": "start_kyoku", "bakaze": _BAKAZE[table.round_wind_idx],
           "dora_marker": engine_to_mjai(table.dora_indicators[0]),
@@ -88,8 +98,13 @@ def play_game_mjai(table: PyMahjongTable, policies: Dict[int, Policy],
             emit({"type": "hora", "actor": pid, "target": pid})
             break
         if info.get("chankan"):
-            emit({"type": "kakan", "actor": pid, "pai": engine_to_mjai(info["chankan"]),
-                  "consumed": [engine_to_mjai(info["chankan"])] * 3})
+            kt = info["chankan"]
+            pk = table.pending_kan or {}
+            pon = next((m for m in table.melds[pid] if m["type"] == "pon" and m["tiles"][0] == kt), {})
+            pon_reds = pon.get("red", 0)
+            consumed = [engine_to_mjai(kt, red=i < pon_reds) for i in range(3)]
+            emit({"type": "kakan", "actor": pid, "pai": engine_to_mjai(kt, red=pk.get("red", False)),
+                  "consumed": consumed})
         elif info.get("discarded"):
             tile, tsumogiri, rdecl, _, _ = table.river_events[pid][-1]
             if rdecl:
@@ -107,7 +122,8 @@ def play_game_mjai(table: PyMahjongTable, policies: Dict[int, Policy],
         elif len(table.melds[pid]) > n_melds:            # ankan: dora, rinshan tsumo
             m = table.melds[pid][-1]
             emit({"type": "ankan", "actor": pid,
-                  "consumed": [engine_to_mjai(t) for t in m["tiles"]]})
+                  "consumed": [engine_to_mjai(t, red=i < m.get("red", 0))
+                               for i, t in enumerate(m["tiles"])]})
             emit_new_dora(n_dora)
             emit_tsumo(pid)
             continue

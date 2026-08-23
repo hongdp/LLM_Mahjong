@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 
 from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
+                                    N_PLANES_V1R, N_PLANES_V3R,
                                     N_PLANES_V2, N_PLANES_V3, N_SCALARS,
                                     N_SCALARS_V3, TILE_TYPES)
 from src.agents.dnn.net import MahjongPolicyNet, ResBlock
@@ -30,6 +31,7 @@ class CnnPolicy(MahjongPolicyNet):
                  in_scalars=N_SCALARS, encoder_variant="v1"):
         nn.Module.__init__(self)
         self.encoder_variant = encoder_variant
+        self.in_planes = in_planes
         # bypasses MahjongPolicyNet.__init__, so the exp11 critic-variant
         # attributes its inherited forward_with_value reads must exist here
         self.critic_feat_dim = 0
@@ -124,6 +126,14 @@ ZOO = {
                                    in_scalars=N_SCALARS_V3, encoder_variant="v3"), False),
     "convformer_m_v3": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V3,
                                            in_scalars=N_SCALARS_V3, encoder_variant="v3"), False),
+    # red-dora variants (Majsoul rules, 2026-08-23): +5 red planes
+    "cnn_m_r": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+    "convformer_m_r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V1R,
+                                          encoder_variant="v1r"), False),
+    "cnn_m_v3r": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R,
+                                    in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    "convformer_m_v3r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V3R,
+                                            in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
 }
 
 

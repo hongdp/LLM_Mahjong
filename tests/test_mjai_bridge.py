@@ -14,7 +14,7 @@ import unittest
 import torch
 
 from src.agents.dnn.encoder import encode_state
-from src.agents.dnn.mjai_bridge import MjaiDnnBot, mjai_to_engine
+from src.agents.dnn.mjai_bridge import mjai_to_engine_spelled, MjaiDnnBot, mjai_to_engine
 from src.agents.dnn.mjai_export import play_game_mjai
 from src.tasks.mahjong.table import ACTION_RE, PyMahjongTable
 
@@ -26,10 +26,10 @@ def reaction_to_action(reaction, bot):
         return '<action type="skip" />'
     if t == "hora":
         return '<action type="tsumo" />' if reaction["target"] == bot.seat else '<action type="ron" />'
-    if t == "reach":
-        return f'<action type="riichi" tile="{mjai_to_engine(reaction["reach_dahai"]["pai"])}" />'
+    if t == "reach":          # a red five discards as '0x' (its own action)
+        return f'<action type="riichi" tile="{mjai_to_engine_spelled(reaction["reach_dahai"]["pai"])}" />'
     if t == "dahai":
-        return f'<action type="discard" tile="{mjai_to_engine(reaction["pai"])}" />'
+        return f'<action type="discard" tile="{mjai_to_engine_spelled(reaction["pai"])}" />'
     if t == "chi":
         a, b = [mjai_to_engine(c) for c in reaction["consumed"]]
         return f'<action type="chi" tile="{mjai_to_engine(reaction["pai"])}" with="{a} {b}" />'
@@ -41,6 +41,8 @@ def reaction_to_action(reaction, bot):
         return f'<action type="kan" tile="{mjai_to_engine(reaction["consumed"][0])}" />'
     if t == "kakan":
         return f'<action type="kan" tile="{mjai_to_engine(reaction["pai"])}" />'
+    if t == "ryukyoku":
+        return '<action type="kyuushu" />'
     raise AssertionError(reaction)
 
 
@@ -78,7 +80,7 @@ class ShadowFidelityTest(unittest.TestCase):
                              f"seed={seed} legal set mismatch ({phase})")
             self.assertEqual(sorted(shadow.hands[me]), sorted(table.hands[me]))
             self.assertEqual(len(shadow.wall), len(table.wall), "wall count")
-            for variant in ("v1", "v3"):
+            for variant in ("v1", "v3", "v1r", "v3r"):
                 p0, s0 = encode_state(table, me, variant=variant)
                 p1, s1 = encode_state(shadow, me, variant=variant)
                 self.assertTrue(torch.equal(p0, p1), f"planes differ ({variant}) seed={seed}")
