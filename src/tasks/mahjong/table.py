@@ -244,11 +244,24 @@ class PyMahjongTable(MahjongEngineAPI):
         # the point DELTA from these starts; the placement bonus stays on
         # final points. Deterministic in the deal seed (dup_k replicas share
         # the context, so the group baseline removes its level effect).
-        if self.randomize_round:
-            spread = random.uniform(0.0, 12000.0)
-            pts = [25000.0 + spread * random.gauss(0.0, 1.0) for _ in range(4)]
-            pts = [max(1000, int(round(x / 100.0)) * 100) for x in pts]
-            pts[pts.index(max(pts))] += 100000 - sum(pts)   # exact total
+        # progression index k = hands notionally played (东1=0 .. 西4=11):
+        # 东1 starts dead equal; the spread grows like a random walk
+        # (sigma ~4500/hand -> std ~4500*sqrt(k)); sticks only for k>=1.
+        # Scores are multiples of 100, sum exactly 100000, floor 0
+        # (Majsoul: 0 is alive, negative busts -> no hand STARTS negative;
+        # in-hand payments may go negative = the bust ending itself).
+        k = self.round_wind_idx * 4 + self.dealer
+        if self.randomize_round and k > 0:
+            spread = random.uniform(0.5, 1.5) * 4500.0 * (k ** 0.5)
+            z = [max(-2.2, min(2.2, random.gauss(0.0, 1.0))) for _ in range(4)]
+            zm = sum(z) / 4.0
+            d = [spread * (x - zm) for x in z]          # zero-sum by construction
+            pts = [25000 + int(round(x / 100.0)) * 100 for x in d]
+            pts[pts.index(max(pts))] += 100000 - sum(pts)   # rounding remainder (x100)
+            while min(pts) < 0:                              # floor 0, paid by the leader
+                i, j = pts.index(min(pts)), pts.index(max(pts))
+                pts[j] += pts[i]
+                pts[i] = 0
             self.points = pts
             self.kyotaku = 1000 * random.choices(
                 (0, 1, 2, 3), weights=(70, 20, 8, 2))[0]

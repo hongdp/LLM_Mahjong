@@ -278,15 +278,44 @@ class TestRedDora(unittest.TestCase):
 class TestContextRandomization(unittest.TestCase):
     def test_random_context_is_seeded_and_consistent(self):
         import random as _r
-        _r.seed(777)
+        _r.seed(779)
         t1 = PyMahjongTable(randomize_round=True)
-        _r.seed(777)
+        _r.seed(779)
         t2 = PyMahjongTable(randomize_round=True)
         self.assertEqual(t1.points, t2.points)
         self.assertEqual(t1.kyotaku, t2.kyotaku)
         self.assertEqual(t1.round_wind_idx, t2.round_wind_idx)
         self.assertEqual(sum(t1.start_points), 100000)
-        self.assertTrue(all(p >= 1000 for p in t1.points))
+        self.assertTrue(all(p >= 0 for p in t1.points))
+
+    def test_east1_always_starts_equal(self):
+        import random as _r
+        n = 0
+        for sd in range(400):
+            _r.seed(50000 + sd)
+            t = PyMahjongTable(randomize_round=True)
+            if t.round_wind_idx == 0 and t.dealer == 0:
+                n += 1
+                self.assertEqual(t.points, [25000] * 4)
+                self.assertEqual(t.kyotaku, 0)
+        self.assertGreater(n, 10)
+
+    def test_spread_grows_with_progression(self):
+        import random as _r
+        import statistics
+        early, late = [], []
+        for sd in range(3000):
+            _r.seed(60000 + sd)
+            t = PyMahjongTable(randomize_round=True)
+            kk = t.round_wind_idx * 4 + t.dealer
+            sp = max(t.points) - min(t.points)
+            self.assertEqual(sum(t.start_points), 100000)
+            self.assertTrue(all(p >= 0 and p % 100 == 0 for p in t.points))
+            if kk == 1:
+                early.append(sp)
+            elif kk >= 8:
+                late.append(sp)
+        self.assertGreater(statistics.mean(late), statistics.mean(early) * 1.7)
 
     def test_contexts_actually_vary_and_west_appears(self):
         import random as _r
@@ -294,8 +323,10 @@ class TestContextRandomization(unittest.TestCase):
         for sd in range(300):
             _r.seed(9000 + sd)
             t = PyMahjongTable(randomize_round=True)
-            pts.add(tuple(t.points)); winds.add(t.round_wind_idx); kyo.add(t.kyotaku)
-        self.assertGreater(len(pts), 250)
+            if t.round_wind_idx * 4 + t.dealer > 0:
+                pts.add(tuple(t.points)); kyo.add(t.kyotaku)
+            winds.add(t.round_wind_idx)
+        self.assertGreater(len(pts), 200)
         self.assertEqual(winds, {0, 1, 2})
         self.assertIn(1000, kyo); self.assertIn(0, kyo)
 
