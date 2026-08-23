@@ -102,7 +102,12 @@ def analyze(path):
             if kind == "decision" and isinstance(data, dict):
                 game.setdefault("records", []).append({
                     "phase": data.get("phase"), "value": data.get("value"),
-                    "override": bool(data.get("override")),
+                    # a turn-phase decision whose executed action was never
+                    # observed (type "none") is unobserved, not a human override
+                    "override": bool(data.get("override"))
+                    and (data.get("executed") or {}).get("type") not in (None, "none", "end_kyoku"),
+                    "unobserved": bool(data.get("override"))
+                    and (data.get("executed") or {}).get("type") in (None, "none"),
                     "p_chosen": (data.get("probs") or {}).get(data.get("chosen")),
                     "executed": (data.get("executed") or {}).get("type")})
     return games
@@ -144,7 +149,9 @@ def main():
         ov = sum(r["override"] for r in recs if r["executed"] != "end_kyoku")
         vs = [r["value"] for r in recs if isinstance(r["value"], (int, float))]
         pc = [r["p_chosen"] for r in recs if isinstance(r["p_chosen"], (int, float))]
+        unob = sum(r["unobserved"] for r in recs)
         print(f"recorded decisions: {len(recs)}  human overrides: {ov} ({ov / len(recs):.1%})  "
+              f"unobserved executions: {unob}  "
               f"mean V: {statistics.mean(vs):+.3f}  mean p(pick): {statistics.mean(pc):.3f}  "
               f"executed: {dict(Counter(r['executed'] for r in recs))}")
     print()
