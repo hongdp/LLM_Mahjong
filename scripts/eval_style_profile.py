@@ -99,14 +99,28 @@ def main():
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--seed0", type=int, default=90260816)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--vs_anchors", default=None,
+                    help="comma-separated anchor names (elo_league/anchors.json): seat the "
+                         "checkpoint against them (greedy, candidate seat only) instead of "
+                         "mirror self-play — the ecology-free reading of houjuu/agari")
     args = ap.parse_args()
 
     results = {}
     for spec in args.ckpt:
         label, path = spec.split("=", 1)
         t0 = time.time()
-        results[label] = profile(path, args.games, args.workers,
-                                 args.temperature, args.seed0)
+        if args.vs_anchors:
+            from src.agents.dnn.style_stats import style_vs_anchors
+            from scripts.run_elo_league import LEAGUE_DIR
+            anchors = json.load(open(f"{LEAGUE_DIR}/anchors.json"))["anchors"]
+            torch.set_num_threads(max(1, args.workers))
+            cand = load_dnn(path, "cpu")
+            opp = [load_dnn(anchors[n]["path"], "cpu") for n in args.vs_anchors.split(",")]
+            results[label] = style_vs_anchors(cand, opp, args.games, args.seed0, temperature=0.0)
+            results[label]["vs_anchors"] = args.vs_anchors
+        else:
+            results[label] = profile(path, args.games, args.workers,
+                                     args.temperature, args.seed0)
         r = results[label]
         print(f"[{label}] {r['games']} games ({time.time()-t0:.0f}s)  "
               f"流局 {r['draw_rate']:.1%}  和牌 {r['agari_rate']:.1%}  "

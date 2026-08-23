@@ -173,6 +173,13 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
     for game in collected:
         episodes.extend(game["episodes"])
         results.append(game["result"])
+    # style facts of this iteration's games (learner seats only), for TB
+    from src.agents.dnn.style_stats import new_agg, add_game
+    agg = new_agg()
+    for game in collected:
+        add_game(agg, game["result"], game.get("riichi"), game.get("n_melds"),
+                 game.get("n_discards"), seats=game.get("learner_seats") or range(4))
+    collect_parallel.last_style = agg
     return episodes, results
 
 
@@ -234,7 +241,9 @@ def _package_game(g, learner_seats, seed, cfg, cmode, league):
             # broadcasts it over the episode's steps for the BCE channel
             ep["hlabels"] = np.array(labels[pid], dtype=np.float32)
         eps.append(ep)
-    return {"episodes": eps, "result": g.result or "", "league": league}
+    return {"episodes": eps, "result": g.result or "", "league": league,
+            "riichi": list(g.riichi or []), "n_melds": list(g.n_melds or []),
+            "n_discards": g.n_discards, "learner_seats": sorted(learner_seats)}
 
 
 def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):

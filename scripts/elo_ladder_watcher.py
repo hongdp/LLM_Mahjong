@@ -56,6 +56,23 @@ def rate_one(ckpt, run_name, games, prev_elo, args, device, writer):
                           allow_engine_mismatch=args.allow_engine_mismatch)
     writer.add_scalar("elo/rating", rec["elo"], global_step=games)
     writer.add_scalar("elo/se", rec["se"], global_step=games)
+    # capability-ordering metrics vs FIXED opponents (the anchors just used):
+    # greedy, candidate seat only -> style/* next to elo/* in TensorBoard
+    try:
+        from src.agents.dnn.style_stats import style_vs_anchors
+        from scripts.run_arena_dnn import load_dnn
+        anchors = json.load(open(f"{LEAGUE_DIR}/anchors.json"))["anchors"]
+        cand = load_dnn(ckpt, "cpu")
+        opp = [load_dnn(anchors[n]["path"], "cpu") for n in use]
+        sty = style_vs_anchors(cand, opp, games=getattr(args, "style_games", 200),
+                               seed0=args.seed_base + games + 7, temperature=0.0)
+        for k, v in sty.items():
+            if k != "games":
+                writer.add_scalar(f"style/{k}", float(v), global_step=games)
+        rec["style"] = sty
+        print(f"STYLE {run_name}@{games}: " + " ".join(f"{k}={v:.3f}" for k, v in sty.items() if k != "games"), flush=True)
+    except Exception as e:                     # never let a probe kill the watcher
+        print(f"style probe failed: {e}", flush=True)
     writer.flush()
     return rec["elo"]
 
@@ -140,6 +157,7 @@ def main():
         for flag, dv in common.values():
             p.add_argument(flag, type=int, default=dv)
         p.add_argument("--allow_engine_mismatch", action="store_true")
+        p.add_argument("--style_games", type=int, default=200)
     bf.set_defaults(fn=cmd_backfill)
     wa.set_defaults(fn=cmd_watch)
     args = ap.parse_args()

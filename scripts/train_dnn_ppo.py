@@ -441,6 +441,12 @@ def main():
         for k, v in row.items():
             if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
                 writer.add_scalar(TB_TAG.get(k, k), float(v), games)
+        from src.agents.dnn.style_stats import summarize as _style_sum
+        _sty = getattr(collect_parallel, "last_style", None)
+        if _sty:
+            for k, v in _style_sum(_sty).items():
+                if k != "games":
+                    writer.add_scalar(f"style/{k}", float(v), games)
         writer.add_scalar("games_per_sec",
                           (games - start_games) / max(el, 1e-9), games)
         writer.flush()
