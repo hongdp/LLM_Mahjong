@@ -55,3 +55,11 @@ ConvFormer 加回 rank 相对偏置后差距缩到 −14。因此假设拆成两
 | Path | Description |
 |---|---|
 | gs://llm-mahjong-experiments/dnn_exp27_{A,B,C}_<ts>/ | 云端主目录（发射后填） |
+
+## Progress（发射后）
+- [04:13] 三臂发射于 g4-standard-48 flex（A 196 局/s，C 155）；B 因 rank 偏置高级索引反向原子加争用卡死（30 s/minibatch），
+  改 `F.embedding` 后 04:46 重发，稳态 46 局/s（rollout 13 s + 更新 30 s/轮）。
+- [05:10 早期信号] decisive_rate：A 0.66 @300k，**C 仅 0.31 @280k**；熵：A 平台 1.04，**C 平台 1.2 且 250k 后回升**。
+  解读：同配方（LR 1e-4 / batch 8192 / 熵 0.03）下大 CNN 的策略梯度信号更弱，熵奖励把它按住——"规模"臂可能被配方而非
+  架构限制。判定仍按预注册到 1.0M；下一批首要臂 = 规模 × 低熵配方（与 exp28 结论合成）。A 与本机 A″ 在 400k 前完全重合
+  （两套 rollout 基建等价），A″ 在 400k 熵计划切换处准时分叉（1.04→0.84）。
