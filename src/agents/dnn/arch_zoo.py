@@ -371,3 +371,226 @@ ZOO.update({
     "cnn_l_r": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
     "cnn_xl_r": (lambda: CnnPolicy(192, 6, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
 })
+
+
+# ----------------------------------------------------------------------
+# exp30: HandRiverFormer — hand instance tokens CROSS-ATTENDING on the
+# river EVENT sequence (user design 2026-08-23). Spec highlights:
+#   * hand tokens (<=18 real + CLS, 20 slots): concealed tiles + own meld
+#     tiles; learnable embeddings summed, rank via shared sinusoid;
+#   * event tokens (<=128 + 1 global): per-discard events with absolute
+#     junme PE and RECENCY PE through SEPARATE learned projections (the
+#     two sinusoids must not share frequency dims — user 2026-08-23),
+#     seat/kind embeddings, flag attributes, is-last-discard;
+#   * per block: hand self-attn (rank rel-bias) -> cross-attn(Q=hand,
+#     KV=events) -> FFN; context pre-encoded by 2 plain self-attn layers;
+#   * ablations: no_cross (pooled-context concat instead), no_temporal_pe,
+#     free_rank_emb (learned table instead of sinusoid).
+# ----------------------------------------------------------------------
+from src.agents.dnn.encoder import EV_MAX, EV_F, EV_PLANES, N_PLANES_V4, N_PLANES_V1R as _NP1R
+
+
+def _sinusoid(n_pos, d):
+    import math
+    pe = torch.zeros(n_pos, d)
+    pos = torch.arange(n_pos, dtype=torch.float)[:, None]
+    div = torch.exp(torch.arange(0, d, 2, dtype=torch.float) * (-math.log(200.0) / d))
+    pe[:, 0::2] = torch.sin(pos * div)
+    pe[:, 1::2] = torch.cos(pos * div)
+    return pe
+
+
+class CrossBlock(nn.Module):
+    def __init__(self, d, heads):
+        super().__init__()
+        self.h, self.dh = heads, d // heads
+        self.lnq = nn.LayerNorm(d)
+        self.lnk = nn.LayerNorm(d)
+        self.q = nn.Linear(d, d)
+        self.kv = nn.Linear(d, 2 * d)
+        self.proj = nn.Linear(d, d)
+
+    def forward(self, x, ctx, ctx_keep):
+        B, L, _ = x.shape
+        S = ctx.shape[1]
+        q = self.q(self.lnq(x)).reshape(B, L, self.h, self.dh).transpose(1, 2)
+        k, v = self.kv(self.lnk(ctx)).reshape(B, S, 2, self.h, self.dh).permute(2, 0, 3, 1, 4)
+        bias = torch.zeros(B, 1, 1, S, device=x.device, dtype=q.dtype)
+        bias = bias.masked_fill(~ctx_keep[:, None, None, :], float("-inf"))
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=bias)
+        return x + self.proj(y.transpose(1, 2).reshape(B, L, -1))
+
+
+class HRBlock(nn.Module):
+    """hand self-attn (rel-bias) -> cross-attn on events -> FFN."""
+
+    def __init__(self, d, heads, n_buckets, cross=True):
+        super().__init__()
+        self.self_attn = SetAttnBlock(d, heads, n_buckets)   # includes its own FFN
+        self.cross = CrossBlock(d, heads) if cross else None
+        self.ln = nn.LayerNorm(d)
+        self.ffn = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
+
+    def forward(self, x, bucket, keep, ctx, ctx_keep):
+        x = self.self_attn(x, bucket, keep)
+        if self.cross is not None:
+            x = self.cross(x, ctx, ctx_keep)
+        return x + self.ffn(self.ln(x))
+
+
+class HandRiverFormer(nn.Module):
+    HAND_SLOTS = 20            # <=18 real tokens (2 concealed + 4 kans worst case) + CLS
+
+    def __init__(self, d=320, layers=8, heads=8, ctx_layers=2,
+                 no_cross=False, no_temporal_pe=False, free_rank_emb=False,
+                 encoder_variant="v4"):
+        super().__init__()
+        self.encoder_variant = encoder_variant
+        self.in_planes = N_PLANES_V4
+        self.d = d
+        self.no_cross, self.no_temporal_pe = no_cross, no_temporal_pe
+        self.critic_feat_dim, self.hazard, self.hazard_head = 0, False, None
+        # --- shared tile factorization (hand + events)
+        if free_rank_emb:
+            self.rank_pe = nn.Parameter(torch.randn(10, 64) * 0.02)     # 0=honor,1..9
+        else:
+            self.register_buffer("rank_pe_const", _sinusoid(10, 64), persistent=False)
+            self.rank_pe = None
+        self.rank_proj = nn.Linear(64, d)
+        self.suit_emb = nn.Embedding(4, d)
+        self.honor_emb = nn.Embedding(8, d)          # 0 = suited, 1..7 honors
+        # --- hand-side
+        self.copy_emb = nn.Embedding(4, d)
+        self.hand_attr = nn.Linear(2, d)             # [red, in-meld]
+        self.cls = nn.Parameter(torch.zeros(1, 1, d))
+        # --- event-side
+        self.kind_emb = nn.Embedding(3, d)           # discard / opp meld / dora
+        self.seat_emb = nn.Embedding(4, d)
+        self.junme_proj = nn.Linear(64, d)           # separate projections: the two
+        self.recency_proj = nn.Linear(64, d)         # sinusoids must not share dims
+        self.register_buffer("time_pe", _sinusoid(EV_MAX + 1, 64), persistent=False)
+        self.event_attr = nn.Linear(6, d)            # tsumogiri/riichi/called/red/last/from-me
+        self.global_proj = nn.Linear(N_SCALARS_V3, d)
+        n_buckets = 3 + 17
+        self.ctx_blocks = nn.ModuleList([SetAttnBlock(d, heads, n_buckets) for _ in range(ctx_layers)])
+        self.blocks = nn.ModuleList([HRBlock(d, heads, n_buckets, cross=not no_cross)
+                                     for _ in range(layers)])
+        self.ln_out = nn.LayerNorm(d)
+        feat = 3 * d
+        self.head = nn.Sequential(nn.Linear(feat, 512), nn.ReLU(), nn.Linear(512, ACTION_DIM))
+        nn.init.zeros_(self.head[-1].weight)
+        nn.init.zeros_(self.head[-1].bias)
+        self.value = nn.Sequential(nn.Linear(feat, 256), nn.ReLU(), nn.Linear(256, 1))
+        tiles = torch.arange(TILE_TYPES).repeat(4)
+        self.register_buffer("slot_tile", tiles, persistent=False)
+        self.register_buffer("slot_copy", torch.arange(4).repeat_interleave(TILE_TYPES), persistent=False)
+        tb = _tile_buckets()
+        self.register_buffer("tile_bucket", tb, persistent=False)
+
+    # ---- token builders ------------------------------------------------
+    def _rank_vec(self, rank_idx):
+        table = self.rank_pe if self.rank_pe is not None else self.rank_pe_const
+        return self.rank_proj(table[rank_idx])
+
+    def _tile_vec(self, i34):
+        suit = torch.where(i34 < 27, i34 // 9, torch.full_like(i34, 3))
+        rank = torch.where(i34 < 27, i34 % 9 + 1, torch.zeros_like(i34))
+        hon = torch.where(i34 >= 27, i34 - 27 + 1, torch.zeros_like(i34))
+        return self._rank_vec(rank) + self.suit_emb(suit) + self.honor_emb(hon)
+
+    def _hand_tokens(self, planes):
+        B = planes.shape[0]
+        dev = planes.device
+        hand = planes[:, :4, :].reshape(B, -1) > 0.5
+        meld = planes[:, 4, :] > 0.5
+        red_plane = planes[:, N_PLANES, :]
+        meld_slot = torch.cat([meld, torch.zeros(B, 3 * TILE_TYPES, dtype=torch.bool, device=dev)], 1)
+        present = hand | meld_slot
+        is_meld = (meld_slot & ~hand).to(planes.dtype)
+        red = torch.zeros_like(present, dtype=planes.dtype)
+        red[:, :TILE_TYPES] = red_plane * hand[:, :TILE_TYPES].to(planes.dtype)
+        order = torch.argsort((~present).to(torch.int8), dim=1, stable=True)[:, :self.HAND_SLOTS - 1]
+        keep = torch.gather(present, 1, order)
+        tile = self.slot_tile[order]
+        x = (self._tile_vec(tile) + self.copy_emb(self.slot_copy[order])
+             + self.hand_attr(torch.stack([torch.gather(red, 1, order),
+                                           torch.gather(is_meld, 1, order)], -1)))
+        x = torch.cat([self.cls.expand(B, 1, -1), x], 1)
+        keep = torch.cat([torch.ones(B, 1, dtype=torch.bool, device=dev), keep], 1)
+        ids = torch.cat([torch.zeros(B, 1, dtype=torch.long, device=dev), tile + 1], 1)
+        bucket = self.tile_bucket[ids[:, :, None], ids[:, None, :]]
+        return x, keep, bucket
+
+    def _event_tokens(self, planes, scalars):
+        B = planes.shape[0]
+        dev = planes.device
+        buf = planes[:, _NP1R:, :].reshape(B, -1)
+        ev = buf[:, :EV_MAX * EV_F].reshape(B, EV_MAX, EV_F)
+        n = buf[:, -1].long().clamp(0, EV_MAX)
+        idx = torch.arange(EV_MAX, device=dev)[None]
+        keep = idx < n[:, None]
+        rank = ev[..., 0].long().clamp(0, 9)
+        suit = ev[..., 1].long().clamp(0, 3)
+        hon = ev[..., 2].long().clamp(0, 7)
+        kind = ev[..., 3].long().clamp(0, 2)
+        seat = ev[..., 4].long().clamp(0, 3)
+        junme = ev[..., 5].long().clamp(0, EV_MAX)
+        rec = ev[..., 6].long().clamp(0, EV_MAX)
+        flags = ev[..., 7].long()
+        attrs = torch.stack([(flags >> b) & 1 for b in range(6)], -1).to(planes.dtype)
+        x = (self._rank_vec(rank) + self.suit_emb(suit) + self.honor_emb(hon)
+             + self.kind_emb(kind) + self.seat_emb(seat) + self.event_attr(attrs))
+        if not self.no_temporal_pe:
+            x = x + self.junme_proj(self.time_pe[junme]) + self.recency_proj(self.time_pe[rec])
+        g = self.global_proj(scalars)[:, None, :]
+        x = torch.cat([g, x], 1)
+        keep = torch.cat([torch.ones(B, 1, dtype=torch.bool, device=dev), keep], 1)
+        zero_bucket = torch.zeros(B, x.shape[1], x.shape[1], dtype=torch.long, device=dev)
+        return x, keep, zero_bucket
+
+    # ---- api -----------------------------------------------------------
+    def trunk(self, planes, scalars):
+        hx, hkeep, hbucket = self._hand_tokens(planes)
+        cx, ckeep, cbucket = self._event_tokens(planes, scalars)
+        for blk in self.ctx_blocks:
+            cx = blk(cx, cbucket, ckeep)
+        if self.no_cross:
+            pooled_ctx = (cx * ckeep[..., None]).sum(1) / ckeep.sum(1, keepdim=True).clamp(min=1)
+            hx = hx + pooled_ctx[:, None, :]
+        for blk in self.blocks:
+            hx = blk(hx, hbucket, hkeep, cx, ckeep)
+        hx = self.ln_out(hx)
+        hand_pool = (hx * hkeep[..., None]).sum(1) / hkeep.sum(1, keepdim=True).clamp(min=1)
+        ctx_pool = (cx * ckeep[..., None]).sum(1) / ckeep.sum(1, keepdim=True).clamp(min=1)
+        return torch.cat([hx[:, 0], hand_pool, ctx_pool], dim=1)
+
+    def forward(self, planes, scalars, mask):
+        logits = self.head(self.trunk(planes, scalars))
+        return logits.masked_fill(~mask, float("-inf"))
+
+    def forward_with_value(self, planes, scalars, mask, cfeats=None):
+        h = self.trunk(planes, scalars)
+        return (self.head(h).masked_fill(~mask, float("-inf")),
+                self.value(h).squeeze(-1))
+
+    @torch.no_grad()
+    def act(self, planes, scalars, mask, temperature: float = 1.0):
+        if not bool(mask.any(dim=1).all()):
+            raise ValueError("act() got a row with no legal actions")
+        logits = self.forward(planes, scalars, mask)
+        if temperature <= 0:
+            idx = logits.argmax(dim=1)
+            lp = torch.log_softmax(logits, dim=1).gather(1, idx[:, None]).squeeze(1)
+        else:
+            logb = torch.log_softmax(logits / temperature, dim=1)
+            idx = torch.multinomial(logb.exp(), 1).squeeze(1)
+            lp = logb.gather(1, idx[:, None]).squeeze(1)
+        return idx, lp
+
+
+ZOO.update({
+    "hrf_xl_v4": (lambda: HandRiverFormer(320, 8, 8, 2), False),
+    "hrf_xl_nocross_v4": (lambda: HandRiverFormer(320, 8, 8, 2, no_cross=True), False),
+    "hrf_xl_notime_v4": (lambda: HandRiverFormer(320, 8, 8, 2, no_temporal_pe=True), False),
+    "hrf_xl_freerank_v4": (lambda: HandRiverFormer(320, 8, 8, 2, free_rank_emb=True), False),
+})

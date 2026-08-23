@@ -25,7 +25,7 @@ def main():
     else:
         net = ZOO[a.arch][0]()
         cfg_arch = a.arch
-    cfg = dict(channels=getattr(net.stem, "out_channels", 64), blocks=3, arch=cfg_arch,
+    cfg = dict(channels=getattr(getattr(net, "stem", None), "out_channels", 64), blocks=3, arch=cfg_arch,
                temperature=1.0, gamma=0.995, shaping=False, seed=1, critic_feats="none",
                gpu_infer=a.gpu, infer_wait_ms=a.wait_ms, infer_max_batch=a.max_batch,
                games_per_worker=a.games_per_worker)

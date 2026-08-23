@@ -178,10 +178,11 @@ class TestTrainerCallCompat(unittest.TestCase):
         for name, (factory, order) in ZOO.items():
             net = factory().eval()
             variant = getattr(net, "encoder_variant", "v1")
-            v3 = variant.startswith("v3")
+            from src.agents.dnn.encoder import VARIANT_SHAPE
+            _, n_sc = VARIANT_SHAPE.get(variant, (None, N_SCALARS))
             n_pl = getattr(net, "in_planes", None) or (N_PLANES_V2 if order else N_PLANES)
             p = torch.rand(2, n_pl, TILE_TYPES)
-            s = torch.rand(2, N_SCALARS_V3 if v3 else N_SCALARS)
+            s = torch.rand(2, n_sc)
             m = torch.ones(2, ACTION_DIM, dtype=torch.bool)
             logits, v = net.forward_with_value(p, s, m, cfeats=None)
             self.assertEqual(v.shape, (2,), name)

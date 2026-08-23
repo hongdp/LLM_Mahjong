@@ -56,9 +56,23 @@ N_PLANES_RED = 6
 N_PLANES_V1R = N_PLANES + N_PLANES_RED      # 21
 N_PLANES_V3R = N_PLANES_V3 + N_PLANES_RED   # 56
 
+# encoder v4 (exp30 HandRiverFormer, 2026-08-23): v1r planes + a packed
+# EVENT BUFFER rendered as extra pseudo-planes so the shared-memory RPC
+# (slots x planes x 34) needs no change. Layout: EV_MAX events x EV_F
+# features flattened row-major into ceil(EV_MAX*EV_F/34) planes.
+# Event features (all raw facts, no derivation):
+#   0 rank 1..9 (0 = honor), 1 suit id m0 p1 s2 z3, 2 honor rank 1..7 (0 = suited),
+#   3 kind: 0 discard / 1 opp-meld tile / 2 dora indicator, 4 rel seat 0..3,
+#   5 junme j (that seat's j-th discard), 6 recency (0 = newest discard),
+#   7 flags bitfield: 1 tsumogiri / 2 riichi-decl / 4 called-away / 8 red five
+#     / 16 is-last-discard / 32 meld-from-me, 9.. reserved
+EV_MAX, EV_F = 128, 8
+EV_PLANES = (EV_MAX * EV_F + TILE_TYPES - 1) // TILE_TYPES   # 31
+N_PLANES_V4 = N_PLANES_V1R + EV_PLANES
 VARIANT_SHAPE = {                            # encoder variant -> (planes, scalars)
     "v1": (N_PLANES, N_SCALARS), "v1r": (N_PLANES_V1R, N_SCALARS),
     "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
+    "v4": (N_PLANES_V4, N_SCALARS_V3),
 }
 MAX_PLANES = max(p for p, _ in VARIANT_SHAPE.values())
 MAX_SCALARS = max(s for _, s in VARIANT_SHAPE.values())
@@ -71,7 +85,7 @@ def variant_shape(variant: str):
 def variant_of_arch(arch: str) -> str:
     """Encoder variant implied by a zoo arch name ('cnn_m_v3r' -> 'v3r')."""
     arch = arch or ""
-    for suf, v in (("_v3r", "v3r"), ("_v3", "v3"), ("_r", "v1r")):
+    for suf, v in (("_v4", "v4"), ("_v3r", "v3r"), ("_v3", "v3"), ("_r", "v1r")):
         if arch.endswith(suf):
             return v
     return "v1"
@@ -202,6 +216,58 @@ def _red_planes(table, player_id: int) -> np.ndarray:
     return R
 
 
+def _event_planes(table, player_id: int) -> np.ndarray:
+    """[EV_PLANES, 34]: the packed event buffer (see the layout note above).
+    Events in global order: every seat's river events (tile, tsumogiri,
+    riichi-decl, called, per-seat index), opponents' meld tiles, dora
+    indicators. Newest-first truncation at EV_MAX (overflow is impossible in
+    practice: <= 24*4 discards + 16 meld tiles + 5 dora < 128 only late in
+    kan-heavy hands; we keep the NEWEST events)."""
+    rows = []
+    # discards, tagged with per-seat junme and a global order key
+    tagged = []
+    for off in range(4):
+        pid = (player_id + off) % 4
+        for (tile, tsumogiri, rdecl, called, idx) in table.river_events[pid]:
+            tagged.append((idx * 4 + pid, off, tile, tsumogiri, rdecl, called, idx))
+    tagged.sort()
+    n_disc = len(tagged)
+    for g, (order, off, tile, tsumogiri, rdecl, called, idx) in enumerate(tagged):
+        t = tile.replace("*", "")
+        red = t[0] == "0"
+        i34 = tile_to_34(t)
+        suit = i34 // 9 if i34 < 27 else 3
+        rank = (i34 % 9) + 1 if i34 < 27 else 0
+        hon = (i34 - 27) + 1 if i34 >= 27 else 0
+        flags = (1 if tsumogiri else 0) | (2 if rdecl else 0) | (4 if called else 0) \
+            | (8 if red else 0) | (16 if g == n_disc - 1 and table.last_discard else 0)
+        rows.append([rank, suit, hon, 0, off, idx, n_disc - 1 - g, flags])
+    for off in range(1, 4):                        # opponents' melds
+        pid = (player_id + off) % 4
+        for m in table.melds[pid]:
+            reds = m.get("red", 0)
+            for j, t in enumerate(m["tiles"]):
+                i34 = tile_to_34(t)
+                suit = i34 // 9 if i34 < 27 else 3
+                rank = (i34 % 9) + 1 if i34 < 27 else 0
+                hon = (i34 - 27) + 1 if i34 >= 27 else 0
+                flags = (8 if j < reds else 0) | (32 if m.get("from") == player_id else 0)
+                rows.append([rank, suit, hon, 1, off, 0, 0, flags])
+    for ind in table.dora_indicators:              # dora indicators
+        i34 = tile_to_34(ind)
+        suit = i34 // 9 if i34 < 27 else 3
+        rank = (i34 % 9) + 1 if i34 < 27 else 0
+        hon = (i34 - 27) + 1 if i34 >= 27 else 0
+        rows.append([rank, suit, hon, 2, 0, 0, 0, 0])
+    rows = rows[-EV_MAX:]
+    buf = np.zeros(EV_PLANES * TILE_TYPES, dtype=np.float32)
+    flat = np.asarray(rows, dtype=np.float32).reshape(-1) if rows else np.zeros(0, np.float32)
+    buf[:flat.shape[0]] = flat
+    # a length header in the very last cell (unused by the flat layout)
+    buf[-1] = float(len(rows))
+    return buf.reshape(EV_PLANES, TILE_TYPES)
+
+
 def encode_state(table, player_id: int,
                  with_order: bool = False,
                  variant: str = "v1") -> Tuple[torch.Tensor, torch.Tensor]:
@@ -223,6 +289,13 @@ def encode_state(table, player_id: int,
     if variant == "v1r":
         P, sc = encode_state(table, player_id, with_order=False, variant="v1")
         return torch.cat([P, torch.from_numpy(_red_planes(table, player_id))]), sc
+    if variant == "v4":
+        P, _ = encode_state(table, player_id, with_order=False, variant="v1")
+        Pr = _red_planes(table, player_id)
+        Ev = _event_planes(table, player_id)
+        _, sc = _encode_v3(table, player_id, as_numpy=True)   # scalars incl. riichi turns / counts
+        return (torch.cat([P, torch.from_numpy(Pr), torch.from_numpy(Ev)]),
+                torch.from_numpy(sc))
     planes = np.zeros((N_PLANES_V2 if with_order else N_PLANES, TILE_TYPES),
                       dtype=np.float32)
 
