@@ -158,3 +158,27 @@ CPU 配额时，Spot VM 直接消耗标准配额（`CPUS`=200、`A2_CPUS`=12）�
 - PREEMPTIBLE_NVIDIA_A100_GPUS 维持 16/区（flex-start 抽此额度，A2_CPUS 才是真闸门——现已放宽）。
 - A100 80GB 配额仍为 0；若未来大 batch SFT 需要（40GB 上 batch 8 OOM 实录见 exp3），另行申请 `NVIDIA-A100-80GB-GPUS-per-project-region`。
 - 申请方式：`gcloud alpha quotas preferences create --service=compute.googleapis.com --quota-id=... --preferred-value=N --dimensions=region=...`（不带位置参数名；本次全部秒批）。
+
+## 8. 2026-08-23 更新：DNN 自对弈阶段的性价比实测（§7 的 G4 结论作废）
+
+负载变了：Phase-2 DNN 自对弈的瓶颈是 **rollout 的 CPU（worker 进程）**，不是 GPU 显存带宽。
+统一用 GPU 批推理 + 向量化 worker（`--gpu_infer --games_per_worker 32`）后的实测：
+
+| 机型 | 价格 | vCPU | cnn_m_r（2M） | handset_xl（20M） | 局/s 每 $（cnn） | 抢占 |
+|---|---|---|---|---|---|---|
+| 本机 24 核 + RTX 4080 | 0 | 24 | 204 | 97 | ∞ | — |
+| g2-standard-32（L4）按需 | $2.6/h | 32 | 104 | 36（GPU 封顶） | 40 | 无 |
+| **g4-standard-48（RTX PRO 6000）flex-start** | **$2.25/h** | 48 | **279** | **160** | **124** | 7 天内不抢占 |
+| g2-standard-32 spot | ~$0.9/h | 32 | ~104 | ~36 | ~115 | 会被整区收割（08-15） |
+| a2-highgpu-1g（A100）flex | $2.0/h | 12 | ~40（估） | — | ~20 | — |
+| n1-highcpu-64 + T4 | ~$2.6/h | 64 | ~200（估） | T4 会成瓶颈 | ~77 | — |
+
+结论与规则：
+- **云端默认 = g4-standard-48 flex-start**：每美元 3× 于 g2 按需、单 run 快 2.7–4.4×、不抢占、不用写复活器；
+  与 spot g2 每美元相当但没有抢占风险。**只用 flex**（G4 按需 $4.5/h 直接把性价比打回 g2 水平）。
+- 建机要点：`--boot-disk-type=hyperdisk-balanced`（pd-balanced 被拒）、`--provisioning-model=FLEX_START
+  --instance-termination-action=DELETE --max-run-duration=12h`、镜像 `common-cu129-ubuntu-2204-nvidia-580`
+  （torch cu129 原生支持 Blackwell sm_120）、us-central1-b 容量充足（秒拿）。G4 没有单独的配额指标，直接建即可。
+- A100 flex 的"最划算"只对 Phase-1 的 LLM 解码成立（显存带宽受限）；对 DNN 自对弈 12 vCPU 是硬伤。
+- 运营：VM 跑完直接删除（停机盘费 $10/台/月）；计费导出已开到 BigQuery `billing_export`，按 VM 名归因。
+- 省钱顺序：本机（免费）> G4 flex ≈ spot g2 > n1+T4 > g2 按需 > A100 flex。
