@@ -47,11 +47,14 @@ N_SCALARS = 20
 # visible-tile count >= k (k=1..4, union of everything on the table).
 N_PLANES_V3 = 15 + 16 + 12 + 3 + 4          # = 50
 N_SCALARS_V3 = N_SCALARS + 4 + 4 + 1        # + riichi turn x4, discard count x4, wall-turn
-# red-dora variants (2026-08-23): base planes + 5 — own red fives (at the
-# 5x columns) and, per relative seat, red fives visible in river/melds.
-N_PLANES_RED = 5
-N_PLANES_V1R = N_PLANES + N_PLANES_RED      # 20
-N_PLANES_V3R = N_PLANES_V3 + N_PLANES_RED   # 55
+# red-dora variants (2026-08-23): base planes + 6 — own red fives (at the
+# 5x columns), per relative seat red fives visible in river/melds, and the
+# yakuhai plane (round wind, seat wind, dragons: a rule fact placed on the
+# tile axis, like the dora plane — the winds were only global scalars
+# before, and the champion's value/guest-wind split was weak: pon 52%/40%).
+N_PLANES_RED = 6
+N_PLANES_V1R = N_PLANES + N_PLANES_RED      # 21
+N_PLANES_V3R = N_PLANES_V3 + N_PLANES_RED   # 56
 
 VARIANT_SHAPE = {                            # encoder variant -> (planes, scalars)
     "v1": (N_PLANES, N_SCALARS), "v1r": (N_PLANES_V1R, N_SCALARS),
@@ -166,9 +169,13 @@ def _presence_row(tiles) -> np.ndarray:
 
 
 def _red_planes(table, player_id: int) -> np.ndarray:
-    """[5, 34]: own red fives; red fives visible per relative seat
-    (river '0x' entries + meld red counts), at the 5x columns."""
+    """[6, 34]: own red fives; red fives visible per relative seat
+    (river '0x' entries + meld red counts), at the 5x columns; yakuhai
+    tiles for this player (round wind, seat wind, 5z/6z/7z)."""
     R = np.zeros((N_PLANES_RED, TILE_TYPES), dtype=np.float32)
+    R[5][27 + table.round_wind_idx] = 1.0
+    R[5][27 + (player_id - table.dealer) % 4] = 1.0
+    R[5][31:34] = 1.0
     red = getattr(table, "red", None)
     for off in range(4):
         pid = (player_id + off) % 4

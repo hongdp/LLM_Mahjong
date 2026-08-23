@@ -76,3 +76,23 @@ def test_v1_path_unchanged_signature():
     t = _midgame_table()
     p, s = encode_state(t, t.turn)
     assert p.shape == (15, 34) and s.shape == (20,)
+
+
+def test_red_variants_carry_yakuhai_plane():
+    import random
+    from src.tasks.mahjong.table import PyMahjongTable
+    from src.agents.dnn.encoder import encode_state, N_PLANES_V1R, N_PLANES_V3R, N_PLANES, N_PLANES_V3
+    random.seed(3)
+    t = PyMahjongTable(randomize_round=True)
+    t.text_obs = False
+    for pid in range(4):
+        p1, _ = encode_state(t, pid, variant="v1r")
+        p3, _ = encode_state(t, pid, variant="v3r")
+        assert p1.shape[0] == N_PLANES_V1R and p3.shape[0] == N_PLANES_V3R
+        y1, y3 = p1[N_PLANES + 5], p3[N_PLANES_V3 + 5]
+        assert bool((y1 == y3).all())
+        assert float(y1[27 + t.round_wind_idx]) == 1.0
+        assert float(y1[27 + (pid - t.dealer) % 4]) == 1.0
+        assert float(y1[31:34].sum()) == 3.0
+        n_winds = int(y1[27:31].sum())
+        assert n_winds == (1 if t.round_wind_idx == (pid - t.dealer) % 4 else 2)

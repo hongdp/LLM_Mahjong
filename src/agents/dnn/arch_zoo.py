@@ -155,12 +155,14 @@ class RelBiasBlock(nn.Module):
         self.ffn = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(),
                                  nn.Linear(4 * d, d))
 
-    def forward(self, x, bucket):
+    def forward(self, x, bucket, key_mask=None):
         B, L, _ = x.shape
         q, k, v = self.qkv(self.ln1(x)).reshape(
             B, L, 3, self.h, self.dh).permute(2, 0, 3, 1, 4)
         att = (q @ k.transpose(-2, -1)) / self.dh ** 0.5
         att = att + self.bias[:, bucket][None]          # [B, H, L, L]
+        if key_mask is not None:                        # set models: absent slots
+            att = att.masked_fill(~key_mask[:, None, None, :], float("-inf"))
         y = (att.softmax(-1) @ v).transpose(1, 2).reshape(B, L, -1)
         x = x + self.proj(y)
         return x + self.ffn(self.ln2(x))
@@ -227,3 +229,106 @@ class ConvFormer(TilesTransformer):
         for blk in self.blocks:
             x = blk(x, self.bucket)
         return self.norm_f(x)
+
+
+# ----------------------------------------------------------------------
+# exp27: hand-as-a-SET encoder (tile instances, no positional encoding)
+# ----------------------------------------------------------------------
+class HandSetEncoder(nn.Module):
+    """Permutation-invariant encoder over the player's own tile INSTANCES.
+
+    Tokens are built from the hand count planes: slot (copy k, tile t) is a
+    token iff the hand holds >= k+1 copies of t (so two copies of 3s are
+    two tokens, unlike the 34-type axis where they are one channel). Own
+    meld tiles are tokens too (flagged). No positional encoding: the only
+    structure is content — tile identity (suit + rank embedding + rank as
+    a number), copy id, red flag, meld flag — plus an optional RANK-RELATIVE
+    attention bias (same-suit rank distance / honor / cross-suit buckets),
+    which is content-based and keeps permutation equivariance. With
+    rel_bias=False this is a pure set transformer (the ablation).
+    Output: [CLS] embedding (d) after `layers` pre-LN attention blocks.
+    """
+
+    def __init__(self, d=128, layers=4, heads=4, rel_bias=True, max_copies=4):
+        super().__init__()
+        self.d, self.rel_bias = d, rel_bias
+        self.tile_embed = nn.Embedding(TILE_TYPES, d)
+        self.copy_embed = nn.Embedding(max_copies, d)
+        self.flag_proj = nn.Linear(3, d)            # [rank/9 number, red, meld]
+        self.cls = nn.Parameter(torch.zeros(1, 1, d))
+        n_buckets = 3 + 17
+        self.blocks = nn.ModuleList([RelBiasBlock(d, heads, n_buckets) for _ in range(layers)])
+        self.ln = nn.LayerNorm(d)
+        # static slot tables: slot s = copy * 34 + tile
+        tiles = torch.arange(TILE_TYPES).repeat(max_copies)
+        copies = torch.arange(max_copies).repeat_interleave(TILE_TYPES)
+        rank = torch.where(tiles < 27, (tiles % 9).float() / 8.0, torch.full_like(tiles, 0.5, dtype=torch.float))
+        self.register_buffer("slot_tile", tiles, persistent=False)
+        self.register_buffer("slot_copy", copies, persistent=False)
+        self.register_buffer("slot_rank", rank, persistent=False)
+        tb = _tile_buckets()                         # [35, 35], index 0 = global/CLS
+        idx = torch.cat([torch.zeros(1, dtype=torch.long), tiles + 1])
+        self.register_buffer("bucket", tb[idx][:, idx], persistent=False)   # [1+S, 1+S]
+        self.register_buffer("zero_bucket", torch.zeros_like(self.bucket), persistent=False)
+
+    def forward(self, planes):
+        """planes [B, P, 34] from any variant whose first 4 planes are the
+        hand count>=k planes and plane 4 the own-meld presence plane
+        (v1 / v1r / v3 / v3r all are); red flag from the own-red plane when
+        present (v1r: plane 15, v3r: plane 50), else zeros."""
+        B = planes.shape[0]
+        hand = planes[:, :4, :].reshape(B, -1) > 0.5                 # [B, 136] slot present
+        meld = planes[:, 4, :] > 0.5                                  # [B, 34]
+        P = planes.shape[1]
+        red_plane = planes[:, N_PLANES, :] if P == N_PLANES + 6 else (
+            planes[:, N_PLANES_V3, :] if P == N_PLANES_V3 + 6 else torch.zeros_like(meld, dtype=planes.dtype))
+        # meld tiles become copy-0 tokens with the meld flag (only if not already a hand token)
+        meld_slot = torch.cat([meld, torch.zeros(B, 3 * TILE_TYPES, dtype=torch.bool, device=planes.device)], 1)
+        present = hand | meld_slot                                    # [B, 136]
+        is_meld = meld_slot & ~hand
+        red = torch.zeros_like(present, dtype=planes.dtype)
+        red[:, :TILE_TYPES] = red_plane * hand[:, :TILE_TYPES].to(planes.dtype)   # red copy = copy 0
+        S = present.shape[1]
+        x = (self.tile_embed(self.slot_tile)[None].expand(B, S, -1)
+             + self.copy_embed(self.slot_copy)[None]
+             + self.flag_proj(torch.stack([self.slot_rank[None].expand(B, S), red,
+                                           is_meld.to(planes.dtype)], -1)))
+        x = torch.cat([self.cls.expand(B, 1, -1), x], 1)             # [B, 1+S, d]
+        keep = torch.cat([torch.ones(B, 1, dtype=torch.bool, device=planes.device), present], 1)
+        bucket = self.bucket if self.rel_bias else self.zero_bucket
+        for blk in self.blocks:
+            x = blk(x, bucket, key_mask=keep)
+        return self.ln(x[:, 0])
+
+
+class HandSetCnn(CnnPolicy):
+    """exp27: CNN board trunk (unchanged) + HandSetEncoder branch over the
+    player's tile instances, fused before the policy/value heads. The only
+    variable vs cnn_m_r is the set-based hand branch."""
+
+    def __init__(self, channels=64, blocks=3, d=128, layers=4, heads=4, rel_bias=True,
+                 in_planes=N_PLANES_V1R, in_scalars=N_SCALARS, encoder_variant="v1r"):
+        super().__init__(channels, blocks, in_planes=in_planes, in_scalars=in_scalars,
+                         encoder_variant=encoder_variant)
+        self.hand_set = HandSetEncoder(d, layers, heads, rel_bias)
+        feat = channels * TILE_TYPES + 64 + d
+        self.head = nn.Sequential(nn.Linear(feat, 512), nn.ReLU(), nn.Linear(512, ACTION_DIM))
+        self.value = nn.Sequential(nn.Linear(feat, 256), nn.ReLU(), nn.Linear(256, 1))
+
+    def trunk(self, planes, scalars):
+        h = torch.relu(self.stem(planes))
+        h = self.blocks(h).flatten(1)
+        return torch.cat([h, self.scalar_fc(scalars), self.hand_set(planes)], dim=1)
+
+
+ZOO.update({
+    "handset_cnn_m_r": (lambda: HandSetCnn(64, 3, 128, 4, 4, True), False),         # 2.9M
+    "handset_pure_cnn_m_r": (lambda: HandSetCnn(64, 3, 128, 4, 4, False), False),   # no rank bias (ablation)
+    # scaled attention branch (user 2026-08-23: attention has to scale): d256 x 8 layers x 8 heads
+    "handset_l_cnn_m_r": (lambda: HandSetCnn(64, 3, 256, 8, 8, True), False),
+    "handset_l_pure_cnn_m_r": (lambda: HandSetCnn(64, 3, 256, 8, 8, False), False),
+    "handset_xl_cnn_m_r": (lambda: HandSetCnn(64, 3, 384, 10, 12, True), False),
+    # parameter-matched CNN controls for the scaled arms (same red/yakuhai planes)
+    "cnn_l_r": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+    "cnn_xl_r": (lambda: CnnPolicy(192, 6, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+})
