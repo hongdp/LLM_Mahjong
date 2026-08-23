@@ -58,6 +58,11 @@ def main():
     ap.add_argument("--channels", type=int, default=64)
     ap.add_argument("--blocks", type=int, default=3)
     ap.add_argument("--batch", type=int, default=4096)
+    ap.add_argument("--league", default=None,
+                    help="exp22: json list of {name, path} frozen PURE-lineage "
+                         "opponents; a fraction of deals seats the learner "
+                         "against them (design docs/design_league_exp22.md)")
+    ap.add_argument("--league_frac", type=float, default=0.5)
     ap.add_argument("--gpu_infer", action="store_true",
                     help="batched GPU inference server for rollouts (user rule "
                          "2026-08-22: all future runs); see infer_server.py")
@@ -242,6 +247,11 @@ def main():
                critic_feats=args.critic_feats,
                gpu_infer=args.gpu_infer, infer_max_batch=args.infer_max_batch,
                infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device)
+    if args.league:
+        cfg["league"] = json.load(open(args.league))
+        cfg["league_frac"] = args.league_frac
+        print(f"🏟 league: {len(cfg['league'])} frozen opponents, frac {args.league_frac}",
+              flush=True)
     if args.gpu_infer:
         print(f"🚀 gpu_infer: batched rollout inference on {args.train_device} "
               f"(max_batch {args.infer_max_batch}, wait {args.infer_wait_ms} ms)", flush=True)
