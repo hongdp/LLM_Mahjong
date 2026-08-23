@@ -26,11 +26,11 @@ exp17-C 协议（cnn_m + GAE 0.95 + 熵台阶 0:0.03,600000:0.01 + 700k + seed 4
 4. 吞吐 ≥ 30 局/s（对手 CPU 推理 + 学习者 GPU 服务的混合路径）；健康同标准。
 
 ## Progress
-- [2026-08-22 19:40] c3（TERMINATED 确认后启动）发射，远端 pid 3302；池 8 文件落机。
-- [2026-08-22 20:05] 首 iter 确认：日志 `🏟 league: 7 frozen opponents, frac 0.5` + `🚀 gpu_infer`，无 CUDA graph
+- [2026-08-22 17:10] c3（TERMINATED 确认后启动）发射，远端 pid 3302；池 8 文件落机。
+- [2026-08-22 17:20] 首 iter 确认：日志 `🏟 league: 7 frozen opponents, frac 0.5` + `🚀 gpu_infer`，无 CUDA graph
   失败行；**43.3 局/s**（学习者走 L4 服务 + 对手 CPU 推理；判据 ≥30 ✅）。注意 train_log 的
   win_rate（决出率）首 iter 即 0.336——联赛局里冻结对手会和牌，该指标不再与镜像 run 可比。
-  **Status: running**，ETA ~4.5h。
+  **Status: running**，ETA ~21:40。
 - [2026-08-22] 预注册；本地 smoke（8 deals × 4 replicas）：学习者座位独占轨迹、联赛比例 ~0.5、
   镜像路径贪心 hash 不变；池上传 GCS `league_pool_v1/`。
 
