@@ -520,8 +520,13 @@ class TestMultipleRonAndChankan(unittest.TestCase):
         self.assertIsNone(self.t.pending_kan)
         self.assertEqual(self.t.melds[0][0]['type'], 'shouminkan')
         self.assertEqual(self.t.kan_count, 1)
-        self.assertEqual(len(self.t.dora_indicators), 2)
+        # Majsoul timing: the added-kan dora is turned over after the discard
+        self.assertEqual(len(self.t.dora_indicators), 1)
+        self.assertEqual(self.t.pending_dora_reveal, 1)
         self.assertTrue(self.t.rinshan[0])
+        self.t.step(0, f'<action type="discard" tile="{self.t.last_drawn[0]}" />')
+        self.assertEqual(len(self.t.dora_indicators), 2)
+        self.assertEqual(self.t.pending_dora_reveal, 0)
 
 
 class TestPao(unittest.TestCase):
@@ -656,7 +661,8 @@ class TestOrchestratorRuleRouting(unittest.TestCase):
         self.assertEqual(should_continue(self.state), "turn")
         self.assertIsNone(self.t.pending_kan)
         self.assertEqual(self.t.melds[0][0]['type'], 'shouminkan')
-        self.assertEqual(len(self.t.dora_indicators), 2)
+        self.assertEqual(len(self.t.dora_indicators), 1)   # flipped after the discard
+        self.assertEqual(self.t.pending_dora_reveal, 1)
         self.assertEqual(self.t.turn, 0)          # same player discards next
         self.assertIsNotNone(self.t.last_drawn[0])
 

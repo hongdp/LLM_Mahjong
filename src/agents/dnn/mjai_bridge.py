@@ -595,6 +595,8 @@ class MjaiDnnBot:
         me = self.seat
         if a_type == "tsumo":
             r = {"type": "hora", "actor": me, "target": me, "pai": tb.my_drawn_mjai}
+        elif a_type == "kyuushu":                       # 九种九牌 declaration
+            r = {"type": "ryukyoku", "actor": me}
         elif a_type == "kan":
             is_ankan = tb.hands[me].count(tile) == 4
             if is_ankan:
@@ -689,6 +691,8 @@ class MjaiDnnBot:
                 key = "hora"
             elif a_type == "skip":
                 key = "none"
+            elif a_type == "kyuushu":
+                key = "ryukyoku"
             if key is None or key not in _MASK_INDEX:
                 continue
             i = _MASK_INDEX[key]
