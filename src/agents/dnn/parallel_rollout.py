@@ -100,7 +100,15 @@ def _worker(rank, n_games, seeds, state_np, cfg):
         seed = seeds[i] if seeds else None
         learner_seats, opp = league_plan(seed, cfg)
         seat_nets = {pid: pool_nets[j] for pid, j in opp.items()} if opp else None
-        g = play_game(net, temperature=cfg["temperature"], device="cpu",
+        temps = cfg.get("rollout_temps")
+        if temps:
+            # mixed temperatures (exp28): each seat draws its T from the list,
+            # deterministic in the deal seed + replica so dup_k replicas differ
+            rng = random.Random((seed or 0) * 7919 + i)
+            temperature = {p: rng.choice(temps) for p in range(4)}
+        else:
+            temperature = cfg["temperature"]
+        g = play_game(net, temperature=temperature, device="cpu",
                       deal_seed=seed, shaping=cfg["shaping"],
                       critic_feats=cmode, seat_nets=seat_nets)
         labels = completion_labels(g.result or "") if cmode == "hazard" else None

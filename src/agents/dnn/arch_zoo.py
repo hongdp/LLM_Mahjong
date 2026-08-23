@@ -103,10 +103,11 @@ class TilesTransformer(nn.Module):
         logits = self.forward(planes, scalars, mask)
         if temperature <= 0:
             idx = logits.argmax(dim=1)
-        else:
-            probs = torch.softmax(logits / temperature, dim=1)
-            idx = torch.multinomial(probs, 1).squeeze(1)
-        lp = torch.log_softmax(logits, dim=1).gather(1, idx[:, None]).squeeze(1)
+            lp = torch.log_softmax(logits, dim=1).gather(1, idx[:, None]).squeeze(1)
+        else:                                   # behaviour logprob (see net.act)
+            logb = torch.log_softmax(logits / temperature, dim=1)
+            idx = torch.multinomial(logb.exp(), 1).squeeze(1)
+            lp = logb.gather(1, idx[:, None]).squeeze(1)
         return idx, lp
 
 

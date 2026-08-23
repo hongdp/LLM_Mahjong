@@ -127,10 +127,14 @@ class MahjongPolicyNet(nn.Module):
         logits = self.forward(planes, scalars, mask)
         if temperature <= 0:
             idx = logits.argmax(dim=1)
+            logprob = torch.log_softmax(logits, dim=1).gather(1, idx[:, None]).squeeze(1)
         else:
-            probs = torch.softmax(logits / temperature, dim=1)
-            idx = torch.multinomial(probs, 1).squeeze(1)
-        logprob = torch.log_softmax(logits, dim=1).gather(1, idx[:, None]).squeeze(1)
+            # behaviour policy b = softmax(logits / T): the recorded logprob is
+            # log b(a), so PPO's ratio pi_new / b is an importance weight when
+            # T != 1 (mixed-temperature rollouts, exp28). T = 1: b == pi.
+            logb = torch.log_softmax(logits / temperature, dim=1)
+            idx = torch.multinomial(logb.exp(), 1).squeeze(1)
+            logprob = logb.gather(1, idx[:, None]).squeeze(1)
         return idx, logprob
 
 

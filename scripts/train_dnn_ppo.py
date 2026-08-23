@@ -47,6 +47,11 @@ def main():
     ap.add_argument("--gamma", type=float, default=0.995)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--rollout_temps", default=None,
+                    help="exp28: comma-separated temperatures; each seat of each "
+                         "rollout game samples at one of them (behaviour logprob "
+                         "is recorded, so PPO's ratio becomes pi/b). Default: "
+                         "single --temperature.")
     ap.add_argument("--entropy_coef", type=float, default=0.03)
     ap.add_argument("--value_coef", type=float, default=0.5)
     ap.add_argument("--clip_eps", type=float, default=0.2)
@@ -258,6 +263,8 @@ def main():
         save("games_0", 0)
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
                temperature=args.temperature, gamma=args.gamma,
+               rollout_temps=([float(x) for x in args.rollout_temps.split(",")]
+                              if args.rollout_temps else None),
                shaping=False, seed=args.seed,
                critic_feats=args.critic_feats,
                gpu_infer=args.gpu_infer, gpu_infer_opponents=args.gpu_infer_opponents,

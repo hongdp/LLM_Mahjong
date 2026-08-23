@@ -121,6 +121,8 @@ def play_game(net, temperature: float = 1.0, device="cpu",
     if deal_seed is not None:
         random.seed(deal_seed)          # common random numbers
     seat_nets = seat_nets or {}
+    # temperature may be a per-seat dict (exp28 mixed-temperature rollouts)
+    seat_temp = temperature if isinstance(temperature, dict) else {p: temperature for p in range(4)}
     table = PyMahjongTable(randomize_round=randomize_round)
     table.text_obs = False          # DNN path never reads text obs
     game = DnnGame()
@@ -133,7 +135,7 @@ def play_game(net, temperature: float = 1.0, device="cpu",
         if not actions:
             break
         step, action_str = _choose(seat_nets.get(pid, net), table, pid, actions,
-                                   temperature, device, cmode=critic_feats)
+                                   seat_temp[pid], device, cmode=critic_feats)
         if shaping:
             step.phi = potential(table, pid)
         _, rewards, done, info = table.step(pid, action_str)
@@ -156,7 +158,7 @@ def play_game(net, temperature: float = 1.0, device="cpu",
             if len(options) == 1:        # skip-only: no decision to make
                 continue
             s, a_str = _choose(seat_nets.get(other, net), table, other, options,
-                               temperature, device, cmode=critic_feats)
+                               seat_temp[other], device, cmode=critic_feats)
             if shaping:
                 s.phi = potential(table, other)
             m = ACTION_RE.search(a_str)

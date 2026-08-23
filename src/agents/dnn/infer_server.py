@@ -154,11 +154,12 @@ def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen):
                 m = shared.mask[sub].to(device, non_blocking=True)
                 logits[sel] = runner(p, s, m)
             greedy = t <= 0
-            probs = torch.softmax(logits / t.clamp(min=1e-6)[:, None], dim=1)
-            probs = torch.nan_to_num(probs, nan=0.0)
+            logb = torch.log_softmax(logits / t.clamp(min=1e-6)[:, None], dim=1)
+            probs = torch.nan_to_num(logb.exp(), nan=0.0)
             samp = torch.multinomial(probs, 1, generator=gen).squeeze(1)
             act = torch.where(greedy, logits.argmax(1), samp)
-            lp = torch.log_softmax(logits, 1).gather(1, act[:, None]).squeeze(1)
+            # behaviour logprob: log b(a) with b = softmax(logits/T) (greedy rows: log pi)
+            lp = torch.where(greedy[:, None], torch.log_softmax(logits, 1), logb).gather(1, act[:, None]).squeeze(1)
             act_c, lp_c = act.cpu(), lp.cpu()
             t4 = time.perf_counter()
             shared.out_idx[idx] = act_c
