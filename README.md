@@ -90,6 +90,7 @@ ssh <vm> 'nohup bash LLM_Mahjong/scripts/phase1_ce/run_training.sh configs/v2_pb
 conda run -n rlhf_mahjong python tools/webui/server.py --port 8642
 ```
 曲线（含 PPO 健康指标）、雀魂式逐步复盘（巡数/结算明细/奖励解读）、进行中对局实时视图、跨 VM 一键同步。
+「竞技场」页签 = DNN 自对弈看板：用 `scripts/record_games.py --ckpt STAGE=ckpt.pt … --out experiments/<exp>/arena_dashboard.json` 录制后，同一批牌山下逐步查看各训练阶段的动作概率、采样动作与 critic V（`experiments/**/arena_dashboard*.json` 自动列出）。
 
 ## 主力配置
 

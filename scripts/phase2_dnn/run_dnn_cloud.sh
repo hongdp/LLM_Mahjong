@@ -14,6 +14,7 @@ trap 'echo "[exit] salvaging...";
 
 cd "$HOME/LLM_Mahjong"
 export PYTHONUNBUFFERED=1 PYTHONPATH="$HOME/LLM_Mahjong"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # gpu_infer CUDA-graph buckets
 VENV="$HOME/venvs/dnn"
 for i in $(seq 1 60); do nvidia-smi &>/dev/null && break; sleep 20; done
 if [ ! -f "$VENV/bin/activate" ]; then

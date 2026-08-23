@@ -52,7 +52,8 @@ def rate_one(ckpt, run_name, games, prev_elo, args, device, writer):
     use = nearest_anchors(prev_elo, args.k_anchors)
     rec = rate_checkpoint(ckpt, f"{run_name}@{games}", args.deals,
                           args.seed_base + games, args.parallel, device,
-                          use=use, init_guess=prev_elo)
+                          use=use, init_guess=prev_elo,
+                          allow_engine_mismatch=args.allow_engine_mismatch)
     writer.add_scalar("elo/rating", rec["elo"], global_step=games)
     writer.add_scalar("elo/se", rec["se"], global_step=games)
     writer.flush()
@@ -138,6 +139,7 @@ def main():
     for p in (bf, wa):
         for flag, dv in common.values():
             p.add_argument(flag, type=int, default=dv)
+        p.add_argument("--allow_engine_mismatch", action="store_true")
     bf.set_defaults(fn=cmd_backfill)
     wa.set_defaults(fn=cmd_watch)
     args = ap.parse_args()

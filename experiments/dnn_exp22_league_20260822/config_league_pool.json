@@ -1,0 +1,30 @@
+[
+ {
+  "name": "e700",
+  "path": "experiments/league_pool_v1/e700.pt"
+ },
+ {
+  "name": "exp18cnn_700k",
+  "path": "experiments/league_pool_v1/exp18cnn_700k.pt"
+ },
+ {
+  "name": "exp17c_700k",
+  "path": "experiments/league_pool_v1/exp17c_700k.pt"
+ },
+ {
+  "name": "exp19_convformer",
+  "path": "experiments/league_pool_v1/exp19_convformer.pt"
+ },
+ {
+  "name": "exp20_1200k",
+  "path": "experiments/league_pool_v1/exp20_1200k.pt"
+ },
+ {
+  "name": "exp23_v3",
+  "path": "experiments/league_pool_v1/exp23_v3.pt"
+ },
+ {
+  "name": "exp15_vit",
+  "path": "experiments/league_pool_v1/exp15_vit.pt"
+ }
+]

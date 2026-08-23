@@ -199,6 +199,41 @@
   .legalrow { margin-top:10px; }
   .empty { color:var(--muted); padding:30px 0; text-align:center; }
 
+  /* ---- DNN self-play dashboard (竞技场页签) ---- */
+  .dseat { display:grid; grid-template-columns:110px 1fr; gap:4px 12px; padding:8px 8px;
+           border-radius:8px; border:1px solid transparent; }
+  .dseat.acting { background:var(--think-bg); border-color:var(--series); }
+  .dseat .who { font-size:12.5px; color:var(--ink2); }
+  .dseat .who b { display:block; color:var(--ink); font-size:13.5px; }
+  .dseat .trow { min-height:31px; gap:2.5px; }
+  .dseat .rowl { font-size:11px; color:var(--muted); width:30px; flex:none; align-self:center; }
+  .dseat .gap { width:10px; flex:none; }
+  .mtile.pick { background:var(--neg); border-color:var(--neg); }
+  .mtile.pick .n, .mtile.pick .s { color:#fff; }
+  .dgrid { display:grid; grid-template-columns:minmax(320px,1.25fr) minmax(280px,.9fr); gap:12px;
+           align-items:start; }
+  @media (max-width:900px){ .dgrid { grid-template-columns:1fr; } }
+  .dkv { display:flex; gap:16px; flex-wrap:wrap; font-size:12.5px; color:var(--ink2);
+         margin:0 0 10px; align-items:center; }
+  .dkv b { color:var(--ink); font-variant-numeric:tabular-nums; }
+  .vbig { font-size:28px; font-weight:600; font-variant-numeric:tabular-nums; margin:2px 0 0; }
+  .vbig.pos { color:#006300; } .vbig.neg { color:var(--neg); }
+  :root[data-theme="dark"] .vbig.pos { color:#0ca30c; }
+  @media (prefers-color-scheme: dark){ :root:where(:not([data-theme="light"])) .vbig.pos { color:#0ca30c; } }
+  .pbars { display:grid; grid-template-columns:auto 1fr 52px; gap:5px 10px; align-items:center;
+           font-size:12.5px; margin-top:10px; }
+  .pbars .pb { height:14px; border-radius:3px; background:var(--grid); overflow:hidden; }
+  .pbars .pb i { display:block; height:100%; background:var(--series); border-radius:3px; }
+  .pbars .pb i.pick { background:var(--neg); }
+  .pbars .pct { text-align:right; font-variant-numeric:tabular-nums; color:var(--ink2); }
+  .pbars .an { display:flex; align-items:center; gap:5px; white-space:nowrap; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--ink2); margin-top:8px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+  .dresult { margin-top:10px; padding:10px 12px; border-radius:8px; background:var(--think-bg); font-size:13px; }
+  #dstep { width:220px; accent-color:var(--series); }
+  kbd { font-size:11px; border:1px solid var(--border); border-radius:4px; padding:0 5px; color:var(--ink2); }
+  #vchart { width:100%; height:auto; display:block; }
+
   /* ---- tabs ---- */
   .tabbar { display:flex; gap:6px; margin:16px 0 4px; border-bottom:1px solid var(--grid); }
   .tabbtn { border:none; background:none; padding:9px 16px; font-size:14px;
@@ -225,19 +260,36 @@
 </header>
 
 <div class="tabbar">
-  <button class="tabbtn" data-tab="arena">🏆 竞技场</button>
+  <button class="tabbtn" data-tab="arena">🎴 竞技场</button>
   <button class="tabbtn" data-tab="monitor">📈 训练监控</button>
   <button class="tabbtn" data-tab="replay">🀄 牌局复盘</button>
 </div>
 
 
 <div class="tabpane" id="tab-arena">
-  <h2>三场对战 <span class="hint" id="arenaState"></span></h2>
+<h2>自对弈对局看板 <span class="hint">同一批牌山，各训练阶段各打一遍：每步合法动作概率、采样动作与 critic 的 V</span></h2>
+<div class="controls">
+  <label>记录 <select id="dFile"></select></label>
+  <label>训练阶段 <select id="dStage"></select></label>
+  <label>牌山 <select id="dGame"></select></label>
+  <label>步 <button id="dPrev" aria-label="上一步">‹</button>
+    <input type="range" id="dstep" min="0" max="0" value="0">
+    <button id="dNext" aria-label="下一步">›</button> <span class="hint" id="dStepNo"></span></label>
+  <label class="hint"><input type="checkbox" id="dHide"> 隐藏非行动者手牌</label>
+  <span class="hint">键盘 <kbd>←</kbd> <kbd>→</kbd> 逐步，<kbd>↑</kbd> <kbd>↓</kbd> 切换阶段（同一牌山同一步）</span>
+  <span class="hint" id="dStamp"></span>
+</div>
+<div id="dHost"><div class="empty">没有找到看板记录。用 <code>scripts/record_games.py --ckpt STAGE=ckpt.pt … --out experiments/&lt;exp&gt;/arena_dashboard.json</code> 生成后刷新。</div></div>
+
+<details style="margin-top:26px">
+  <summary>Phase-1 LLM 竞技场（历史：三场 RL-vs-SFT 对战，从旧 VM 拉取，展开后才会查询）</summary>
+  <h2 style="margin-top:12px">三场对战 <span class="hint" id="arenaState"></span></h2>
   <div class="kpis" id="arenaCards"></div>
   <div class="controls" style="margin-top:12px">
     <button id="arenaSyncBtn">⟳ 同步战报牌谱</button>
     <span class="hint">牌谱同步后，去「牌局复盘」页签选 arena_base / arena_ppo / arena_value 逐局回看（A 方座位见每局标头）</span>
   </div>
+</details>
 </div>
 
 <div class="tabpane" id="tab-monitor">
@@ -1158,6 +1210,147 @@ async function loadArena(){
 }
 
 
+
+/* ------------------------------------------------ DNN self-play dashboard */
+const DASH = {list:[], data:null, mi:0, gi:0, si:0};
+const SEATC = ["#2a78d6","#eb6834","#1baf7a","#8a5cd6"];
+const WINDS = ["东","南","西","北"];
+const tileTxt = t => { const su=t.slice(-1), n=t.slice(0,-1); return su==="z" ? HONOR[+n] : n+({m:"万",p:"筒",s:"索"}[su]); };
+function actLabel(a){
+  const [ty,tile]=a.split(":");
+  const map={discard:"打",riichi:"立直 打",chi:"吃",pon:"碰",kan:"杠",ron:"荣和",tsumo:"自摸",skip:"跳过"};
+  const span=el("span","an",map[ty]||ty);
+  if (tile) span.append(tileEl(tile,"tiny"));
+  return span;
+}
+async function loadDashList(){
+  try { DASH.list = await jget("/api/dnn_dashboards"); } catch(e){ DASH.list=[]; }
+  const sel=$("#dFile"); sel.innerHTML="";
+  DASH.list.forEach((r,i)=>{ const o=el("option","",`${r.file}  (${r.stages.join("/")} · ${r.games}局 · ${r.decisions}步)`); o.value=i; sel.append(o); });
+  if (DASH.list.length){ sel.value=0; await loadDash(0); }
+  else $("#dStamp").textContent="";
+}
+async function loadDash(i){
+  const r=DASH.list[i]; if (!r) return;
+  DASH.data = await jget("/api/dnn_dashboard?file="+encodeURIComponent(r.file));
+  const D=DASH.data;
+  $("#dStamp").textContent=`种子 ${D.seed0}+ · ${D.games} 局/阶段 · T=${D.temperature}`;
+  const st=$("#dStage"); st.innerHTML="";
+  D.models.forEach((m,k)=>{ const o=el("option","",`${m.stage} 局`); o.value=k; st.append(o); });
+  const gs=$("#dGame"); gs.innerHTML="";
+  for (let g=0; g<D.games; g++){ const o=el("option","",`#${g+1}（seed ${D.seed0+g}）`); o.value=g; gs.append(o); }
+  DASH.mi=0; DASH.gi=0; DASH.si=0; renderDash();
+}
+function dashGame(){ return DASH.data.models[DASH.mi].games[DASH.gi]; }
+function renderDash(){
+  const D=DASH.data; if (!D) return;
+  const G=dashGame(), steps=G.steps;
+  if (DASH.si>steps.length-1) DASH.si=steps.length-1;
+  const si=DASH.si, st=steps[si], s=st.s, pid=s.pid;
+  $("#dstep").max=steps.length-1; $("#dstep").value=si;
+  $("#dStepNo").textContent=`${si+1} / ${steps.length}`;
+  const host=$("#dHost"); host.innerHTML="";
+  const grid=el("div","dgrid");
+
+  /* left: table */
+  const tbl=el("div","card");
+  const kv=el("div","dkv");
+  kv.append(el("span","",`场风 `)); kv.lastChild.append(el("b","",WINDS[G.round_wind]));
+  kv.append(el("span","",`亲 `)); kv.lastChild.append(el("b","",`座${G.dealer}`));
+  kv.append(el("span","",`余牌 `)); kv.lastChild.append(el("b","",`${s.wall}`));
+  const dr=el("span","","宝牌指示 "); const drow=el("span",""); drow.style.display="inline-flex"; drow.style.gap="2px"; drow.style.verticalAlign="middle";
+  s.dora.forEach(t=>drow.append(tileEl(t,"tiny"))); dr.append(drow); kv.append(dr);
+  kv.append(el("span","",`阶段 `)); kv.lastChild.append(el("b","",D.models[DASH.mi].stage));
+  tbl.append(kv);
+  const hide=$("#dHide").checked;
+  const ORDER={m:0,p:1,s:2,z:3}, key=t=>ORDER[t.slice(-1)]*10+(+t.slice(0,-1));
+  const [pty,ptile]=st.pick.split(":");
+  for (let p=0;p<4;p++){
+    const act=p===pid;
+    const seat=el("div","dseat"+(act?" acting":""));
+    const who=el("div","who");
+    who.append(el("b","",`座${p} ${WINDS[(p-G.dealer+4)%4]}家${p===G.dealer?" 亲":""}`));
+    who.append(document.createTextNode(`${s.points[p]}`));
+    if (s.riichi[p]){ const b=el("span","badge riichi","立直"); b.style.marginLeft="6px"; who.append(b); }
+    if (act){ const b=el("span","badge me","行动"); b.style.marginLeft="6px"; who.append(b); }
+    seat.append(who);
+    const right=el("div");
+    /* hand: sorted by suit/rank; drawn tile apart on the right (outline);
+       the tile sampled to discard this step filled in accent */
+    const hrow=el("div","trow"); hrow.append(el("span","rowl","手牌"));
+    if (hide && !act) hrow.append(el("span","hint","（隐藏）"));
+    else {
+      const pickTile=(act && (pty==="discard"||pty==="riichi")) ? ptile : null;
+      let tiles=[...s.hands[p]].sort((a,b)=>key(a)-key(b));
+      let drawn=null;
+      if (act && st.phase==="turn" && s.drawn){ const k=tiles.indexOf(s.drawn); if (k>=0){ tiles.splice(k,1); drawn=s.drawn; } }
+      const pickOnDrawn = pickTile!==null && drawn===pickTile;
+      let marked=false;
+      tiles.forEach(t=>{ const e=tileEl(t,"mini"); if (pickTile===t && !marked && !pickOnDrawn){ e.classList.add("pick"); marked=true; } hrow.append(e); });
+      if (drawn){ hrow.append(el("span","gap")); const e=tileEl(drawn,"mini chosen"); if (pickOnDrawn) e.classList.add("pick"); hrow.append(e); }
+      if (s.melds[p].length){ const ml=el("span","rowl","副露"); ml.style.width="auto"; ml.style.marginLeft="8px"; hrow.append(ml); hrow.append(meldBoxes(s.melds[p].map(m=>({type:m.t,tiles:m.tiles})),"tiny")); }
+    }
+    right.append(hrow);
+    const rrow=el("div","trow"); rrow.append(el("span","rowl","牌河"));
+    if (s.rivers[p].length) s.rivers[p].forEach(t=>{ const e=tileEl(t.replace("*",""),"tiny"); if (t.endsWith("*")) e.classList.add("sideways"); rrow.append(e); });
+    else rrow.append(el("span","hint","—"));
+    right.append(rrow);
+    seat.append(right); tbl.append(seat);
+  }
+  const res=el("div","dresult");
+  res.innerHTML=`<b>结局</b> ${G.result||"（进行中）"}<br><span class="hint">终点数：${G.points.map((x,i)=>`座${i} ${x}`).join(" · ")}</span>`;
+  tbl.append(res);
+  grid.append(tbl);
+
+  /* right: decision + V chart */
+  const col=el("div");
+  const dec=el("div","card"); dec.style.marginBottom="12px";
+  const h=el("div","title",`本步决策 `); h.style.fontWeight="600";
+  h.append(el("span","hint",`座${pid} · ${st.phase==="turn"?"自家回合":"他家打牌后的响应窗口"}`)); dec.append(h);
+  dec.append(el("div","hint","critic 的 V(s)（千点当量，越高越看好自己）"));
+  dec.append(el("div","vbig "+(st.v>=0?"pos":"neg"),(st.v>=0?"+":"")+st.v.toFixed(2)));
+  const bars=el("div","pbars"); const mx=Math.max(...st.acts.map(a=>a[1]),1e-6);
+  st.acts.forEach(([a,p])=>{ bars.append(actLabel(a)); const pb=el("div","pb"); const i=el("i",a===st.pick?"pick":""); i.style.width=(p/mx*100).toFixed(1)+"%"; pb.append(i); bars.append(pb); bars.append(el("span","pct",(p*100).toFixed(1)+"%")); });
+  dec.append(bars);
+  const lg=el("div","legend"); lg.innerHTML=`<span><i style="background:var(--series)"></i>策略概率</span><span><i style="background:var(--neg)"></i>本步采样到的动作（手牌中同色实心 = 这次要打的牌）</span><span><i style="border:2px solid var(--series);background:transparent"></i>新摸的牌</span>`;
+  dec.append(lg); col.append(dec);
+
+  const vc=el("div","card");
+  const vh=el("div","title","V 随对局推进"); vh.style.fontWeight="600"; vc.append(vh);
+  vc.append(el("div","hint","四个座位共用一条时间轴（横轴 = 全局决策序号）；虚线为当前步。"));
+  const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const W=420,H=200,ml=34,mr=10,mt=10,mb=22; const per=[[],[],[],[]]; steps.forEach((x,k)=>per[x.s.pid].push([k,x.v]));
+  const allv=steps.map(x=>x.v); const lo=Math.min(-1,...allv), hi=Math.max(1,...allv);
+  const N=Math.max(steps.length-1,1);
+  const X=k=>ml+(k/N)*(W-ml-mr), Y=v=>mt+(1-(v-lo)/(hi-lo))*(H-mt-mb);
+  let sv=`<line x1="${ml}" x2="${W-mr}" y1="${Y(0)}" y2="${Y(0)}" stroke="${css("--grid")}"/>`;
+  [lo,0,hi].forEach(v=>{ sv+=`<text x="${ml-4}" y="${Y(v)+4}" text-anchor="end" font-size="10" fill="${css("--muted")}" style="font-variant-numeric:tabular-nums">${v.toFixed(1)}</text>`; });
+  sv+=`<line x1="${X(si)}" x2="${X(si)}" y1="${mt}" y2="${H-mb}" stroke="${css("--muted")}" stroke-dasharray="3 3"/>`;
+  per.forEach((arr,p)=>{ if(!arr.length) return;
+    sv+=`<polyline fill="none" stroke="${SEATC[p]}" stroke-width="${p===pid?2.4:1.4}" stroke-opacity="${p===pid?1:.55}" points="${arr.map(([k,v])=>X(k)+","+Y(v)).join(" ")}"/>`;
+    const j=arr.findIndex(([k])=>k===si); if(j>=0) sv+=`<circle cx="${X(si)}" cy="${Y(arr[j][1])}" r="5" fill="${SEATC[p]}" stroke="${css("--surface")}" stroke-width="2"/>`; });
+  sv+=`<text x="${W-mr}" y="${H-6}" text-anchor="end" font-size="10" fill="${css("--muted")}">对局时间（全局决策序号）→</text>`;
+  const svg=document.createElementNS("http://www.w3.org/2000/svg","svg"); svg.id="vchart"; svg.setAttribute("viewBox",`0 0 ${W} ${H}`); svg.innerHTML=sv; vc.append(svg);
+  const vl=el("div","legend"); vl.innerHTML=[0,1,2,3].map(p=>`<span><i style="background:${SEATC[p]}"></i>座${p}</span>`).join(""); vc.append(vl);
+  col.append(vc); grid.append(col);
+  host.append(grid);
+}
+$("#dFile").onchange=e=>loadDash(+e.target.value);
+$("#dStage").onchange=e=>{ DASH.mi=+e.target.value; renderDash(); };
+$("#dGame").onchange=e=>{ DASH.gi=+e.target.value; DASH.si=0; renderDash(); };
+$("#dstep").oninput=e=>{ DASH.si=+e.target.value; renderDash(); };
+$("#dPrev").onclick=()=>{ DASH.si=Math.max(0,DASH.si-1); renderDash(); };
+$("#dNext").onclick=()=>{ if (DASH.data){ DASH.si=Math.min(dashGame().steps.length-1,DASH.si+1); renderDash(); } };
+$("#dHide").onchange=renderDash;
+document.addEventListener("keydown",e=>{
+  if (!document.body.classList.contains("tab-arena") || !DASH.data) return;
+  if (["SELECT","INPUT","TEXTAREA"].includes(e.target.tagName) && e.target.type!=="range") return;
+  if (e.key==="ArrowRight"){ $("#dNext").click(); e.preventDefault(); }
+  else if (e.key==="ArrowLeft"){ $("#dPrev").click(); e.preventDefault(); }
+  else if (e.key==="ArrowUp"){ DASH.mi=Math.max(0,DASH.mi-1); $("#dStage").value=DASH.mi; renderDash(); e.preventDefault(); }
+  else if (e.key==="ArrowDown"){ DASH.mi=Math.min(DASH.data.models.length-1,DASH.mi+1); $("#dStage").value=DASH.mi; renderDash(); e.preventDefault(); }
+});
+
 /* ------------------------------------------------ tabs */
 function setTab(name){
   document.querySelectorAll(".tabbtn").forEach(b=>b.classList.toggle("active", b.dataset.tab===name));
@@ -1223,7 +1416,9 @@ async function refreshAll(keepSelection){
     $("#epochSel").value=prevEpoch; await loadRollouts();
   }
 }
-(async ()=>{ await loadExperiments(); await loadMetrics(); await loadEpochs(); await loadArena(); setInterval(loadArena, 30000); })();
+{ const det=$("#tab-arena details"); let t=null;
+  det.addEventListener("toggle",()=>{ clearInterval(t); t=null; if (det.open){ loadArena(); t=setInterval(loadArena,30000); } }); }
+(async ()=>{ await loadExperiments(); await loadMetrics(); await loadEpochs(); await loadDashList(); })();
 </script>
 </body>
 </html>

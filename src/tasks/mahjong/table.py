@@ -30,7 +30,21 @@ def sort_key(tile: str):
 
 
 def str_to_34(tile: str) -> int:
-    return SUIT_BASE_34[tile[-1]] + int(tile[:-1]) - 1
+    return SUIT_BASE_34[tile[-1]] + (int(tile[:-1]) or 5) - 1
+
+
+RED_TILES = ("0m", "0p", "0s")        # 赤宝牌 spelling in wall / rivers / actions
+RED_136 = {4: 16, 13: 52, 22: 88}     # 34-index of 5m/5p/5s -> the library's red copy id
+
+
+def norm_tile(t: str) -> str:
+    """'0m' (red five) -> '5m'; anything else unchanged. Hands hold only
+    normalized tiles; redness lives in PyMahjongTable.red counts."""
+    return "5" + t[1] if t[0] == "0" else t
+
+
+def is_red(t: str) -> bool:
+    return t[0] == "0"
 
 
 def str_from_34(idx: int) -> str:
@@ -51,7 +65,7 @@ _ORPHANS_34 = frozenset([0, 8, 9, 17, 18, 26] + list(range(27, 34)))
 
 
 def _tile34(t: str) -> int:
-    val, suit = int(t[:-1]), t[-1]
+    val, suit = int(t[:-1]) or 5, t[-1]
     return 27 + val - 1 if suit == "z" else "mps".index(suit) * 9 + val - 1
 
 
@@ -72,6 +86,60 @@ def _wait_candidates(tiles: List[str]):
                 if 0 <= r + d <= 8:
                     cand.add(base + r + d)
     return sorted(cand)
+
+def _decompositions(counts: List[int], n_sets: int):
+    """Yield every standard reading of a 34-count hand as `n_sets` sets
+    (koutsu / shuntsu) plus one pair. Each reading is a list of
+    ("set"|"seq"|"pair", first_tile_index)."""
+    def rec(i, sets_left, pair_used, acc):
+        while i < 34 and counts[i] == 0:
+            i += 1
+        if i == 34:
+            if sets_left == 0 and pair_used:
+                yield list(acc)
+            return
+        c = counts[i]
+        if not pair_used and c >= 2:
+            counts[i] -= 2
+            acc.append(("pair", i))
+            yield from rec(i, sets_left, True, acc)
+            acc.pop(); counts[i] += 2
+        if sets_left == 0:
+            return
+        if c >= 3:
+            counts[i] -= 3
+            acc.append(("set", i))
+            yield from rec(i, sets_left - 1, pair_used, acc)
+            acc.pop(); counts[i] += 3
+        if i < 27 and i % 9 <= 6 and counts[i + 1] > 0 and counts[i + 2] > 0:
+            counts[i] -= 1; counts[i + 1] -= 1; counts[i + 2] -= 1
+            acc.append(("seq", i))
+            yield from rec(i, sets_left - 1, pair_used, acc)
+            acc.pop(); counts[i] += 1; counts[i + 1] += 1; counts[i + 2] += 1
+    yield from rec(0, n_sets, False, [])
+
+
+def _tile_only_as_triplet(tiles: List[str], tile: str, n_sets: int) -> bool:
+    """RCR 3.12 (2): in every winning reading of `tiles`, `tile` is a koutsu
+    (never part of a run, never the pair). False if no standard reading
+    exists (chiitoitsu/kokushi readings can't hold a triplet anyway)."""
+    counts = [0] * 34
+    for t in tiles:
+        counts[_tile34(t)] += 1
+    k = _tile34(tile)
+    found = False
+    for reading in _decompositions(counts, n_sets):
+        found = True
+        if ("pair", k) in reading:
+            return False
+        # A run holding the tile is only fine when the reading also has the
+        # koutsu (then the run uses the 4th copy, i.e. the tile is the wait
+        # itself: 1111m23m -> 111m + 123m keeps the in-hand triplet intact).
+        if (("set", k) not in reading
+                and any(kind == "seq" and i <= k <= i + 2 for kind, i in reading)):
+            return False
+    return found
+
 
 
 @_functools.lru_cache(maxsize=262144)
@@ -194,6 +262,11 @@ class PyMahjongTable(MahjongEngineAPI):
         self.kuikae: Optional[Tuple[int, set]] = None
         self.pending_kan: Optional[dict] = None    # open chankan window
         self.pao: Dict[int, int] = {}              # winner -> liable player
+        # Majsoul kan-dora timing: daiminkan / shouminkan reveal after the
+        # kan player's next discard (or on a rinshan win); ankan reveals now.
+        self.pending_dora_reveal = 0
+        self.kan_players: set = set()              # for 四杠散了
+        self._pending_abort: Optional[str] = None  # 途中流局 applied once the window passes
         self._ron_chance: set = set()
         self._waits_cache: Dict[tuple, List[str]] = {}
 
@@ -207,28 +280,83 @@ class PyMahjongTable(MahjongEngineAPI):
         all_tiles = [f"{i}{s}" for s in "mps" for i in range(1, 10)]
         all_tiles += [f"{i}z" for i in range(1, 8)]
         self.wall = all_tiles * 4
+        # 赤宝牌 (Majsoul): one red five per suit replaces a plain five.
+        for suit in "mps":
+            self.wall[self.wall.index(f"5{suit}")] = f"0{suit}"
         random.shuffle(self.wall)
+        # red fives held per seat (hands store them as plain '5x')
+        self.red = {i: {"m": 0, "p": 0, "s": 0} for i in range(4)}
+        self.last_drawn_red = [False, False, False, False]
+        self.last_discard_red = False
         # Dead wall layout (fixed slots, never popped so indices are
         # stable): [0:4] rinshan draws, [4:9] dora indicators,
         # [9:14] the ura indicator under each of them.
         self.dead_wall = [self.wall.pop() for _ in range(14)]
         self._rinshan_idx = 0
+        self.dead_wall = [norm_tile(t) if i >= 4 else t
+                          for i, t in enumerate(self.dead_wall)]   # indicators: red == plain
         self.dora_indicators = [self.dead_wall[4]]
         self.ura_indicators = [self.dead_wall[9]]
 
-        self.hands = {}
+        self.hands = {i: [] for i in range(4)}
         for pid in range(4):
-            self.hands[pid] = sorted(
-                [self.wall.pop() for _ in range(13)], key=sort_key
-            )
-        first = self.wall.pop()
-        self.hands[self.dealer].append(first)
+            for _ in range(13):
+                self._give(pid, self.wall.pop())
+            self.hands[pid].sort(key=sort_key)
+        first = self._give(self.dealer, self.wall.pop())
         self.hands[self.dealer].sort(key=sort_key)
         self.last_drawn[self.dealer] = first
         return self._obs()
 
+    # ---- red-five bookkeeping ---------------------------------------
+    def _give(self, pid: int, raw: str) -> str:
+        """Move a wall tile into a hand; returns the normalized tile."""
+        if is_red(raw):
+            self.red[pid][raw[1]] += 1
+        t = norm_tile(raw)
+        self.hands[pid].append(t)
+        self.last_drawn_red[pid] = is_red(raw)
+        return t
+
+    def _plain_copies(self, pid: int, tile: str) -> int:
+        """Non-red copies of `tile` in hand."""
+        n = self.hands[pid].count(tile)
+        if tile[0] == "5" and tile[-1] in "mps":
+            n -= self.red[pid][tile[-1]]
+        return n
+
+    def _take_from_hand(self, pid: int, tile: str, n: int = 1, prefer_red: bool = False) -> int:
+        """Remove n copies of `tile` from the hand, plain copies first
+        (red last) unless prefer_red; returns how many reds were used."""
+        used_red = 0
+        for _ in range(n):
+            self.hands[pid].remove(tile)
+        if tile[0] == "5" and tile[-1] in "mps":
+            suit = tile[-1]
+            plain = self.hands[pid].count(tile) + n - self.red[pid][suit]   # plain copies before removal
+            used_red = n if prefer_red else max(0, n - plain)
+            used_red = min(used_red, self.red[pid][suit])
+            self.red[pid][suit] -= used_red
+        return used_red
+
+    def display_hand(self, pid: int) -> List[str]:
+        """Hand with red fives spelled '0x' (for text obs / records)."""
+        out, left = [], dict(self.red[pid])
+        for t in self.hands[pid]:
+            if t[0] == "5" and t[-1] in "mps" and left[t[-1]] > 0:
+                left[t[-1]] -= 1
+                out.append("0" + t[-1])
+            else:
+                out.append(t)
+        return out
+
     def _meld_str(self, meld: dict) -> str:
-        return f"{meld['type']}({' '.join(meld['tiles'])})"
+        tiles = list(meld['tiles'])
+        for _ in range(meld.get("red", 0)):          # spell the red copies
+            k = next((i for i, t in enumerate(tiles) if t[0] == "5" and t[-1] in "mps"), None)
+            if k is not None:
+                tiles[k] = "0" + tiles[k][-1]
+        return f"{meld['type']}({' '.join(tiles)})"
 
     def _obs(self) -> Dict[int, str]:
         """Per-seat text observations for the LLM path; DNN drivers set
@@ -259,7 +387,7 @@ class PyMahjongTable(MahjongEngineAPI):
         state += (
             f"私有 (Private)： 自风: {WINDS_ZH[(player_id - self.dealer) % 4]}, "
             f"点数: {self.points[player_id]}, "
-            f"手牌: {' '.join(self.hands[player_id])}, 副露: {own_melds}{riichi_tag}{value_tag}\n"
+            f"手牌: {' '.join(self.display_hand(player_id))}, 副露: {own_melds}{riichi_tag}{value_tag}\n"
         )
         state += "公共 (Public)：\n"
         for i in range(4):
@@ -288,10 +416,23 @@ class PyMahjongTable(MahjongEngineAPI):
             # winning/tenpai — report "far from tenpai" instead of crashing.
             return 8
 
-    def _alloc_136(self, tiles: List[str], counter: dict) -> List[int]:
+    def _alloc_136(self, tiles: List[str], counter: dict,
+                   reds: Optional[dict] = None) -> List[int]:
+        """136-ids for tiles; fives draw their red copy (id copy 0) while
+        `reds[suit]` > 0, plain copies use 1..3."""
         ids = []
         for t in tiles:
             i34 = str_to_34(t)
+            if i34 in RED_136:
+                suit = t[-1]
+                if reds and reds.get(suit, 0) > 0:
+                    reds[suit] -= 1
+                    ids.append(RED_136[i34])
+                    continue
+                copy = min(counter.get(i34, 1), 3)
+                ids.append(i34 * 4 + copy)
+                counter[i34] = copy + 1
+                continue
             copy = min(counter.get(i34, 0), 3)
             ids.append(i34 * 4 + copy)
             counter[i34] = copy + 1
@@ -315,7 +456,7 @@ class PyMahjongTable(MahjongEngineAPI):
         tenhou = (is_tsumo and is_dealer and virgin
                   and sum(self.discard_count) == 0)
         chiihou = (is_tsumo and not is_dealer and virgin and no_discard_yet)
-        renhou = (not is_tsumo and not is_dealer and virgin and no_discard_yet)
+        # Majsoul rules (2026-08-23): no renhou; double yakuman on.
         rinshan = is_tsumo and self.rinshan[player_id]
         # The wall being empty means the tile just drawn was the haitei
         # tile / the discard is the houtei discard (RCR 3.14).
@@ -331,12 +472,13 @@ class PyMahjongTable(MahjongEngineAPI):
             is_houtei=(not is_tsumo) and last_tile and not chankan,
             is_tenhou=tenhou,
             is_chiihou=chiihou,
-            is_renhou=renhou,
+            is_renhou=False,
             player_wind=WIND_CONST[(player_id - self.dealer) % 4],
             round_wind=self.round_wind,
             options=OptionalRules(
                 has_open_tanyao=True,        # RCR 4.2.1.7 kuitan
-                has_double_yakuman=False,    # RCR lists yakuman flat
+                has_aka_dora=True,           # Majsoul 赤宝牌
+                has_double_yakuman=True,     # Majsoul: 四暗刻单骑 etc. ×2
                 # kazoe_limit left at the library default (13+ han counts
                 # as a yakuman) — a deliberate project divergence.
             ),
@@ -364,20 +506,40 @@ class PyMahjongTable(MahjongEngineAPI):
         counter: dict = {}
         rest = list(concealed)
         rest.remove(win_tile)
-        tile_ids = self._alloc_136(rest, counter)
-        win_id = self._alloc_136([win_tile], counter)[0]
+        reds = dict(self.red[player_id])          # reds in the concealed part
+        if is_tsumo:
+            # the drawn tile is already in the hand / red counts
+            win_red = (self.last_drawn_red[player_id]
+                       and win_tile == self.last_drawn[player_id])
+        else:
+            win_red = (self.pending_kan.get("red", False) if chankan and self.pending_kan
+                       else self.last_discard_red)
+        if win_red:
+            if is_tsumo:
+                reds[win_tile[-1]] -= 1           # reserve the red copy for the win tile
+            win_id = RED_136[str_to_34(win_tile)]
+            tile_ids = self._alloc_136(rest, counter, reds)
+        else:
+            tile_ids = self._alloc_136(rest, counter, reds)
+            win_id = self._alloc_136([win_tile], counter)[0]
         tile_ids.append(win_id)
         meld_objs = []
         for meld in self.melds[player_id]:
             mtype, opened = self._MELD_TYPE_MAP[meld["type"]]
-            m_ids = self._alloc_136(meld["tiles"], counter)
+            m_reds = {"m": 0, "p": 0, "s": 0}
+            if meld.get("red") and meld["tiles"][0][-1] in "mps":
+                m_reds[meld["tiles"][0][-1]] = meld["red"]
+            m_ids = self._alloc_136(meld["tiles"], counter, m_reds)
             tile_ids.extend(m_ids)
             meld_objs.append(Meld(meld_type=mtype, tiles=m_ids, opened=opened))
 
         # RCR 3.12: a riichi winner also turns over the ura indicators.
         indicators = list(self.dora_indicators)
+        if is_tsumo and self.pending_dora_reveal:
+            k = len(indicators)
+            indicators += self.dead_wall[4 + k:4 + min(5, k + self.pending_dora_reveal)]
         if self.riichi[player_id]:
-            indicators += self.ura_indicators[:len(self.dora_indicators)]
+            indicators += self.ura_indicators[:len(indicators)]
         dora_ids = self._alloc_136(indicators, {})
 
         result = self._calculator.estimate_hand_value(
@@ -457,22 +619,25 @@ class PyMahjongTable(MahjongEngineAPI):
         # (1) the drawn tile is the fourth copy
         if self.last_drawn[player_id] != tile:
             return False
-        # (2) the four tiles may only be read as a triplet. Approximated
-        # conservatively: refuse if the tile could join a run at all. This
-        # can forbid a legal ankan but never allows an illegal one.
-        if tile[-1] != 'z':
-            val, suit = int(tile[:-1]), tile[-1]
-            hand = self.hands[player_id]
-            if any(f"{val + d}{suit}" in hand
-                   for d in (-2, -1, 1, 2) if 1 <= val + d <= 9):
-                return False
-        # (3) the wait may not change
         before = list(self.hands[player_id])
         before.remove(self.last_drawn[player_id])
-        waits_before = self._waits_of(before, len(self.melds[player_id]))
+        n_melds = len(self.melds[player_id])
+        waits_before = self._waits_of(before, n_melds)
+        if not waits_before:
+            return False
+        # (2) the tile may only be read as a triplet: in every winning
+        # decomposition of the riichi hand (for every wait) it must sit in
+        # a koutsu, never in a run or as the pair. Exact enumeration —
+        # before 2026-08-23 this was approximated by "refuse if any
+        # neighbouring tile is in hand", which also refused legal kans
+        # such as 2345555s (234s + 555s + tanki) on the 4th 5s.
+        if not all(_tile_only_as_triplet(before + [w], tile, 4 - n_melds)
+                   for w in waits_before):
+            return False
+        # (3) the wait may not change
         after = [t for t in self.hands[player_id] if t != tile]
-        waits_after = self._waits_of(after, len(self.melds[player_id]) + 1)
-        return waits_before == waits_after and bool(waits_before)
+        waits_after = self._waits_of(after, n_melds + 1)
+        return waits_before == waits_after
 
     def _waits_of(self, tiles: List[str], n_melds: int) -> set:
         if self._shanten(tiles, n_melds) != 0:
@@ -529,16 +694,21 @@ class PyMahjongTable(MahjongEngineAPI):
             if drawn and self._can_ankan(player_id, drawn):
                 actions.append(f'<action type="kan" tile="{drawn}" />')
             if drawn:
-                actions.append(f'<action type="discard" tile="{drawn}" />')
+                spelled = "0" + drawn[-1] if self.last_drawn_red[player_id] else drawn
+                actions.append(f'<action type="discard" tile="{spelled}" />')
             return actions or [
                 f'<action type="discard" tile="{t}" />'
-                for t in sorted(set(hand), key=sort_key) if t not in banned
+                for t in self._discardable(player_id, banned)
             ]
 
-        uniq = [t for t in sorted(set(hand), key=sort_key) if t not in banned]
+        uniq = self._discardable(player_id, banned)
         actions = [f'<action type="discard" tile="{t}" />' for t in uniq]
 
         n_melds = len(self.melds[player_id])
+        # 九种九牌 (Majsoul): first draw, no call yet, >=9 distinct terminals/honors.
+        if (drawn and not self.any_call and self.discard_count[player_id] == 0
+                and self._kyuushu_kinds(hand) >= 9):
+            actions.append('<action type="kyuushu" />')
         # Riichi declaration: closed hand, >=1000 points, >=4 tiles left in
         # the wall (RCR 3.12), tenpai after the discard.
         if (self._is_closed(player_id) and self.points[player_id] >= 1000
@@ -548,7 +718,7 @@ class PyMahjongTable(MahjongEngineAPI):
             if self._shanten(hand, n_melds) == 0:
                 for t in uniq:
                     rest = list(hand)
-                    rest.remove(t)
+                    rest.remove(norm_tile(t))
                     if self._shanten(rest, n_melds) == 0:
                         actions.append(f'<action type="riichi" tile="{t}" />')
 
@@ -560,6 +730,26 @@ class PyMahjongTable(MahjongEngineAPI):
         if drawn and self._win_result(player_id, drawn, is_tsumo=True):
             actions.append('<action type="tsumo" />')
         return actions
+
+    def _discardable(self, player_id: int, banned: set) -> List[str]:
+        """Distinct discard spellings: plain tiles, plus '0x' for a held red
+        five (listed right after its plain '5x' when both exist)."""
+        out = []
+        for t in sorted(set(self.hands[player_id]), key=sort_key):
+            if t in banned:
+                continue
+            if t[0] == "5" and t[-1] in "mps" and self.red[player_id][t[-1]] > 0:
+                if self._plain_copies(player_id, t) > 0:
+                    out.append(t)
+                out.append("0" + t[-1])
+            else:
+                out.append(t)
+        return out
+
+    @staticmethod
+    def _kyuushu_kinds(hand: List[str]) -> int:
+        return len({t for t in hand
+                    if t[-1] == 'z' or t[0] in '19'})
 
     def get_interrupt_actions(self, player_id: int) -> List[str]:
         # Chankan window (RCR 4.2.1.12): only a ron may interrupt an
@@ -619,17 +809,21 @@ class PyMahjongTable(MahjongEngineAPI):
         rewards = {i: 0.0 for i in range(4)}
         discarded = False
 
-        def do_discard(tile: str, riichi_mark: bool = False):
+        def do_discard(tile: str, riichi_mark: bool = False, red: bool = False):
             nonlocal discarded
+            spelled = "0" + tile[-1] if red else tile
+            tsumogiri = (self.last_drawn[player_id] == tile
+                         and self.last_drawn_red[player_id] == red)
             self.river_events[player_id].append(
-                [tile, self.last_drawn[player_id] == tile, riichi_mark, False,
+                [spelled, tsumogiri, riichi_mark, False,
                  self.discard_count[player_id]])
             if riichi_mark:
                 self.riichi_turn[player_id] = self.discard_count[player_id]
-            self.hands[player_id].remove(tile)
-            self.discards[player_id].append(tile + ('*' if riichi_mark else ''))
+            self._take_from_hand(player_id, tile, 1, prefer_red=red)
+            self.discards[player_id].append(spelled + ('*' if riichi_mark else ''))
             self.furiten_river[player_id].append(tile)
             self.last_discard = tile
+            self.last_discard_red = red
             self.last_discarder = player_id
             self.last_drawn[player_id] = None
             self.rinshan[player_id] = False
@@ -637,6 +831,19 @@ class PyMahjongTable(MahjongEngineAPI):
             self.ippatsu[player_id] = False
             self.discard_count[player_id] += 1
             self.kuikae = None
+            # Majsoul: open-kan dora is turned over after the discard.
+            while self.pending_dora_reveal > 0:
+                self.pending_dora_reveal -= 1
+                self._reveal_kan_dora()
+            # 四风连打: four first discards, same wind, no call in between.
+            if (not self.any_call and sum(self.discard_count) == 4
+                    and all(self.discard_count[i] == 1 for i in range(4))):
+                firsts = {self.furiten_river[i][0] for i in range(4)}
+                if len(firsts) == 1 and next(iter(firsts)) in ("1z", "2z", "3z", "4z"):
+                    self._pending_abort = "四风连打"
+            # 四杠散了: four kans by two or more players, after the discard.
+            if self.kan_count >= 4 and len(self.kan_players) >= 2:
+                self._pending_abort = "四杠散了"
             # RCR 3.13.2: remember who could have ronned this tile; the
             # flags are applied once the interrupt window closes.
             self._ron_chance = {p for p in range(4) if p != player_id
@@ -648,11 +855,12 @@ class PyMahjongTable(MahjongEngineAPI):
             if not self.hands[player_id]:
                 return
             if self.riichi[player_id] and self.last_drawn[player_id] in self.hands[player_id]:
-                do_discard(self.last_drawn[player_id])
+                do_discard(self.last_drawn[player_id], red=self.last_drawn_red[player_id])
             else:
                 banned = self._forbidden_discards(player_id)
                 pool = [t for t in self.hands[player_id] if t not in banned]
-                do_discard(random.choice(pool or self.hands[player_id]))
+                t = random.choice(pool or self.hands[player_id])
+                do_discard(t, red=self._plain_copies(player_id, t) == 0)
 
         if not match:
             rewards[player_id] = self.FORMAT_PENALTY
@@ -662,14 +870,21 @@ class PyMahjongTable(MahjongEngineAPI):
             hand = self.hands[player_id]
             drawn = self.last_drawn[player_id]
             banned = self._forbidden_discards(player_id)
+            red = bool(tile) and is_red(tile)
+            if tile:
+                tile = norm_tile(tile)
+            # the spelled copy must exist: red needs a red five, plain a plain one
+            has_copy = bool(tile) and tile in hand and (
+                self.red[player_id][tile[-1]] > 0 if red else self._plain_copies(player_id, tile) > 0)
 
-            if (action_type == "discard" and tile in hand and tile not in banned
-                    and (not self.riichi[player_id] or tile == drawn)):
-                do_discard(tile)
+            if (action_type == "discard" and has_copy and tile not in banned
+                    and (not self.riichi[player_id]
+                         or (tile == drawn and red == self.last_drawn_red[player_id]))):
+                do_discard(tile, red=red)
 
             elif (
                 action_type == "riichi"
-                and tile in hand
+                and has_copy
                 and tile not in banned
                 and not self.riichi[player_id]
                 and self._is_closed(player_id)
@@ -683,8 +898,14 @@ class PyMahjongTable(MahjongEngineAPI):
                 self.riichi_pending = player_id
                 self.daburu[player_id] = (self.discard_count[player_id] == 0
                                           and not self.any_call)
-                do_discard(tile, riichi_mark=True)
+                do_discard(tile, riichi_mark=True, red=red)
                 self.ippatsu[player_id] = True
+
+            elif (action_type == "kyuushu" and drawn and not self.any_call
+                    and self.discard_count[player_id] == 0
+                    and self._kyuushu_kinds(hand) >= 9):
+                self._abort("九种九牌")
+                return (self._obs(), rewards, True, {"discarded": False})
 
             elif action_type == "tsumo" and drawn and (
                 result := self._win_result(player_id, drawn, is_tsumo=True)
@@ -702,7 +923,9 @@ class PyMahjongTable(MahjongEngineAPI):
             elif action_type == "kan" and tile and self._can_shouminkan(player_id, tile):
                 # RCR 4.2.1.12: an added kan can be robbed. Nothing is
                 # mutated until the chankan window closes.
-                self.pending_kan = {"player": player_id, "tile": tile}
+                self.pending_kan = {"player": player_id, "tile": tile,
+                                    "red": self._plain_copies(player_id, tile) == 0
+                                    and self.red[player_id].get(tile[-1], 0) > 0}
                 return (
                     self._obs(),
                     rewards, False, {"discarded": False, "chankan": tile},
@@ -724,13 +947,11 @@ class PyMahjongTable(MahjongEngineAPI):
         return self._shanten(rest, len(self.melds[player_id])) == 0
 
     def _do_ankan(self, player_id: int, tile: str):
-        hand = self.hands[player_id]
-        for _ in range(4):
-            hand.remove(tile)
+        used_red = self._take_from_hand(player_id, tile, 4)
         self.melds[player_id].append(
-            {"type": "ankan", "tiles": [tile] * 4, "opened": False}
+            {"type": "ankan", "tiles": [tile] * 4, "opened": False, "red": used_red}
         )
-        self._after_kan(player_id)
+        self._after_kan(player_id, reveal_now=True)
 
     def resolve_pending_kan(self):
         """Nobody robbed the added kan: complete it (RCR 3.5 / 3.7.1)."""
@@ -742,16 +963,20 @@ class PyMahjongTable(MahjongEngineAPI):
                     if m["type"] == "pon" and m["tiles"][0] == tile), None)
         if pon is None or tile not in self.hands[player_id]:
             return
-        self.hands[player_id].remove(tile)
+        pon["red"] = pon.get("red", 0) + self._take_from_hand(player_id, tile, 1)
         pon["type"] = "shouminkan"
         pon["tiles"] = [tile] * 4
         self._after_kan(player_id)
 
-    def _after_kan(self, player_id: int):
+    def _after_kan(self, player_id: int, reveal_now: bool = False):
         self.kan_count += 1
+        self.kan_players.add(player_id)
         self.any_call = True
         self.ippatsu = [False, False, False, False]   # RCR 4.2.1.3
-        self._reveal_kan_dora()
+        if reveal_now:                 # ankan: immediately
+            self._reveal_kan_dora()
+        else:                          # daiminkan / shouminkan: after the discard
+            self.pending_dora_reveal += 1
         self._rinshan_draw(player_id)
         self.hands[player_id].sort(key=sort_key)
 
@@ -769,7 +994,7 @@ class PyMahjongTable(MahjongEngineAPI):
         # RCR 3.7.1: the live wall's tail tile joins the dead wall, so the
         # round still yields exactly 70 draws in total.
         self.wall.pop(0)
-        self.hands[player_id].append(t)
+        t = self._give(player_id, t)
         self.hands[player_id].sort(key=sort_key)
         self.last_drawn[player_id] = t
         self.rinshan[player_id] = True
@@ -778,12 +1003,16 @@ class PyMahjongTable(MahjongEngineAPI):
     def advance_turn(self):
         self._confirm_riichi()
         self._apply_missed_ron()
+        if self.finished:                          # 四家立直 aborted in _confirm_riichi
+            return self._obs(), True
+        if self._pending_abort:
+            self._abort(self._pending_abort)
+            return self._obs(), True
         self.turn = (self.turn + 1) % 4
         if not self.wall:
             self._ryuukyoku()
             return self._obs(), True
-        t = self.wall.pop()
-        self.hands[self.turn].append(t)
+        t = self._give(self.turn, self.wall.pop())
         self.hands[self.turn].sort(key=sort_key)
         self.last_drawn[self.turn] = t
         self.rinshan[self.turn] = False
@@ -802,6 +1031,8 @@ class PyMahjongTable(MahjongEngineAPI):
         self.points[pid] -= 1000
         self.kyotaku += 1000
         self.riichi_pending = None
+        if all(self.riichi):
+            self._abort("四家立直")
 
     def _void_riichi(self):
         """RCR 3.12: the declaration tile was ronned — riichi never was."""
@@ -867,6 +1098,13 @@ class PyMahjongTable(MahjongEngineAPI):
             return obs(), rewards, False, {"interrupt": False, "winners": []}
 
         self.pending_kan = None
+        if len(winners) >= 3:                       # Majsoul: 三家和了 -> draw
+            if self.riichi_pending == discarder:
+                self._void_riichi()
+            self._abort("三家和了")
+            return obs(), rewards, True, {
+                "interrupt": True, "winners": [w for w, _ in winners],
+                "abort": "三家和了"}
         self._settle_ron(winners, discarder, chankan=chankan)
         return obs(), rewards, True, {
             "interrupt": True, "winners": [w for w, _ in winners],
@@ -908,11 +1146,11 @@ class PyMahjongTable(MahjongEngineAPI):
         )
 
         if action_type == "pon" and can_meld and hand.count(tile) >= 2:
-            hand.remove(tile)
-            hand.remove(tile)
+            used_red = self._take_from_hand(player_id, tile, 2)
             self.melds[player_id].append(
                 {"type": "pon", "tiles": [tile] * 3, "opened": True,
-                 "from": self.last_discarder}
+                 "from": self.last_discarder,
+                 "red": used_red + int(self.last_discard_red)}
             )
             self._record_pao(player_id, tile, self.last_discarder)
             self.kuikae = (player_id, self._kuikae_tiles(tile, []))
@@ -921,11 +1159,11 @@ class PyMahjongTable(MahjongEngineAPI):
 
         elif (action_type == "kan" and can_meld and hand.count(tile) >= 3
                 and self.kan_count < self.MAX_KANS):
-            for _ in range(3):
-                hand.remove(tile)
+            used_red = self._take_from_hand(player_id, tile, 3)
             self.melds[player_id].append(
                 {"type": "kan", "tiles": [tile] * 4, "opened": True,
-                 "from": self.last_discarder}
+                 "from": self.last_discarder,
+                 "red": used_red + int(self.last_discard_red)}
             )
             self._record_pao(player_id, tile, self.last_discarder)
             self._claim_discard(player_id)
@@ -939,12 +1177,14 @@ class PyMahjongTable(MahjongEngineAPI):
             if pairs:
                 wanted = (match.group(3) or "").split()
                 chosen = next((p for p in pairs if sorted(p) == sorted(wanted)), pairs[0])
+                used_red = 0
                 for t in chosen:
-                    hand.remove(t)
+                    used_red += self._take_from_hand(player_id, t, 1)
                 seq = sorted(chosen + [tile], key=sort_key)
                 self.melds[player_id].append(
                     {"type": "chi", "tiles": seq, "opened": True,
-                     "from": self.last_discarder}
+                     "from": self.last_discarder,
+                     "red": used_red + int(self.last_discard_red)}
                 )
                 self.kuikae = (player_id, self._kuikae_tiles(tile, chosen))
                 self._claim_discard(player_id)
@@ -957,6 +1197,7 @@ class PyMahjongTable(MahjongEngineAPI):
         return obs(), rewards, False, {"interrupt": interrupted}
 
     def _claim_discard(self, player_id: int):
+        self._pending_abort = None
         # A call does not void a riichi declaration (only a ron does).
         self._confirm_riichi()
         self._apply_missed_ron()
@@ -1071,8 +1312,40 @@ class PyMahjongTable(MahjongEngineAPI):
         )
         self._compute_final_rewards(houjuu_player=discarder)
 
+    def _abort(self, reason: str):
+        """途中流局 (Majsoul): no tenpai payments; sticks stay on the table."""
+        if self.finished:
+            return
+        self._pending_abort = None
+        self.finished = True
+        self.result_summary = f"途中流局({reason}) | 点数: {self.points}"
+        self._compute_final_rewards(houjuu_player=None)
+
+    def _nagashi_mangan(self) -> List[int]:
+        """Players whose every discard was a terminal/honor and none was called."""
+        out = []
+        for i in range(4):
+            ev = self.river_events[i]
+            if ev and all((e[0][-1] == 'z' or e[0][0] in '19') and not e[3] for e in ev):
+                out.append(i)
+        return out
+
     def _ryuukyoku(self):
         if self.finished:
+            return
+        nagashi = self._nagashi_mangan()
+        if nagashi:
+            for w in nagashi:
+                for i in range(4):
+                    if i == w:
+                        continue
+                    pay = 4000 if (w == self.dealer or i == self.dealer) else 2000
+                    self.points[i] -= pay
+                    self.points[w] += pay
+            self.finished = True
+            self.result_summary = (
+                f"流局满贯 | 玩家{nagashi} | 点数: {self.points}")
+            self._compute_final_rewards(houjuu_player=None)
             return
         tenpai = [
             self._shanten(self.hands[i], len(self.melds[i])) <= 0 for i in range(4)

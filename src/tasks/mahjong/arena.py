@@ -7,7 +7,9 @@ Protocol
   then A on 1/3) with the identical wall, so deal luck cancels pairwise.
 - Strength readout uses RAW final table points (not training rewards):
   per-deal paired differential = sum over both orientations of
-  (A-team points − 50000). Positive ⇒ A stronger on that deal.
+  (A-team points − B-team points). Positive ⇒ A stronger on that deal.
+  (Before 2026-08-23 this was A − 50000, biased against A by the riichi
+  sticks lost at ryuukyoku; see the note in run_match.)
 
 Implementation notes
 --------------------
@@ -57,6 +59,8 @@ def _fill_with_dnn(net, pairs, device="cpu", temperature: float = 1.0):
         action = lookup.get(int(idx))
         if action is None:                     # cannot happen with masking
             action = r.legal[0]
+        if hasattr(net, "override"):           # diagnostic wrappers (overrides.py)
+            action = net.override(table, r.player_id, r.legal, action)
         r.raw = action
         r.parsed = action
 
@@ -198,7 +202,14 @@ def run_match(model, tokenizer, deal_seeds: List[int],
         for orient, r in enumerate(pair):
             a = set(r["a_seats"])
             a_pts = sum(p for i, p in enumerate(r["points"]) if i in a)
-            diff += a_pts - 50000
+            b_pts = sum(p for i, p in enumerate(r["points"]) if i not in a)
+            # A − B, not A − 50000: riichi sticks left on the table at a
+            # ryuukyoku are lost in single-hand games, so points do not sum
+            # to 100000 and "A − 50000" charged the whole leak to side A
+            # (≈ −170/deal bias against A, and half scale). Found 2026-08-23
+            # (exp26); every arena/Elo number before that is on the old
+            # metric: old ≈ (new − leak)/2.
+            diff += a_pts - b_pts
             winner = None
             if "荣和" in r["result"] or "自摸" in r["result"]:
                 import re as _re

@@ -24,9 +24,14 @@ from src.tasks.mahjong.shanten import dora_from_indicator
 TILE_TYPES = 34
 SUITS = "mps"
 
-ACTION_TYPES = ["discard", "riichi", "chi", "pon", "kan", "ron", "tsumo", "skip"]
+# Majsoul rules (2026-08-23): three extra types appended AFTER the legacy
+# eight so every old index keeps its meaning — "discard0"/"riichi0" = play
+# the RED five of that suit (key tile 5x), "kyuushu" = 九种九牌 declaration.
+LEGACY_ACTION_TYPES = ["discard", "riichi", "chi", "pon", "kan", "ron", "tsumo", "skip"]
+ACTION_TYPES = LEGACY_ACTION_TYPES + ["discard0", "riichi0", "kyuushu"]
 TYPE_TO_ID = {t: i for i, t in enumerate(ACTION_TYPES)}
-ACTION_DIM = len(ACTION_TYPES) * TILE_TYPES      # 8 * 34 = 272
+ACTION_DIM = len(ACTION_TYPES) * TILE_TYPES      # 11 * 34 = 374
+LEGACY_ACTION_DIM = len(LEGACY_ACTION_TYPES) * TILE_TYPES   # 272 (pre-red checkpoints)
 
 # 15 board planes over the 34 tile types (see class docstring for the list)
 N_PLANES = 15
@@ -42,13 +47,38 @@ N_SCALARS = 20
 # visible-tile count >= k (k=1..4, union of everything on the table).
 N_PLANES_V3 = 15 + 16 + 12 + 3 + 4          # = 50
 N_SCALARS_V3 = N_SCALARS + 4 + 4 + 1        # + riichi turn x4, discard count x4, wall-turn
+# red-dora variants (2026-08-23): base planes + 5 — own red fives (at the
+# 5x columns) and, per relative seat, red fives visible in river/melds.
+N_PLANES_RED = 5
+N_PLANES_V1R = N_PLANES + N_PLANES_RED      # 20
+N_PLANES_V3R = N_PLANES_V3 + N_PLANES_RED   # 55
+
+VARIANT_SHAPE = {                            # encoder variant -> (planes, scalars)
+    "v1": (N_PLANES, N_SCALARS), "v1r": (N_PLANES_V1R, N_SCALARS),
+    "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
+}
+MAX_PLANES = max(p for p, _ in VARIANT_SHAPE.values())
+MAX_SCALARS = max(s for _, s in VARIANT_SHAPE.values())
+
+
+def variant_shape(variant: str):
+    return VARIANT_SHAPE[variant]
+
+
+def variant_of_arch(arch: str) -> str:
+    """Encoder variant implied by a zoo arch name ('cnn_m_v3r' -> 'v3r')."""
+    arch = arch or ""
+    for suf, v in (("_v3r", "v3r"), ("_v3", "v3"), ("_r", "v1r")):
+        if arch.endswith(suf):
+            return v
+    return "v1"
 
 _ACT_RE = re.compile(r'type="(\w+)"(?:[^>]*?tile="([^"]+)")?(?:[^>]*?with="([^"]+)")?')
 
 
 def _tile_to_34_slow(tile: str) -> int:
     tile = tile.replace("*", "").strip()
-    val, suit = int(tile[:-1]), tile[-1]
+    val, suit = int(tile[:-1]) or 5, tile[-1]        # '0x' = red five
     if suit == "z":
         return 27 + (val - 1)
     return SUITS.index(suit) * 9 + (val - 1)
@@ -62,6 +92,9 @@ for _v in range(1, 10):
 for _v in range(1, 8):
     _T34[f"{_v}z"] = _tile_to_34_slow(f"{_v}z")
     _T34[f"{_v}z*"] = _T34[f"{_v}z"]
+for _s in SUITS:
+    _T34[f"0{_s}"] = _T34[f"5{_s}"]
+    _T34[f"0{_s}*"] = _T34[f"5{_s}"]
 
 
 def tile_to_34(tile: str) -> int:
@@ -80,6 +113,8 @@ def action_to_index(action_xml: str) -> Optional[int]:
     if not m:
         return None
     a_type, tile, with_tiles = m.group(1), m.group(2), m.group(3)
+    if a_type in ("discard", "riichi") and tile and tile[0] == "0":
+        a_type += "0"                                # red-five spelling
     if a_type not in TYPE_TO_ID:
         return None
     if a_type == "chi" and with_tiles:
@@ -130,6 +165,26 @@ def _presence_row(tiles) -> np.ndarray:
     return row
 
 
+def _red_planes(table, player_id: int) -> np.ndarray:
+    """[5, 34]: own red fives; red fives visible per relative seat
+    (river '0x' entries + meld red counts), at the 5x columns."""
+    R = np.zeros((N_PLANES_RED, TILE_TYPES), dtype=np.float32)
+    red = getattr(table, "red", None)
+    for off in range(4):
+        pid = (player_id + off) % 4
+        if off == 0 and red is not None:
+            for suit, n in red[pid].items():
+                if n:
+                    R[0][_T34["5" + suit]] = 1.0
+        for t in table.discards[pid]:
+            if t[0] == "0":
+                R[1 + off][_T34[t]] = 1.0
+        for m in table.melds[pid]:
+            if m.get("red"):
+                R[1 + off][tile_to_34(m["tiles"][0])] = 1.0
+    return R
+
+
 def encode_state(table, player_id: int,
                  with_order: bool = False,
                  variant: str = "v1") -> Tuple[torch.Tensor, torch.Tensor]:
@@ -144,6 +199,13 @@ def encode_state(table, player_id: int,
     """
     if variant == "v3":
         return _encode_v3(table, player_id)
+    if variant == "v3r":
+        P, sc = _encode_v3(table, player_id, as_numpy=True)
+        return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
+                torch.from_numpy(sc))
+    if variant == "v1r":
+        P, sc = encode_state(table, player_id, with_order=False, variant="v1")
+        return torch.cat([P, torch.from_numpy(_red_planes(table, player_id))]), sc
     planes = np.zeros((N_PLANES_V2 if with_order else N_PLANES, TILE_TYPES),
                       dtype=np.float32)
 
@@ -196,7 +258,7 @@ def encode_state(table, player_id: int,
     return planes, s
 
 
-def _encode_v3(table, player_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
+def _encode_v3(table, player_id: int, as_numpy: bool = False):
     """Complete public record (see N_PLANES_V3). Seats are relative: offset 0
     is the player, 1..3 the opponents downstream."""
     P = np.zeros((N_PLANES_V3, TILE_TYPES), dtype=np.float32)
@@ -268,4 +330,6 @@ def _encode_v3(table, player_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
         s[20 + off] = 0.0 if rt is None else min((rt + 1) / 20.0, 1.0)
         s[24 + off] = min(table.discard_count[pid] / 20.0, 1.0)
     s[28] = min(sum(table.discard_count) / 70.0, 1.0)
+    if as_numpy:
+        return P, s
     return torch.from_numpy(P), torch.from_numpy(s)

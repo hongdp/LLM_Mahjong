@@ -48,7 +48,8 @@ _ENGINE_HONOR_TO_MJAI = {v: k for k, v in _MJAI_HONOR_TO_ENGINE.items()}
 
 
 def mjai_to_engine(tile: str) -> str:
-    """'5mr' -> '5m', 'E' -> '1z', '3p' -> '3p'."""
+    """'5mr' -> '5m' (plain spelling; redness is tracked separately),
+    'E' -> '1z', '3p' -> '3p'."""
     if tile in _MJAI_HONOR_TO_ENGINE:
         return _MJAI_HONOR_TO_ENGINE[tile]
     if len(tile) == 3 and tile[2] == "r":
@@ -56,10 +57,19 @@ def mjai_to_engine(tile: str) -> str:
     return tile
 
 
+def mjai_to_engine_spelled(tile: str) -> str:
+    """Like mjai_to_engine but keeps the red five as the engine's '0x'."""
+    if len(tile) == 3 and tile[2] == "r":
+        return "0" + tile[1]
+    return mjai_to_engine(tile)
+
+
 def engine_to_mjai(tile: str, red: bool = False) -> str:
     tile = tile.replace("*", "")
     if tile in _ENGINE_HONOR_TO_MJAI:
         return _ENGINE_HONOR_TO_MJAI[tile]
+    if tile[0] == "0":                                  # engine red spelling
+        return "5" + tile[1] + "r"
     return tile + ("r" if red and tile[0] == "5" else "")
 
 
@@ -105,19 +115,27 @@ class ShadowTable(PyMahjongTable):
         self.my_drawn_mjai: Optional[str] = None
 
     # ---- helpers -----------------------------------------------------
-    def _take_mjai(self, tile_mjai: str) -> None:
-        """Remove one physical tile from our hand (both spellings)."""
+    def _take_mjai(self, tile_mjai: str) -> int:
+        """Remove one physical tile from our hand (both spellings);
+        returns 1 if the copy taken was a red five."""
         eng = mjai_to_engine(tile_mjai)
         self.hands[self.me].remove(eng)
         if tile_mjai in self.my_tiles_mjai:
-            self.my_tiles_mjai.remove(tile_mjai)
+            taken = tile_mjai
         else:                                       # spelling mismatch: take any copy
-            alt = next(t for t in self.my_tiles_mjai if mjai_to_engine(t) == eng)
-            self.my_tiles_mjai.remove(alt)
+            taken = next(t for t in self.my_tiles_mjai if mjai_to_engine(t) == eng)
+        self.my_tiles_mjai.remove(taken)
+        if is_red(taken):
+            self.red[self.me][taken[1]] -= 1
+            return 1
+        return 0
 
     def physical(self, engine_tile: str) -> str:
-        """Which physical tile of ours to name for an engine tile: prefer
-        the plain copy and keep the red five in hand."""
+        """Physical tile of ours for an engine action tile: '0x' names the
+        red five, '5x' the plain copy (falling back to whichever we hold)."""
+        if engine_tile[0] == "0":
+            red = "5" + engine_tile[1] + "r"
+            return red if red in self.my_tiles_mjai else "5" + engine_tile[1]
         plain = engine_to_mjai(engine_tile)
         if plain in self.my_tiles_mjai:
             return plain
@@ -157,6 +175,12 @@ class ShadowTable(PyMahjongTable):
         tehai = msg["tehais"][self.me]
         self.my_tiles_mjai = list(tehai)
         self.hands[self.me] = sorted((mjai_to_engine(t) for t in tehai), key=sort_key)
+        self.red = {i: {"m": 0, "p": 0, "s": 0} for i in range(4)}
+        for t in tehai:
+            if is_red(t):
+                self.red[self.me][t[1]] += 1
+        self.last_drawn_red = [False] * 4
+        self.last_discard_red = False
         self.last_drawn = [None] * 4
         self.last_discard = None
         self.last_discarder = None
@@ -179,6 +203,9 @@ class ShadowTable(PyMahjongTable):
             self.my_tiles_mjai.append(pai)
             self.my_drawn_mjai = pai
             self.last_drawn[self.me] = eng
+            self.last_drawn_red[self.me] = is_red(pai)
+            if is_red(pai):
+                self.red[self.me][pai[1]] += 1
         else:
             self.last_drawn[actor] = "?"
         self.rinshan[actor] = self._rinshan_pending[actor]
@@ -197,17 +224,19 @@ class ShadowTable(PyMahjongTable):
 
     def dahai(self, actor: int, pai: str, tsumogiri: bool) -> None:
         tile = mjai_to_engine(pai)
+        spelled = mjai_to_engine_spelled(pai)           # '0x' for a red five
         riichi_mark = self.riichi_pending == actor
         self.river_events[actor].append(
-            [tile, bool(tsumogiri), riichi_mark, False, self.discard_count[actor]])
+            [spelled, bool(tsumogiri), riichi_mark, False, self.discard_count[actor]])
         if riichi_mark:
             self.riichi_turn[actor] = self.discard_count[actor]
         if actor == self.me:
             self._take_mjai(pai)
             self.my_drawn_mjai = None
-        self.discards[actor].append(tile + ("*" if riichi_mark else ""))
+        self.discards[actor].append(spelled + ("*" if riichi_mark else ""))
         self.furiten_river[actor].append(tile)
         self.last_discard = tile
+        self.last_discard_red = is_red(pai)
         self.last_discarder = actor
         self.last_tile_mjai = pai
         self.last_drawn[actor] = None
@@ -233,35 +262,37 @@ class ShadowTable(PyMahjongTable):
         self.ippatsu = [False] * 4
         self.temp_furiten[actor] = False
 
+    def _consume(self, actor: int, consumed: List[str]) -> int:
+        """Take the consumed tiles from our hand (if ours); return red count."""
+        if actor == self.me:
+            return sum(self._take_mjai(c) for c in consumed)
+        return sum(1 for c in consumed if is_red(c))
+
     def chi(self, actor: int, target: int, pai: str, consumed: List[str]) -> None:
         tile = mjai_to_engine(pai)
         used = [mjai_to_engine(c) for c in consumed]
+        reds = self._consume(actor, consumed) + int(is_red(pai))
         if actor == self.me:
-            for c in consumed:
-                self._take_mjai(c)
             self.kuikae = (actor, self._kuikae_tiles(tile, used))
         self.melds[actor].append({"type": "chi", "tiles": sorted(used + [tile], key=sort_key),
-                                  "opened": True, "from": target})
+                                  "opened": True, "from": target, "red": reds})
         self._claim_common(actor, target)
 
     def pon(self, actor: int, target: int, pai: str, consumed: List[str]) -> None:
         tile = mjai_to_engine(pai)
+        reds = self._consume(actor, consumed) + int(is_red(pai))
         if actor == self.me:
-            for c in consumed:
-                self._take_mjai(c)
             self.kuikae = (actor, self._kuikae_tiles(tile, []))
         self.melds[actor].append({"type": "pon", "tiles": [tile] * 3,
-                                  "opened": True, "from": target})
+                                  "opened": True, "from": target, "red": reds})
         self._record_pao(actor, tile, target)
         self._claim_common(actor, target)
 
     def daiminkan(self, actor: int, target: int, pai: str, consumed: List[str]) -> None:
         tile = mjai_to_engine(pai)
-        if actor == self.me:
-            for c in consumed:
-                self._take_mjai(c)
+        reds = self._consume(actor, consumed) + int(is_red(pai))
         self.melds[actor].append({"type": "kan", "tiles": [tile] * 4,
-                                  "opened": True, "from": target})
+                                  "opened": True, "from": target, "red": reds})
         self._record_pao(actor, tile, target)
         self._claim_common(actor, target)
         self._after_kan_event(actor)
@@ -269,25 +300,27 @@ class ShadowTable(PyMahjongTable):
     def ankan(self, actor: int, consumed: List[str]) -> None:
         self._close_interrupt_window()
         tile = mjai_to_engine(consumed[0])
+        reds = self._consume(actor, consumed)
         if actor == self.me:
-            for c in consumed:
-                self._take_mjai(c)
             self.my_drawn_mjai = None
-        self.melds[actor].append({"type": "ankan", "tiles": [tile] * 4, "opened": False})
+        self.melds[actor].append({"type": "ankan", "tiles": [tile] * 4, "opened": False,
+                                  "red": reds})
         self.last_drawn[actor] = None
         self._after_kan_event(actor)
 
     def kakan(self, actor: int, pai: str) -> None:
         self._close_interrupt_window()
         tile = mjai_to_engine(pai)
+        reds = int(is_red(pai))
         if actor == self.me:
-            self._take_mjai(pai)
+            reds = self._take_mjai(pai)
             self.my_drawn_mjai = None
         pon = next((m for m in self.melds[actor]
                     if m["type"] == "pon" and m["tiles"][0] == tile), None)
         if pon is not None:
             pon["type"] = "shouminkan"
             pon["tiles"] = [tile] * 4
+            pon["red"] = pon.get("red", 0) + reds
         self.last_drawn[actor] = None
         self.last_tile_mjai = pai
         self._after_kan_event(actor)
@@ -595,6 +628,8 @@ class MjaiDnnBot:
         me = self.seat
         if a_type == "tsumo":
             r = {"type": "hora", "actor": me, "target": me, "pai": tb.my_drawn_mjai}
+        elif a_type == "kyuushu":                       # 九种九牌 declaration
+            r = {"type": "ryukyoku", "actor": me}
         elif a_type == "kan":
             is_ankan = tb.hands[me].count(tile) == 4
             if is_ankan:
@@ -689,6 +724,8 @@ class MjaiDnnBot:
                 key = "hora"
             elif a_type == "skip":
                 key = "none"
+            elif a_type == "kyuushu":
+                key = "ryukyoku"
             if key is None or key not in _MASK_INDEX:
                 continue
             i = _MASK_INDEX[key]

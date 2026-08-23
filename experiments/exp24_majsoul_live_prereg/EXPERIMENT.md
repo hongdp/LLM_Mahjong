@@ -52,3 +52,11 @@ MahjongCopilot settings: model_type=LLM_Mahjong, enable_automation=true, ai_rand
 | Path | Size | Description |
 |---|---|---|
 | tools/majsoul_bridge/README.md | – | 运行手册 |
+
+## Progress（续）
+- [08-23 ~01:00] 用户已在雀魂实际开打（贪心 T=0，冠军 exp17-C）。**首个人类标尺读数：雀魂 AI 牌谱评分（"maka"）≈ C+（仅 1 个半庄，n=1，且 maka 每日调用次数有限）**。
+  评分区间对应（用户提供，来源 NGA/知乎）：C~C+ = 初级–铜，"牌效失误多、进张偏离最优、防守薄弱"；
+  B~A = 银–金（基础牌效掌握，攻防转换/弃和时机不精）；A+~S- = 金–玉–王座；S~S+ = 魂天级。
+  ⇒ 单半庄读数，只作方向性参考（单局评分方差大，顺风局可虚高/逆风局可虚低）；要 ≥10 个半庄的 maka 分布才写结论。方向上与自对弈内部诊断一致与自对弈内部诊断一致（defense_iq≈0；杠价值未分化，见 exp26）。
+  待补：评分所依据的局数、每局评分分布、放铳/顺位原始数据（打牌机上的 per-game JSON 同步回来后用
+  `scripts/analyze_majsoul_session.py` 正式计入 Results）。定性观察：模型几乎不杠（→ exp26 诊断）。

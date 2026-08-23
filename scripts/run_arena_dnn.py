@@ -56,6 +56,9 @@ def main():
     ap.add_argument("--dnn_temperature_a", type=float, default=None,
                     help="override for side A (0 = greedy/argmax)")
     ap.add_argument("--dnn_temperature_b", type=float, default=None)
+    ap.add_argument("--override_a", default=None, choices=["kan", "ankan", "nodaiminkan"],
+                    help="diagnostic rule override wrapped around A (src/agents/dnn/overrides.py)")
+    ap.add_argument("--override_b", default=None, choices=["kan", "ankan", "nodaiminkan"])
     ap.add_argument("--llm_temperature", type=float, default=0.9,
                     help="LLM sampling temperature in the arena. Lower = less\n                         evaluation noise AND (measured) better teacher fidelity.")
     ap.add_argument("--out", default="arena_dnn_result.json")
@@ -66,8 +69,18 @@ def main():
     dnn_policies = {}
     if args.dnn_a:
         dnn_policies["A"] = load_dnn(args.dnn_a, device)
+        if args.override_a:
+            from src.agents.dnn.overrides import KanOverride
+            o = args.override_a
+            dnn_policies["A"] = KanOverride(dnn_policies["A"], ankan=o != "nodaiminkan",
+                                           no_daiminkan=o != "ankan")
     if args.dnn_b:
         dnn_policies["B"] = load_dnn(args.dnn_b, device)
+        if args.override_b:
+            from src.agents.dnn.overrides import KanOverride
+            o = args.override_b
+            dnn_policies["B"] = KanOverride(dnn_policies["B"], ankan=o != "nodaiminkan",
+                                           no_daiminkan=o != "ankan")
 
     model = tokenizer = None
     if args.adapter_a or args.adapter_b:
@@ -111,6 +124,9 @@ def main():
     print(f"B = {label_b}  (T={args.dnn_temperature if args.dnn_temperature_b is None else args.dnn_temperature_b})")
     print(f"deals={n}  paired diff = {mean:+.1f} +/- {ci:.1f}  "
           f"wins {wins_a}:{wins_b}  => {verdict}")
+    for side, net in dnn_policies.items():
+        if getattr(net, "stats", None):
+            print(f"override stats {side}: {dict(net.stats)}")
     json.dump({"a": label_a, "b": label_b, "deals": n, "mean_diff": mean,
                "ci95": ci, "wins_a": wins_a, "wins_b": wins_b,
                "verdict": verdict, "rows": rows},

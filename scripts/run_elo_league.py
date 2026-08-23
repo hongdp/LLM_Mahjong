@@ -40,6 +40,56 @@ ANCHOR_POOL = {
 }
 PINNED = ("bc_cnn", 1000.0)   # scale origin, fixed forever
 
+# Epoch rule (design_elo_league.md §长期维护 3): any change to the engine /
+# scoring / rules invalidates every match played so far. The engine is
+# fingerprinted by content (not git commit) so uncommitted edits count too.
+ENGINE_FILES = ("table.py", "shanten.py", "claims.py", "wrapper.py", "arena.py")
+
+
+def engine_fingerprint(rev=None):
+    """sha256 over the engine sources (working tree, or a git rev)."""
+    import hashlib
+    import subprocess
+    h = hashlib.sha256()
+    for f in ENGINE_FILES:
+        rel = f"src/tasks/mahjong/{f}"
+        if rev:
+            blob = subprocess.run(["git", "show", f"{rev}:{rel}"],
+                                  capture_output=True).stdout
+        else:
+            blob = open(rel, "rb").read() if os.path.exists(rel) else b""
+        h.update(f.encode() + b"\0" + blob + b"\0")
+    return h.hexdigest()[:16]
+
+
+def engine_stamp():
+    import subprocess
+    git = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                         capture_output=True, text=True).stdout.strip()
+    return {"fingerprint": engine_fingerprint(), "git": git,
+            "files": list(ENGINE_FILES)}
+
+
+def check_engine_epoch(league, allow):
+    """Refuse to rate against anchors calibrated under a different engine."""
+    want = league.get("engine", {}).get("fingerprint")
+    have = engine_fingerprint()
+    if want is None:
+        print("WARN anchors.json carries no engine stamp — cannot verify epoch",
+              flush=True)
+        return False
+    if want == have:
+        return False
+    msg = (f"ENGINE EPOCH MISMATCH: anchors calibrated under engine {want} "
+           f"(git {league['engine'].get('git')}), current engine is {have}. "
+           f"Historical matches are void under the epoch rule — recalibrate "
+           f"(`calibrate`) before rating.")
+    if not allow:
+        raise SystemExit(msg)
+    print("WARN " + msg + " (--allow_engine_mismatch: rating anyway, flagged)",
+          flush=True)
+    return True
+
 
 def deal_scores(rows):
     """Per-deal outcome for side A: 1 win / 0.5 tie / 0 loss by sign(diff)."""
@@ -136,7 +186,8 @@ def cmd_calibrate(args):
              for n in names}
     os.makedirs(LEAGUE_DIR, exist_ok=True)
     json.dump({"pinned": PINNED, "deals_per_pair": args.deals,
-               "seed0": args.seed0, "date": args.date, "anchors": table},
+               "seed0": args.seed0, "date": args.date,
+               "engine": engine_stamp(), "anchors": table},
               open(f"{LEAGUE_DIR}/anchors.json", "w"), indent=1)
     for n in sorted(names, key=lambda x: -ratings[x]):
         print(f"{n:>12}  {ratings[n]:7.1f} ± {table[n]['se']:.1f}")
@@ -144,13 +195,14 @@ def cmd_calibrate(args):
 
 
 def rate_checkpoint(ckpt, label, deals, seed0, parallel, device,
-                    use=None, init_guess=1000.0):
+                    use=None, init_guess=1000.0, allow_engine_mismatch=False):
     """Rate one checkpoint against frozen anchors; append to history.jsonl.
 
     use: anchor-name subset; None = all. init_guess seeds the fit and (in
     the ladder watcher) drives nearest-anchor selection upstream.
     """
     league = json.load(open(f"{LEAGUE_DIR}/anchors.json"))
+    mismatch = check_engine_epoch(league, allow_engine_mismatch)
     anchors = league["anchors"]
     use = use or list(anchors)
     games = []
@@ -172,6 +224,7 @@ def rate_checkpoint(ckpt, label, deals, seed0, parallel, device,
            "se": round(rating_se(games, ratings, "cand"), 1),
            "anchors": use, "deals_per_anchor": deals, "seed0": seed0,
            "date": time.strftime("%Y-%m-%d %H:%M:%S"),
+           "engine": engine_fingerprint(), "engine_mismatch": mismatch,
            "residuals": residuals(games, ratings, "cand")}
     os.makedirs(LEAGUE_DIR, exist_ok=True)
     with open(f"{LEAGUE_DIR}/history.jsonl", "a") as f:
@@ -185,7 +238,8 @@ def cmd_rate(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use = args.anchors.split(",") if args.anchors else None
     rate_checkpoint(args.ckpt, args.label or args.ckpt, args.deals,
-                    args.seed0, args.parallel, device, use=use)
+                    args.seed0, args.parallel, device, use=use,
+                    allow_engine_mismatch=args.allow_engine_mismatch)
 
 
 def main():
@@ -205,7 +259,12 @@ def main():
     ra.add_argument("--seed0", type=int, required=True,
                     help="fresh seed0 per evaluation; recorded in history")
     ra.add_argument("--parallel", type=int, default=20)
+    ra.add_argument("--allow_engine_mismatch", action="store_true",
+                    help="rate even though the engine changed since calibration "
+                         "(record is flagged engine_mismatch=true)")
     ra.set_defaults(fn=cmd_rate)
+    st = sub.add_parser("stamp", help="print the current engine fingerprint")
+    st.set_defaults(fn=lambda a: print(json.dumps(engine_stamp())))
     args = ap.parse_args()
     args.date = time.strftime("%Y-%m-%d %H:%M:%S")
     args.fn(args)

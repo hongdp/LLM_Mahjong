@@ -76,8 +76,12 @@
    从线性降为受钉扎的缓慢游走。每新增 ~5 个锚点，加跑一轮小审计（新顶 vs 3 个远端
    老锚点，只重拟合新成员的分数）。
 3. **纪元规则（防环境失效）**：引擎/计分/规则代码变更 ⇒ 全部历史对局作废，开新纪元
-   整池重校（这是唯一需要全量重校的情形）。anchors.json 记录 engine git commit，
-   评分脚本启动时应比对告警。
+   整池重校（这是唯一需要全量重校的情形）。anchors.json 记录引擎**内容指纹**
+   （`engine.fingerprint`，sha256 over `src/tasks/mahjong/{table,shanten,claims,wrapper,arena}.py`，
+   `run_elo_league.py stamp` 可打印），`rate` 启动时比对：不一致则拒绝运行，
+   `--allow_engine_mismatch` 可覆盖但 history 记录会带 `engine_mismatch: true`。
+   纪元 1 = 指纹 `d24241ea4b1f2577`（保守暗杠近似，2026-08-16 校准）；
+   纪元 2 = 精确立直暗杠判定（2026-08-23 修复，合并后需整池重校）。
 4. **残差监控（防非传递性恶化）**：某锚点残差系统性 >2σ 时，**不改分数**——分数是
    已发生对局的汇总，改它等于篡改历史；正确动作是给该风格族补锚点/加对局密度。
 

@@ -520,8 +520,13 @@ class TestMultipleRonAndChankan(unittest.TestCase):
         self.assertIsNone(self.t.pending_kan)
         self.assertEqual(self.t.melds[0][0]['type'], 'shouminkan')
         self.assertEqual(self.t.kan_count, 1)
-        self.assertEqual(len(self.t.dora_indicators), 2)
+        # Majsoul timing: the added-kan dora is turned over after the discard
+        self.assertEqual(len(self.t.dora_indicators), 1)
+        self.assertEqual(self.t.pending_dora_reveal, 1)
         self.assertTrue(self.t.rinshan[0])
+        self.t.step(0, f'<action type="discard" tile="{self.t.last_drawn[0]}" />')
+        self.assertEqual(len(self.t.dora_indicators), 2)
+        self.assertEqual(self.t.pending_dora_reveal, 0)
 
 
 class TestPao(unittest.TestCase):
@@ -656,7 +661,8 @@ class TestOrchestratorRuleRouting(unittest.TestCase):
         self.assertEqual(should_continue(self.state), "turn")
         self.assertIsNone(self.t.pending_kan)
         self.assertEqual(self.t.melds[0][0]['type'], 'shouminkan')
-        self.assertEqual(len(self.t.dora_indicators), 2)
+        self.assertEqual(len(self.t.dora_indicators), 1)   # flipped after the discard
+        self.assertEqual(self.t.pending_dora_reveal, 1)
         self.assertEqual(self.t.turn, 0)          # same player discards next
         self.assertIsNotNone(self.t.last_drawn[0])
 
@@ -713,3 +719,53 @@ class TestInvariants(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRiichiAnkanExactTripletReading(unittest.TestCase):
+    """RCR 3.12 (2) is checked by enumerating every winning reading, not by
+    the old "any neighbouring tile in hand" approximation (fixed 2026-08-23)."""
+
+    def test_neighbours_in_hand_but_only_triplet_reading_is_allowed(self):
+        # 700k seed 77000002 step 59: 234s + 555s + 345m + 456m + 5p tanki,
+        # draws the 4th 5s. The only reading has 5s as a koutsu -> legal.
+        t = PyMahjongTable()
+        rig(t, 0, ['2s', '3s', '4s', '5s', '5s', '5s', '5s',
+                   '3m', '4m', '4m', '5m', '5m', '6m', '5p'], drawn='5s')
+        t.riichi[0] = True
+        self.assertTrue(t._can_ankan(0, '5s'))
+        self.assertIn('<action type="kan" tile="5s" />', t.get_legal_actions(0))
+
+    def test_tile_readable_as_pair_in_some_wait_is_refused(self):
+        # 111m 23m | 456p | 789s | 2z2z waits 1m / 4m / 2z: the 2z wait reads
+        # 11m(pair) + 123m + 222z, so 1m is not a triplet in every reading.
+        t = PyMahjongTable()
+        rig(t, 0, ['1m', '1m', '1m', '1m', '2m', '3m', '4p', '5p', '6p',
+                   '7s', '8s', '9s', '2z', '2z'], drawn='1m')
+        t.riichi[0] = True
+        self.assertFalse(t._can_ankan(0, '1m'))
+        # RCR 3.12 example: 2333s waits 1s/2s/4s, 33s can be the pair.
+        t2 = PyMahjongTable()
+        rig(t2, 0, ['2s', '3s', '3s', '3s', '3s', '2m', '3m', '4m',
+                    '5m', '6m', '7m', '2p', '3p', '4p'], drawn='3s')
+        t2.riichi[0] = True
+        self.assertFalse(t2._can_ankan(0, '3s'))
+
+    def test_run_reading_refused_but_fourth_copy_in_run_tolerated(self):
+        from src.tasks.mahjong.table import _tile_only_as_triplet
+        # 34555m 234p 678p 11z: wait 1z reads 345m + 55m(pair) -> refused overall.
+        t = PyMahjongTable()
+        rig(t, 0, ['3m', '4m', '5m', '5m', '5m', '5m', '2p', '3p', '4p',
+                   '6p', '7p', '8p', '1z', '1z'], drawn='5m')
+        t.riichi[0] = True
+        self.assertFalse(t._can_ankan(0, '5m'))
+        # Per-wait readings: 2m -> 234m + 555m (triplet only) ; 5m -> the
+        # 13-tile shape is 34m + 555m, the run 345m only uses the drawn 4th
+        # copy, so the triplet is intact ; 1z -> 55m is the pair.
+        base = ['3m', '4m', '5m', '5m', '5m', '2p', '3p', '4p', '6p', '7p', '8p', '1z', '1z']
+        self.assertTrue(_tile_only_as_triplet(base + ['2m'], '5m', 4))
+        self.assertTrue(_tile_only_as_triplet(base + ['5m'], '5m', 4))
+        self.assertFalse(_tile_only_as_triplet(base + ['1z'], '5m', 4))
+        # A run reading with no triplet at all: 456m + 5m... 3456m? use
+        # 55m pair + 456m... simplest: 5m in a run, no koutsu -> refused.
+        self.assertFalse(_tile_only_as_triplet(
+            ['4m', '5m', '6m', '5m', '5m', '2p', '3p', '4p', '6p', '7p', '8p', '1z', '1z', '1z'], '5m', 4))
