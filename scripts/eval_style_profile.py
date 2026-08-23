@@ -42,7 +42,8 @@ def _worker(args):
     torch.set_num_threads(1)
     net = load_dnn(path, "cpu")
     agg = {"games": 0, "draws": 0, "wins": 0, "tsumo": 0, "deal_ins": 0,
-           "riichi": 0, "called": 0, "seats": 0}
+           "riichi": 0, "called": 0, "seats": 0,
+           "win_turns": 0.0, "win_n": 0, "dealin_turns": 0.0, "dealin_n": 0}
     for g in range(n_games):
         game = play_game(net, temperature=temperature, device="cpu",
                          deal_seed=seed0 + g)
@@ -57,6 +58,12 @@ def _worker(args):
         agg["deal_ins"] += len(set(HOUJUU_RE.findall(r)))
         agg["riichi"] += sum(1 for x in (game.riichi or []) if x)
         agg["called"] += sum(1 for n in (game.n_melds or []) if n > 0)
+        # speed (user 2026-08-23): 巡目 of the win / deal-in ≈ table discards / 4
+        turn = (game.n_discards or 0) / 4.0
+        if winners:
+            agg["win_turns"] += turn; agg["win_n"] += 1
+            if HOUJUU_RE.search(r):
+                agg["dealin_turns"] += turn; agg["dealin_n"] += 1
     return agg
 
 
@@ -78,6 +85,8 @@ def profile(path, games, workers, temperature, seed0):
         "houjuu_rate": tot["deal_ins"] / s,     # per-seat per-hand
         "riichi_rate": tot["riichi"] / s,
         "call_rate": tot["called"] / s,         # ankan counted (proxy)
+        "win_turn": tot["win_turns"] / max(tot["win_n"], 1),        # mean 巡目 at a win
+        "dealin_turn": tot["dealin_turns"] / max(tot["dealin_n"], 1),
     }
 
 
@@ -101,7 +110,7 @@ def main():
         r = results[label]
         print(f"[{label}] {r['games']} games ({time.time()-t0:.0f}s)  "
               f"流局 {r['draw_rate']:.1%}  和牌 {r['agari_rate']:.1%}  "
-              f"放铳 {r['houjuu_rate']:.1%}  立直 {r['riichi_rate']:.1%}  "
+              f"放铳 {r['houjuu_rate']:.1%}  立直 {r['riichi_rate']:.1%}  和牌巡目 {r['win_turn']:.1f}  放铳巡目 {r['dealin_turn']:.1f}  "
               f"副露 {r['call_rate']:.1%}  自摸占比 {r['tsumo_share']:.1%}",
               flush=True)
     if args.out:

@@ -95,6 +95,7 @@ class DnnGame:
     # meld count per seat (ankan included — noted as a proxy for 副露)
     riichi: Optional[List[bool]] = None
     n_melds: Optional[List[int]] = None
+    n_discards: Optional[int] = None      # table-wide discards at the end (hand length, ~4 per 巡)
 
 
 def _choose(net, table, pid, actions, temperature, device, cmode="none"):
@@ -197,6 +198,7 @@ def play_game(net, temperature: float = 1.0, device="cpu",
     game.points = list(table.points)
     game.riichi = [bool(table.riichi[p]) for p in range(4)]
     game.n_melds = [len(table.melds[p]) for p in range(4)]
+    game.n_discards = sum(table.discard_count)
     return game
 
 
@@ -300,6 +302,7 @@ def play_game_gen(deal_seed: Optional[int] = None, randomize_round: bool = True,
     game.points = list(table.points)
     game.riichi = [bool(table.riichi[p]) for p in range(4)]
     game.n_melds = [len(table.melds[p]) for p in range(4)]
+    game.n_discards = sum(table.discard_count)
     return game
 
 
