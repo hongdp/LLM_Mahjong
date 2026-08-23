@@ -4,6 +4,7 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
+| 2026-08-23 | `perf_vectorized_rollout_20260823` | 发射前 rollout 第二轮：HandSet token 压缩+SDPA、legal_mask memo、向量化 worker（K 局/进程一次 RPC） | cnn_m_r 78→204 局/s；handset_xl 15→97 局/s | 云端用 K=32；handset 臂转为 GPU 封顶 |
 | 2026-08-23 | `exp28_entropy_temp_prereg`（未发射） | 熵系数 × 采样温度：A 基线 / A″ 低熵 / A′ 低熵+混合温度（行为 logprob 修正） | ⏳ 与 exp27 同批 | 判据：T=0 Elo 不降、贪心−采样差距减半；混合温度 +15 Elo 才进配方 |
 | 2026-08-23 | `dnn_exp22_league_20260822r2`（收尾） | 联赛续训 700k→1.4M 结果 | defense_iq 0.016（✗ ≥0.03）；Elo 1097.2±13.7（新量纲 sign，与 1079.7 不可比，待纪元 2 再评）；vs exp17-C +921±2202 n.s.；剥削赛 7/7 为正 | 联赛不催生防守；防守下一手术=多局结构；冠军归属待纪元 2 同池再评 |
 | 2026-08-23 | `exp27_handset_prereg`（未发射） | 手牌集合模型：实例 token + rank 相对偏置（20M）vs cnn_m_r / cnn_xl_r，纪元 3 从零 700k×3 | ⏳ 等纪元 3 重校 + L4 吞吐基准 | 判据：拆分探针一向听长块 +0.05 且 Elo ≥ 参数匹配 CNN |

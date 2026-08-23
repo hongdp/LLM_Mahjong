@@ -15,6 +15,7 @@ threads is catastrophically slower than 16 single-threaded ones.
 """
 
 import os
+import time
 import random
 from typing import List, Optional
 
@@ -97,6 +98,9 @@ def _worker(rank, n_games, seeds, state_np, cfg):
             for j, entry in enumerate(cfg["league"]):
                 pool_nets[j] = _load_policy_ckpt(entry["path"])
     payload = []
+    K = int(cfg.get("games_per_worker", 1) or 1)
+    if cfg.get("gpu_infer") and K > 1:
+        return _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K)
     for i in range(n_games):
         seed = seeds[i] if seeds else None
         learner_seats, opp = league_plan(seed, cfg)
@@ -246,6 +250,7 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
     payload = []
     queue = list(range(n_games))
     active = {}            # game idx -> dict(gen, pending, seed, learner, opp, temps)
+    _DIAG = {"rpc": 0.0, "rounds": 0, "rows": 0, "t0": time.perf_counter()}
 
     def start(i):
         seed = seeds[i] if seeds else None
@@ -290,7 +295,12 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         for k, sc in enumerate(scalars):
             S[k, :sc.shape[0]] = sc
         M = torch.stack(masks)
+        _t0 = time.perf_counter()
         idx, lp = net.act_batch(P, S, M, torch.tensor(temps), torch.tensor(mids, dtype=torch.int32))
+        _DIAG["rpc"] += time.perf_counter() - _t0; _DIAG["rounds"] += 1; _DIAG["rows"] += len(rows)
+        if rank == 0 and _DIAG["rounds"] % 200 == 0 and os.environ.get("INFER_DIAG"):
+            print(f"[worker0] rounds {_DIAG['rounds']} rows/round {_DIAG['rows']/_DIAG['rounds']:.1f} "
+                  f"rpc {_DIAG['rpc']/_DIAG['rounds']*1000:.2f} ms/round wall {(time.perf_counter()-_DIAG['t0'])/_DIAG['rounds']*1000:.2f} ms/round", flush=True)
         # distribute replies per game and advance each generator
         replies = {gi: [None] * len(active[gi]["reqs"]) for gi in active}
         for k, (gi, ri, pid, actions, model_id, var) in enumerate(rows):

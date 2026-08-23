@@ -18,7 +18,7 @@ ConvFormer 加回 rank 相对偏置后差距缩到 −14。因此假设拆成两
 
 ## Method
 四臂同配方（exp17-C 配方：PPO ppo_epochs=1, clip 0.2, GAE λ=0.95, dup_k=8, 熵 0.03→0.01, T=1），从零，
-700k 局，编码 v1r，动作头 374，纪元 3 引擎，GPU rollout：
+**1.0M 局**（与 exp28 共享基线 A；700k 为中间里程碑），编码 v1r，动作头 374，纪元 3 引擎，GPU rollout：
 | 臂 | 架构 | 参数 | 角色 |
 |---|---|---|---|
 | A | `cnn_m_r` | 2.0M | 纪元 3 纯血基线（兼作新谱系起点） |
@@ -29,13 +29,13 @@ ConvFormer 加回 rank 相对偏置后差距缩到 −14。因此假设拆成两
 每臂阶梯评分（纪元 3 锚点）、`probe_decomposition`（300 局）、`probe_defense`、风牌探针；A vs B 复式牌 1000 副。
 
 ## Config
-`--arch <臂> --total_games 700000 --games_per_iter 2048 --dup_k 8 --gpu_infer --infer_max_batch 128 --warmup_updates 150`（B/C/D）；其余同 exp17-C 记录。
+`--arch <臂> --total_games 1000000 --games_per_iter 2048 --dup_k 8 --gpu_infer --infer_max_batch 512 --games_per_worker 32 --warmup_updates 150`（B/C/D）；其余同 exp17-C 记录。
 
 ## Success Criteria
 1. H1：B 的 `shanten1_long` 一致率 ≥ A + 0.05 **且** B 的 Elo ≥ C − 20（参数匹配对照不显著更强）。
 2. 强度主判：B − A 复式牌 1000 副 CI 下界 > 0 ⇒ 集合模型成为新冠军候选（进入 O(3) 晋升）。
 3. H3：D 比 B 低 ≥ 30 Elo ⇒ "相邻偏置不可少"成立。
-4. 健康：B 吞吐 ≥ 25 局/s（否则先调批/worker，不改模型）；KL/熵正常。
+4. 健康：B 吞吐 ≥ 25 局/s（向量化 worker 后预期 ~55）（否则先调批/worker，不改模型）；KL/熵正常。
 5. 纯度：全部从零、无教师、对手=自身（纪元 3 无联赛池，先镜像自对弈）。
 
 ## Progress
