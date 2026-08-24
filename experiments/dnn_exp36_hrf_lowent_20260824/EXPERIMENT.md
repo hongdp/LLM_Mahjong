@@ -24,3 +24,11 @@
 4. 数值健康：amp_update 全程无 NaN/inf，approx_kl 与 fp32 时代量级一致。
 
 ## Progress
+- 2026-08-24 验证段完成（20000 局，10 迭代）：**39.1 games/s，比 exp30 fp32 基线（24.0）快 1.63×**。
+  拆分：rollout_s 稳定 ~12.1s/iter，update_s 稳定 ~27.0s/iter（收益主要来自 amp_update，更新步本就是大头）；
+  approx_kl 全程 0.0015–0.0049（远低于 0.03 目标线），无 NaN，无漂移。另有 ~13.3s/iter"其他"开销
+  （GAE/日志/ckpt 保存）未被打点覆盖，记为后续优化线索，不阻塞本次发射。
+  验证机 mahjong-g4-e36 命中 total_games 后自动关机（预期行为）；ckpt 转存
+  gs://llm-mahjong-experiments/resume/dnn_exp36_hrf_lowent_validation_20k.pt，删除旧机。
+- 2026-08-24 正式段发射（mahjong-g4-e36full，同 SHA ec117a0，--resume，games=20480 起，
+  total_games 2,000,000，milestones 100k/500k/1M/1.5M/2M）。
