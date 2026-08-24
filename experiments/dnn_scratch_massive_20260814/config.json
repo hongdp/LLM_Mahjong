@@ -1,0 +1,19 @@
+{
+  "init": null,
+  "total_games": 600000,
+  "games_per_iter": 2048,
+  "dup_k": 8,
+  "workers": 16,
+  "gamma": 0.995,
+  "lr": 0.0001,
+  "temperature": 1.0,
+  "entropy_coef": 0.03,
+  "channels": 64,
+  "blocks": 3,
+  "batch": 4096,
+  "shaping": false,
+  "drop_zero_return": true,
+  "milestones": "20000,80000,240000,600000",
+  "seed": 42,
+  "exp_dir": "experiments/dnn_scratch_massive_20260814"
+}

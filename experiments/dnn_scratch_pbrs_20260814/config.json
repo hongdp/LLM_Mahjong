@@ -1,0 +1,19 @@
+{
+  "iters": 800,
+  "games_per_iter": 64,
+  "dup_k": 4,
+  "gamma": 0.995,
+  "lr": 0.0003,
+  "temperature": 1.0,
+  "channels": 64,
+  "blocks": 3,
+  "batch": 512,
+  "entropy_coef": 0.05,
+  "entropy_final": 0.01,
+  "shaping": true,
+  "seed": 42,
+  "device": "cpu",
+  "init": null,
+  "exp_dir": "experiments/dnn_scratch_pbrs_20260814",
+  "ckpt_every": 50
+}

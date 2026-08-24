@@ -1,0 +1,12 @@
+{
+  "games": 3000,
+  "epochs": 8,
+  "batch": 256,
+  "lr": 0.001,
+  "channels": 64,
+  "blocks": 3,
+  "val_frac": 0.1,
+  "seed": 42,
+  "device": "cuda",
+  "exp_dir": "experiments/dnn_bc_20260814"
+}

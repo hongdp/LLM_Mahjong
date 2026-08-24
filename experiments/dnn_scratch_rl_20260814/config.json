@@ -1,0 +1,16 @@
+{
+  "iters": 2000,
+  "games_per_iter": 32,
+  "dup_k": 4,
+  "gamma": 0.995,
+  "lr": 0.0003,
+  "temperature": 1.0,
+  "channels": 64,
+  "blocks": 3,
+  "batch": 512,
+  "entropy_coef": 0.01,
+  "seed": 42,
+  "device": "cpu",
+  "exp_dir": "experiments/dnn_scratch_rl_20260814",
+  "ckpt_every": 50
+}
