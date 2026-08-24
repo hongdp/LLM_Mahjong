@@ -266,3 +266,11 @@ exp31-4ext（handset_xl，熵系数恒定 0.01，无 schedule，2.0M 局）观�
 意义：探索节奏不再需要手工 schedule——表达力足够的架构（set-attention）在恒定系数下自己分阶段调配探索。
 反例警示：cnn_xl 同系数崩盘（851.7）→ 该性质是架构相关的，不是"调低系数"就行。
 确认门槛（未过完不许写进 README 结论）：① 2.0M 收官 T1；② exp31-6（cnn_m 恒定格）归因；③ exp35 种子复刻；④ 大模型 exp34 复现。
+
+## 2026-08-24 教训：验证段→正式段必须换 run 名，guard 删除必须门控在收尾成功上
+`--resume` 续训到正式长度时，**绝不能沿用验证段的 run 名**——旧的 `games_final.pt` 还在同一 GCS 路径，
+`watch_run.sh` 只判文件存在不判局数，resume 后几分钟内就误判 DONE，触发收尾链和删机。
+已实测差点删掉正在训练的 VM（[[mahjong-current-champion]] 相关线，exp36）。
+**修复两处**：① 正式段永远换新 run 名（如 `_full` 后缀），不复用；② `run_guard.sh` 的 VM 删除循环
+改为门控在 `close_run.sh` 确认打印 `CLOSE_DONE` 之后，不再无条件执行——即使 close 步骤被杀/崩溃，
+guard 也不会继续删 VM。

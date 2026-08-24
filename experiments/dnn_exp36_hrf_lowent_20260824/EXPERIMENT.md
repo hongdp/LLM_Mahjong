@@ -32,3 +32,9 @@
   gs://llm-mahjong-experiments/resume/dnn_exp36_hrf_lowent_validation_20k.pt，删除旧机。
 - 2026-08-24 正式段发射（mahjong-g4-e36full，同 SHA ec117a0，--resume，games=20480 起，
   total_games 2,000,000，milestones 100k/500k/1M/1.5M/2M）。
+
+- 2026-08-24 事故：正式段沿用了验证段的同一个 run 名 → 验证段留下的旧 `games_final.pt`（2万局）
+  仍在同一 GCS 路径下，`watch_run.sh` 只判存在不判局数，resume 后几分钟内误判 DONE，guard 的删除循环
+  与 close_run.sh 是否成功无关，险些删掉正在训练的 VM（VM 实际已删，但 resume checkpoint 完好，
+  只损失重启后几分钟未存档的计算，无数据丢失）。**修复**：正式段改名 `dnn_exp36_hrf_lowent_full_20260824`
+  重发；`run_guard.sh` 通用脚本改为删除前必须确认 close_run.sh 打印 CLOSE_DONE，不再无条件删除。
