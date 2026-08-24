@@ -1,0 +1,8 @@
+# dnn_exp33_tailanneal_20260824 — 尾段熵归零（预注册 experiments/exp33_tail_anneal_prereg）
+
+- **Date**: 2026-08-24  **Cost**: G4 flex ~$2.5（cnn ~279 games/s → ~1h）  **Status**: launching
+- Command: 冠军配方，唯一改动 `--entropy_schedule 0:0.03,600000:0.01,900000:0.01,1000000:0.0`
+- 判据见预注册：本臂 T1 ≥ 对照（exp31-5）T0 − 10；条件熵保形（tie ≥0.3 且 6+ ≤0.05）；贪心−采样差 ≤30。
+- 对照 T0 数另行本地补评（exp31-5 目前只有 T1 1031.9）。
+
+## Progress
