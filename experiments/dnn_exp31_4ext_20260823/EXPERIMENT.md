@@ -24,3 +24,6 @@ milestones 1300000,1600000,2000000。ckpt 经 `gs://llm-mahjong-experiments/resu
 ## Progress
 - 2026-08-23：发射于 mahjong-g4-ext（us-central1-b，SHA 0de2031，CKPT_OK 240MB）。
   吞吐期望 = 前身 57.3 games/s（±20% 内为正常）。
+- 教训：发射时漏传 `--exp_dir` → trainer 写进默认时间戳目录，GCS/TB 无数据 ~25 min。
+  VM 上加桥接同步循环（30s 级）恢复观测；launcher 已改为自动补 `--exp_dir experiments/<run>`。
+  训练本身未受影响（58.5 games/s，resume 无缝）。

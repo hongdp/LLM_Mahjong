@@ -3,6 +3,8 @@
 # Usage: launch_g4_git.sh <vm> <zone> <run_name> <git_sha> -- <trainer args...>
 set -uo pipefail
 VM="$1"; ZONE="$2"; N="$3"; SHA="$4"; shift 4; [ "${1:-}" = "--" ] && shift
+# the trainer defaults exp_dir to a timestamped dir nobody syncs — pin it to the run name
+case " $* " in *" --exp_dir "*) ;; *) set -- "$@" --exp_dir "experiments/$N";; esac
 P=workstation-185016
 # hard gate: the pinned commit must already be on GitHub (the VM clones it)
 git fetch -q origin
