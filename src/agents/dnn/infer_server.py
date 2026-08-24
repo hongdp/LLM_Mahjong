@@ -87,7 +87,8 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
         m = m.to(device).eval()
         n_pl, n_sc = variant_shape(getattr(m, "encoder_variant", "v1"))
         if device.startswith("cuda") and cfg.get("infer_cuda_graph", True):
-            m = _GraphRunner(m, n_pl, n_sc, device, max_batch)
+            m = _GraphRunner(m, n_pl, n_sc, device, max_batch,
+                             bf16=bool(cfg.get("bf16_infer")))
         hosted.append((m, n_pl, n_sc))
     net = hosted                                # list of (runner, n_planes, n_scalars)
     gen = torch.Generator(device=device)
@@ -193,8 +194,11 @@ class _GraphRunner:
     BUCKETS = (8, 16, 32, 64, 128, 256)
     MAX_BUCKET_ENV = "INFER_MAX_BUCKET"   # cap buckets on memory-starved GPUs
 
-    def __init__(self, net, n_planes, n_scalars, device, max_batch):
+    def __init__(self, net, n_planes, n_scalars, device, max_batch, bf16=False):
         self.net, self.device = net, device
+        # bf16 autocast is baked into the captured graphs; logits are cast
+        # back to fp32 by the caller's assignment before log_softmax.
+        self.bf16 = bool(bf16)
         cap = int(os.environ.get(self.MAX_BUCKET_ENV, max_batch))
         self.buckets = [b for b in self.BUCKETS if b <= max(min(max_batch, cap), 8)]
         torch.cuda.empty_cache()
@@ -208,11 +212,13 @@ class _GraphRunner:
                 m = torch.ones(b, ACTION_DIM, dtype=torch.bool, device=device)
                 with torch.cuda.stream(side):
                     for _ in range(3):
-                        net(p, sc, m)
+                        with torch.autocast("cuda", torch.bfloat16, enabled=self.bf16):
+                            net(p, sc, m)
                 torch.cuda.current_stream().wait_stream(side)
                 g = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(g):
-                    out = net(p, sc, m)
+                    with torch.autocast("cuda", torch.bfloat16, enabled=self.bf16):
+                        out = net(p, sc, m)
                 self.static[b] = (p, sc, m, out)
                 self.graphs[b] = g
             torch.cuda.synchronize()
@@ -223,18 +229,23 @@ class _GraphRunner:
         self.enabled = ok
 
     def __call__(self, p, sc, m):
+        # logits always leave here fp32: the caller's `logits` buffer and
+        # the downstream log_softmax/sampling are fp32 regardless of bf16_infer
+        # (bf16 only speeds up the matmuls inside the captured graph).
         B = p.shape[0]
         if not self.enabled:
-            return self.net(p, sc, m)
+            with torch.autocast("cuda", torch.bfloat16, enabled=self.bf16):
+                return self.net(p, sc, m).float()
         b = next((x for x in self.buckets if x >= B), None)
         if b is None:
-            return self.net(p, sc, m)
+            with torch.autocast("cuda", torch.bfloat16, enabled=self.bf16):
+                return self.net(p, sc, m).float()
         sp, ssc, sm, out = self.static[b]
         sp[:B].copy_(p); ssc[:B].copy_(sc); sm[:B].copy_(m)
         if B < b:                           # dummy rows: zeros + all-legal
             sp[B:].zero_(); ssc[B:].zero_(); sm[B:].fill_(True)
         self.graphs[b].replay()
-        return out[:B]
+        return out[:B].float()
 
 
 class InferenceServer:

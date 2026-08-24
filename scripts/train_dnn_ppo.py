@@ -71,6 +71,11 @@ def main():
                          "opponents; a fraction of deals seats the learner "
                          "against them (design docs/design_league_exp22.md)")
     ap.add_argument("--league_frac", type=float, default=0.5)
+    ap.add_argument("--bf16_infer", action="store_true",
+                    help="bf16 autocast in the rollout inference server "
+                         "(2x-ish on attention archs; logits sampled in fp32)")
+    ap.add_argument("--tf32", type=int, default=1,
+                    help="TF32 matmul for the fp32 update path (default on)")
     ap.add_argument("--gpu_infer", action="store_true",
                     help="batched GPU inference server for rollouts (user rule "
                          "2026-08-22: all future runs); see infer_server.py")
@@ -151,6 +156,8 @@ def main():
     ap.add_argument("--exp_dir", default=None)
     args = ap.parse_args()
 
+    if args.tf32:
+        torch.set_float32_matmul_precision("high")
     if args.entropy_schedule and args.entropy_auto:
         raise SystemExit("--entropy_schedule and --entropy_auto are exclusive")
     ent_schedule = []
@@ -277,7 +284,8 @@ def main():
                critic_feats=args.critic_feats,
                gpu_infer=args.gpu_infer, gpu_infer_opponents=args.gpu_infer_opponents,
                infer_max_batch=args.infer_max_batch,
-               infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device)
+               infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device,
+               bf16_infer=args.bf16_infer)
     if args.league:
         cfg["league"] = json.load(open(args.league))
         cfg["league_frac"] = args.league_frac
