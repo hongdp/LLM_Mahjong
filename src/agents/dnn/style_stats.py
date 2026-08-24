@@ -23,18 +23,20 @@ TSUMO_RE = re.compile(r"玩家(\d) 自摸")
 HOUJUU_RE = re.compile(r"放铳:玩家(\d)")
 
 STYLE_KEYS = ("agari_rate", "tsumo_share", "houjuu_rate", "riichi_rate", "call_rate",
-              "draw_rate", "win_turn", "dealin_turn")
+              "draw_rate", "win_turn", "dealin_turn", "win_points")
 
 
 def new_agg() -> Dict[str, float]:
     return {"games": 0, "seats": 0, "draws": 0, "wins": 0, "tsumo": 0, "deal_ins": 0,
             "riichi": 0, "called": 0, "win_turns": 0.0, "win_n": 0,
-            "dealin_turns": 0.0, "dealin_n": 0}
+            "dealin_turns": 0.0, "dealin_n": 0, "win_points_sum": 0.0}
 
 
 def add_game(agg: Dict[str, float], result: str, riichi: Optional[List[bool]],
              n_melds: Optional[List[int]], n_discards: Optional[int],
-             seats: Iterable[int] = (0, 1, 2, 3)) -> None:
+             seats: Iterable[int] = (0, 1, 2, 3),
+             points: Optional[List[int]] = None,
+             start_points: Optional[List[int]] = None) -> None:
     """Count one finished hand for the given seats (all four in mirror
     self-play; only the candidate's seats when seated against anchors)."""
     seats = list(seats)
@@ -52,6 +54,9 @@ def add_game(agg: Dict[str, float], result: str, riichi: Optional[List[bool]],
             agg["wins"] += 1
             agg["win_turns"] += turn
             agg["win_n"] += 1
+            if points:
+                sp = start_points or [25000] * 4
+                agg["win_points_sum"] += points[p] - sp[p]
             if p in tsumo:
                 agg["tsumo"] += 1
         if p in houjuu:
@@ -80,6 +85,7 @@ def summarize(agg: Dict[str, float]) -> Dict[str, float]:
         "draw_rate": agg["draws"] / max(agg["games"], 1),
         "win_turn": agg["win_turns"] / max(agg["win_n"], 1),
         "dealin_turn": agg["dealin_turns"] / max(agg["dealin_n"], 1),
+        "win_points": agg.get("win_points_sum", 0.0) / max(agg["wins"], 1),
         "games": agg["games"],
     }
 
@@ -102,5 +108,6 @@ def style_vs_anchors(net, anchor_nets: List, games: int, seed0: int,
             k += 1
         game = play_game(net, temperature=temperature, device=device,
                          deal_seed=seed0 + g, seat_nets=seat_nets)
-        add_game(agg, game.result, game.riichi, game.n_melds, game.n_discards, seats=[me])
+        add_game(agg, game.result, game.riichi, game.n_melds, game.n_discards, seats=[me],
+                 points=game.points, start_points=game.start_points)
     return summarize(agg)

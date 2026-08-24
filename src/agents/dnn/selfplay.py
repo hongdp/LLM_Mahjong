@@ -318,6 +318,7 @@ def play_game_gen(deal_seed: Optional[int] = None, randomize_round: bool = True,
     game.riichi = [bool(table.riichi[p]) for p in range(4)]
     game.n_melds = [len(table.melds[p]) for p in range(4)]
     game.n_discards = sum(table.discard_count)
+    game.start_points = list(getattr(table, "start_points", [25000] * 4))
     return game
 
 
