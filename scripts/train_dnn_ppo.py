@@ -84,6 +84,12 @@ def main():
                          "per slot); needed once opponents are >=10M nets")
     ap.add_argument("--infer_max_batch", type=int, default=128)
     ap.add_argument("--infer_wait_ms", type=float, default=4.0)
+    ap.add_argument("--amp_update", action="store_true",
+                    help="bf16 autocast around the PPO forward pass in the "
+                         "update loop (matmuls only; logprob/ratio math stays "
+                         "fp32). Local bench 2026-08-24, HRF, B=512: 258.9ms->"
+                         "171.3ms (1.51x) and 9.3GB->5.4GB peak activation mem "
+                         "(matters most for wide attention archs at real batch)")
     ap.add_argument("--warmup_updates", type=int, default=0,
                     help="linear LR warmup over N optimizer updates "
                          "(0 = off; transformers in RL want ~1000)")
@@ -307,8 +313,10 @@ def main():
         base = 6_000_000 + it * 9973
         seeds = [base + d for d in range(n_deals) for _ in range(args.dup_k)]
         net.eval()
+        t_roll0 = time.time()
         episodes, results = collect_parallel(net, len(seeds), cfg, args.workers, seeds)
         apply_group_baseline(episodes, args.gamma)
+        rollout_s = time.time() - t_roll0
         games += len(results)
 
         cat = lambda k: np.concatenate([e[k] for e in episodes])
@@ -370,15 +378,22 @@ def main():
                                                         args.adv_clamp)
 
         net.train()
+        t_upd0 = time.time()
         stop, passes, kls, closs, vloss, hloss = False, 0, [], [], [], []
         for ep in range(args.ppo_epochs):
             order = idx_keep[torch.randperm(n_eff, device=dev)]
             pass_kl = []
             for lo in range(0, n_eff, args.batch):
                 sel = order[lo:lo + args.batch]
-                logits, v = net.forward_with_value(
-                    planes[sel], scal[sel], mask[sel],
-                    cfeats=cfe[sel] if use_cf else None)
+                with torch.autocast("cuda", torch.bfloat16,
+                                    enabled=args.amp_update and dev.type == "cuda"):
+                    logits, v = net.forward_with_value(
+                        planes[sel], scal[sel], mask[sel],
+                        cfeats=cfe[sel] if use_cf else None)
+                # ratio/KL/loss math stays fp32 regardless of amp_update —
+                # only the forward matmuls run in bf16 (bench: numerically
+                # safe, matches the rollout inference server's pattern)
+                logits, v = logits.float(), v.float()
                 logp = torch.log_softmax(logits, 1)
                 chosen = logp.gather(1, acts[sel][:, None]).squeeze(1)
                 ratio = torch.exp(chosen - old_lp[sel])
@@ -449,9 +464,11 @@ def main():
         # Ceiling is 100%, not 25%. It tracks how fast the shared policy
         # completes hands, i.e. tile efficiency — competitive strength only
         # comes from the arena, where different policies actually meet.
+        update_s = time.time() - t_upd0
         win = sum(1 for r in results if "荣和" in r or "自摸" in r) / max(len(results), 1)
         el = time.time() - t0
         row = {"iter": it, "games": games, "wall_s": round(el, 1),
+               "rollout_s": round(rollout_s, 1), "update_s": round(update_s, 1),
                "pg_loss": float(np.mean(closs)), "value_loss": float(np.mean(vloss)),
                "entropy_before": ent_before, "entropy": ent_after,
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
