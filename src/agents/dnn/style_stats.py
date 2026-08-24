@@ -91,13 +91,26 @@ def summarize(agg: Dict[str, float]) -> Dict[str, float]:
 
 
 def style_vs_anchors(net, anchor_nets: List, games: int, seed0: int,
-                     temperature: float = 0.0, device: str = "cpu") -> Dict[str, float]:
+                     temperature: float = 0.0, device: str = None) -> Dict[str, float]:
     """Seat `net` at one seat per game (rotating) against three anchor nets
     (rotating through the pool) and aggregate ONLY the candidate's seat.
-    Deterministic in seed0; temperature 0 = the live/greedy reading."""
+    Deterministic in seed0; temperature 0 = the live/greedy reading.
+
+    Sequential, one game at a time (no batching) — GPU still wins by a wide
+    margin on today's models (handset/HRF: ~250ms/decision CPU vs ~8ms GPU,
+    2026-08-24 bench), so this defaults to cuda when available. `net` and
+    every entry in `anchor_nets` must already live on `device` (the caller's
+    job, same as everywhere else in this module — see load_dnn(path, device)).
+    torch.set_num_threads(1) is kept regardless of device: the mahjong engine
+    itself (shanten/legal-move calc) is always CPU, and this guards against
+    thread oversubscription when several of these run concurrently (2026-08-24
+    incident: 6 concurrent CPU callers each grabbed the full core count,
+    5x-oversubscribing a 24-core box)."""
     from src.agents.dnn.selfplay import play_game
     import torch
-    torch.set_num_threads(1)  # sequential single-process loop: don't grab all cores
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    torch.set_num_threads(1)
     agg = new_agg()
     for g in range(games):
         me = g % 4

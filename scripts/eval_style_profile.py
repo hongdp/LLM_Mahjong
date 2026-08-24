@@ -145,10 +145,13 @@ def main():
             from src.agents.dnn.style_stats import style_vs_anchors
             from scripts.run_elo_league import LEAGUE_DIR
             anchors = json.load(open(f"{LEAGUE_DIR}/anchors.json"))["anchors"]
-            torch.set_num_threads(max(1, args.workers))
-            cand = load_dnn(path, "cpu")
-            opp = [load_dnn(anchors[n]["path"], "cpu") for n in args.vs_anchors.split(",")]
-            results[label] = style_vs_anchors(cand, opp, args.games, args.seed0, temperature=0.0)
+            dev = "cuda" if torch.cuda.is_available() else "cpu"
+            if dev == "cpu":
+                torch.set_num_threads(max(1, args.workers))
+            cand = load_dnn(path, dev)
+            opp = [load_dnn(anchors[n]["path"], dev) for n in args.vs_anchors.split(",")]
+            results[label] = style_vs_anchors(cand, opp, args.games, args.seed0,
+                                              temperature=0.0, device=dev)
             results[label]["vs_anchors"] = args.vs_anchors
         else:
             results[label] = profile(path, args.games, args.workers,
