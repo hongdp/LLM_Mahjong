@@ -24,6 +24,7 @@ cat > "$TMP" <<EOS
 set -e
 if [ ! -d \$HOME/LLM_Mahjong/.git ]; then git clone -q https://github.com/hongdp/LLM_Mahjong.git \$HOME/LLM_Mahjong; fi
 cd \$HOME/LLM_Mahjong && git fetch -q origin && git checkout -q $SHA && echo "code at \$(git rev-parse --short HEAD)"
+${CKPT_GS:+gsutil -q cp $CKPT_GS /tmp/resume.pt && echo "CKPT_OK \$(ls -la /tmp/resume.pt | awk '{print \$5}')"}
 nohup bash \$HOME/LLM_Mahjong/scripts/phase2_dnn/run_dnn_cloud.sh $N python $* > \$HOME/${N}_nohup.log 2>&1 &
 disown; echo "LAUNCHED $N pid=\$!"
 EOS
