@@ -19,3 +19,8 @@ H1 defense_iq ≥ 0.05 且对锚点放铳率 ≤ 臂5 − 1.5pp；H2 Elo ≥ 臂
 
 ## Progress
 （发射时填）
+
+## Progress
+- [17:4x] 基建冒烟通过（向量化 worker × 联赛路由，第 1 轮 decisive 34% = 池模型在对手席生效的旁证）。
+- [17:5x] gen1 发射于 mahjong-g4-gen1（G4 flex，SHA 05dc327+池清单）：245 局/s。教训：experiments/ 的 gitignore
+  挡了池清单 → VM 差点缺文件，已 `git add -f` 修复（清单类小文件必须显式入库）。
