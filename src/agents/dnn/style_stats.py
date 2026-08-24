@@ -96,6 +96,8 @@ def style_vs_anchors(net, anchor_nets: List, games: int, seed0: int,
     (rotating through the pool) and aggregate ONLY the candidate's seat.
     Deterministic in seed0; temperature 0 = the live/greedy reading."""
     from src.agents.dnn.selfplay import play_game
+    import torch
+    torch.set_num_threads(1)  # sequential single-process loop: don't grab all cores
     agg = new_agg()
     for g in range(games):
         me = g % 4
