@@ -96,6 +96,11 @@ class DnnGame:
     riichi: Optional[List[bool]] = None
     n_melds: Optional[List[int]] = None
     n_discards: Optional[int] = None      # table-wide discards at the end (hand length, ~4 per 巡)
+    # first-tenpai 巡目 per seat (None = never tenpai); filled only when the
+    # caller asks for it (play_game(track_tenpai=True) — eval-only, the
+    # training rollout path never pays the extra shanten calls)
+    tenpai_turns: Optional[List[Optional[int]]] = None
+    start_points: Optional[List[int]] = None  # context-randomized starting scores
 
 
 def _choose(net, table, pid, actions, temperature, device, cmode="none"):
@@ -115,7 +120,8 @@ def play_game(net, temperature: float = 1.0, device="cpu",
               randomize_round: bool = True,
               shaping: bool = False,
               critic_feats: str = "none",
-              seat_nets: Optional[dict] = None) -> DnnGame:
+              seat_nets: Optional[dict] = None,
+              track_tenpai: bool = False) -> DnnGame:
     """seat_nets (exp22 league): {pid: net} overrides `net` per seat, so a
     game can mix the learner with frozen opponents. Trajectories are still
     recorded for every seat; the caller drops the opponents' ones."""
@@ -127,6 +133,7 @@ def play_game(net, temperature: float = 1.0, device="cpu",
     table = PyMahjongTable(randomize_round=randomize_round)
     table.text_obs = False          # DNN path never reads text obs
     game = DnnGame()
+    tenpai_turns: List[Optional[int]] = [None, None, None, None]
 
     guard = 0
     while not table.finished and guard < 600:
@@ -143,6 +150,11 @@ def play_game(net, temperature: float = 1.0, device="cpu",
         step.reward = rewards[pid]
         step.is_terminal = done
         game.trajectories[pid].append(step)
+
+        if (track_tenpai and info.get("discarded")
+                and tenpai_turns[pid] is None
+                and table._shanten(table.hands[pid], len(table.melds[pid])) <= 0):
+            tenpai_turns[pid] = table.discard_count[pid]
 
         if done:
             break
@@ -199,6 +211,9 @@ def play_game(net, temperature: float = 1.0, device="cpu",
     game.riichi = [bool(table.riichi[p]) for p in range(4)]
     game.n_melds = [len(table.melds[p]) for p in range(4)]
     game.n_discards = sum(table.discard_count)
+    game.start_points = list(getattr(table, "start_points", [25000] * 4))
+    if track_tenpai:
+        game.tenpai_turns = tenpai_turns
     return game
 
 

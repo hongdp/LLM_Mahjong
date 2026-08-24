@@ -35,6 +35,22 @@ from scripts.run_arena_dnn import load_dnn                    # noqa: E402
 WIN_RE = re.compile(r"玩家(\d)\s*(?:自摸|荣和|抢杠)")
 HOUJUU_RE = re.compile(r"放铳:玩家(\d)")
 TSUMO_RE = re.compile(r"玩家(\d)\s*自摸")
+DRAW_TENPAI_RE = re.compile(r"流局 \| 听牌: \[([^\]]*)\]")
+
+# Human-expert reference bands (Tenhou 鳳凰卓 published aggregates, per-hand).
+# Caveats: humans play full hanchan (orasu/placement distortions, continuing
+# scores); our env is one hand with randomized context. Direction, not decimals.
+HUMAN_EXPERT = {
+    "agari_rate":      (0.21, 0.25),
+    "houjuu_rate":     (0.11, 0.13),
+    "riichi_rate":     (0.18, 0.22),
+    "call_rate":       (0.33, 0.40),
+    "win_turn":        (11.1, 11.7),
+    "tenpai_turn":     (8.0, 9.5),    # first-tenpai 巡目 (approx; least standardized)
+    "tenpai_rate":     (0.55, 0.65),  # hands reaching tenpai at least once
+    "draw_tenpai_rate": (0.42, 0.50), # tenpai share at exhaustive draw
+    "win_points":      (5800, 6800),  # 平均打点 (here: winner net delta incl. sticks)
+}
 
 
 def _worker(args):
@@ -43,10 +59,12 @@ def _worker(args):
     net = load_dnn(path, "cpu")
     agg = {"games": 0, "draws": 0, "wins": 0, "tsumo": 0, "deal_ins": 0,
            "riichi": 0, "called": 0, "seats": 0,
-           "win_turns": 0.0, "win_n": 0, "dealin_turns": 0.0, "dealin_n": 0}
+           "win_turns": 0.0, "win_n": 0, "dealin_turns": 0.0, "dealin_n": 0,
+           "tenpai_turns": 0.0, "tenpai_n": 0, "draw_tenpai": 0, "draw_seats": 0,
+           "win_points": 0.0}
     for g in range(n_games):
         game = play_game(net, temperature=temperature, device="cpu",
-                         deal_seed=seed0 + g)
+                         deal_seed=seed0 + g, track_tenpai=True)
         r = game.result or ""
         agg["games"] += 1
         agg["seats"] += 4
@@ -61,9 +79,19 @@ def _worker(args):
         # speed (user 2026-08-23): 巡目 of the win / deal-in ≈ table discards / 4
         turn = (game.n_discards or 0) / 4.0
         if winners:
+            sp = game.start_points or [25000] * 4
+            for w in winners:
+                agg["win_points"] += (game.points[w] - sp[w])
             agg["win_turns"] += turn; agg["win_n"] += 1
             if HOUJUU_RE.search(r):
                 agg["dealin_turns"] += turn; agg["dealin_n"] += 1
+        for tt in (game.tenpai_turns or []):
+            if tt is not None:
+                agg["tenpai_turns"] += tt; agg["tenpai_n"] += 1
+        m = DRAW_TENPAI_RE.search(r)
+        if m:
+            agg["draw_seats"] += 4
+            agg["draw_tenpai"] += len([x for x in m.group(1).split(",") if x.strip()])
     return agg
 
 
@@ -87,6 +115,10 @@ def profile(path, games, workers, temperature, seed0):
         "call_rate": tot["called"] / s,         # ankan counted (proxy)
         "win_turn": tot["win_turns"] / max(tot["win_n"], 1),        # mean 巡目 at a win
         "dealin_turn": tot["dealin_turns"] / max(tot["dealin_n"], 1),
+        "tenpai_turn": tot["tenpai_turns"] / max(tot["tenpai_n"], 1),  # mean first-tenpai 巡目
+        "tenpai_rate": tot["tenpai_n"] / s,       # seats ever tenpai / seat-hands
+        "draw_tenpai_rate": tot["draw_tenpai"] / max(tot["draw_seats"], 1),
+        "win_points": tot["win_points"] / max(tot["wins"], 1),  # winner net delta per win
     }
 
 
@@ -125,8 +157,20 @@ def main():
         print(f"[{label}] {r['games']} games ({time.time()-t0:.0f}s)  "
               f"流局 {r['draw_rate']:.1%}  和牌 {r['agari_rate']:.1%}  "
               f"放铳 {r['houjuu_rate']:.1%}  立直 {r['riichi_rate']:.1%}  和牌巡目 {r['win_turn']:.1f}  放铳巡目 {r['dealin_turn']:.1f}  "
-              f"副露 {r['call_rate']:.1%}  自摸占比 {r['tsumo_share']:.1%}",
+              f"副露 {r['call_rate']:.1%}  自摸占比 {r['tsumo_share']:.1%}"
+              + (f"  听牌巡目 {r['tenpai_turn']:.1f}  听牌率 {r['tenpai_rate']:.1%}  "
+                 f"流局听牌 {r['draw_tenpai_rate']:.1%}  打点 {r['win_points']:.0f}" if "tenpai_turn" in r else ""),
               flush=True)
+        rows = []
+        for k, (lo, hi) in HUMAN_EXPERT.items():
+            v = r.get(k)
+            if v is None:
+                continue
+            mark = "✓人类带内" if lo <= v <= hi else ("↓低于" if v < lo else "↑高于")
+            rows.append(f"    {k:>16}: {v:7.3f}  vs 鳳凰卓 [{lo}, {hi}]  {mark}")
+        if rows:
+            print("  牌效率 vs 人类高手（方向参考，单局环境 caveat 见 HUMAN_EXPERT 注释）:\n"
+                  + "\n".join(rows), flush=True)
     if args.out:
         json.dump(results, open(args.out, "w"), indent=1, ensure_ascii=False)
         print(f"saved {args.out}")
