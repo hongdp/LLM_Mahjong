@@ -4,6 +4,7 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
+| 2026-08-24 | `dnn_exp31_6_cnnm_lowent_20260824` | 2×2 补格：cnn_m 恒定 0.01 无 schedule（自组织平台归因） | 🚀 launching | 熵平台+riichi 出现与否定归因 |
 | 2026-08-24 | `dnn_exp32_gen1c_20260824` | gen1 熵杠杆臂：frac 0.5 + 熵高位段延至 800k（与 gen1b 解耦归因） | 🚀 launching | 同 gen1b 判据；b/c 对比定主因 |
 | 2026-08-24 | `dnn_exp33_tailanneal_20260824` | 尾段熵归零：T=1 采样获得贪心级强度+博弈式混合 | 🚀 launching | T1 ≥ 对照 T0−10；条件熵保形 |
 | 2026-08-24 | `dnn_exp32_gen1b_20260824` | gen1 预案重试：league_frac 0.5→0.25 破副露锁死 | 🚀 launching | T1≥1000；riichi≥0.05；call≤0.85 |
