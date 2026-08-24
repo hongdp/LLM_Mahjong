@@ -1,6 +1,6 @@
 # dnn_exp31_4ext_20260823 — exp31-4（handset lowent）续训 1.0M→2.0M
 
-- **Date**: 2026-08-23  **Cost**: G4 flex ~$4  **Status**: launching
+- **Date**: 2026-08-23  **Cost**: G4 flex ~$11（前身实测 57.3 games/s → +1.0M 局 ≈ 4.9h）  **Status**: launching
 - 前身: `dnn_exp31_4_handset_lowent_20260823`（1.0M 收官 T1 1017.5；熵 0.579 仍在自组织高原；
   竞技场斜率末段仍 +28/270k → 未收敛）。
 
@@ -22,3 +22,5 @@ milestones 1300000,1600000,2000000。ckpt 经 `gs://llm-mahjong-experiments/resu
 3. 风格三件套（houjuu/tsumo/riichi）随续训的漂移入记录（它的低铳高摸风格是否保持）。
 
 ## Progress
+- 2026-08-23：发射于 mahjong-g4-ext（us-central1-b，SHA 0de2031，CKPT_OK 240MB）。
+  吞吐期望 = 前身 57.3 games/s（±20% 内为正常）。
