@@ -333,3 +333,28 @@ guard 也不会继续删 VM。
 **这否定了两个直觉**：① 「worker 83% 阻塞，超订阅应有大收益」——实际只有 9%；
 ② 「GPU 37% 说明 CPU 是瓶颈」——加 CPU 侧并发也推不动。
 真正的下一步应该是**减少往返次数或让 worker 不阻塞**（流水线/双缓冲），而不是继续调并发参数。
+
+## 2026-08-25 事故：/dev/shm 泄漏杀死 exp41 两臂（潜伏数月，被宽观测放大 45 倍才致命）
+两臂在**完全相同的 337,920 局**（165 迭代）死于
+`unable to allocate shared memory (shm): No space left on device`。
+
+**根因**：`infer_server.py` 开头的 `mp.set_sharing_strategy("file_system")`。该策略把共享张量落成
+/dev/shm 文件且**设计上不随引用消失而 unlink**（它的用途正是"进程死了数据还在"）。而
+`collect_parallel` **每个迭代新建一个 InferenceServer**，于是每迭代泄漏一整份 planes 缓冲区。
+
+**算术精确吻合**：g4-standard-48 内存 180 GB → /dev/shm 默认 90 GB；46 worker 配置
+= 4416 槽 × 934 平面 × 34 × 4B = **561 MB/迭代**；90 GB ÷ 561 MB = **164 迭代 = 336,479 局**，
+实际死于 165 迭代 = 337,920 局。
+
+**为什么潜伏这么久**：cnn 的 21 平面只泄漏 12.6 MB/迭代，1M 局（488 迭代）累计 6 GB，
+远低于 90 GB。Mortal 的 934 平面把泄漏放大 **45 倍**才第一次撞顶。
+
+**修复**：改用 `file_descriptor` 策略（可用 `TORCH_SHARE_STRATEGY` 覆盖）。实测泄漏归零
+（6 迭代 0–1 MB），24 worker fork+conda 压力测试未复现当初改成 file_system 想修的
+`SocketClient FileNotFoundError`；`ulimit -n` = 1048576，不会撞 FD 上限。
+**显式 `del` 共享张量无效**——试过，仍然 94 MB/迭代，因为策略本身就不 unlink。
+
+**教训**：① 资源泄漏的可见性与负载规模成正比，小配置下的"没问题"不是证据；
+② 每迭代重建重量级对象（推理服务器 + worker 池 + 6 个 CUDA graph）除了泄漏，
+还有 4.2 s/迭代的固定开销——**复用一个常驻服务器能同时解决两者**，但需要权重热更新路径
+（漏更新 = 用旧策略采样却按新策略算 ratio，静默致命），未做。

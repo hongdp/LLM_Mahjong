@@ -17,16 +17,24 @@ Equivalence: sampling moves to the server's GPU RNG, so trajectories are
 statistically, not bit-wise, identical to the CPU path.
 """
 
-import os
 import queue as _queue
 import time
 from typing import Optional
+
+import os
 
 import numpy as np
 import torch
 import torch.multiprocessing as mp   # shared tensors cross process boundaries
 
-mp.set_sharing_strategy("file_system")
+# Sharing strategy: file_system was chosen for fork+conda robustness, but it
+# deliberately never unlinks its /dev/shm files, so building a fresh server
+# every iteration leaked one full planes buffer per iteration (94 MB local /
+# ~561 MB on the 46-worker cloud config -- exhausted /dev/shm after 165
+# iterations and killed both exp41 arms at exactly 337,920 games).
+# Overridable while we verify file_descriptor does not bring back the old
+# SocketClient FileNotFoundError.
+mp.set_sharing_strategy(os.environ.get("TORCH_SHARE_STRATEGY", "file_descriptor"))
 
 from src.agents.dnn.encoder import ACTION_DIM, TILE_TYPES
 
