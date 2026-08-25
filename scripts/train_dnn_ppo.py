@@ -83,7 +83,19 @@ def main():
                     help="host the league pool on the GPU server too (model_id "
                          "per slot); needed once opponents are >=10M nets")
     ap.add_argument("--infer_max_batch", type=int, default=128)
-    ap.add_argument("--infer_wait_ms", type=float, default=4.0)
+    ap.add_argument("--infer_wait_ms", type=float, default=0.0,
+                    help="accumulation window for the inference server. 0 = "
+                         "take whatever is pending and let the GPU's own "
+                         "turnaround size the next batch (requests pile up "
+                         "during the previous forward, so batch size "
+                         "self-balances at arrival_rate x forward_time). "
+                         "Measured 2026-08-25: 0 beats the old 4.0 default by "
+                         "~10% on both a slow model (mortal_full 3599->3974 "
+                         "decisions/s) and a fast one (cnn_m_r 143->157 "
+                         "games/s), and is neutral at low concurrency (batch "
+                         "is 2.2 either way with 3 workers). Waiting buys a "
+                         "bigger batch, but the forward cost scales with batch "
+                         "size, so the wait is net dead time.")
     ap.add_argument("--amp_update", action="store_true",
                     help="bf16 autocast around the PPO forward pass in the "
                          "update loop (matmuls only; logprob/ratio math stays "
