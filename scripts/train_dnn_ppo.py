@@ -322,8 +322,17 @@ def main():
         games += len(results)
 
         cat = lambda k: np.concatenate([e[k] for e in episodes])
-        # episodes ship planes as float16 (see _package_game); widen once here
-        planes = torch.from_numpy(cat("planes")).to(dev).float()
+        if episodes and episodes[0].get("planes_log") is not None:
+            # wide observations arrive as the encoder's write log (98x smaller
+            # over the pickle boundary); expand them straight onto the training
+            # device with two scatters -- the dense tensor never exists on the
+            # host, which is what OOM-killed the first attempt.
+            from src.agents.dnn.mortal_obs import densify
+            planes = densify([l for e in episodes for l in e["planes_log"]],
+                             device=dev)
+        else:
+            # episodes ship planes as float16 (see _package_game); widen here
+            planes = torch.from_numpy(cat("planes")).to(dev).float()
         scal = torch.from_numpy(cat("scalars")).to(dev)
         mask = torch.from_numpy(cat("mask")).to(dev)
         acts = torch.from_numpy(cat("actions")).to(dev)

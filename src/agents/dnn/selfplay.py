@@ -88,6 +88,10 @@ class DnnStep:
     # per request, so an earlier query of the same decision rides here and is
     # unpacked into the trajectory by _package_game. None for single-step.
     extra_steps: Optional[list] = None
+    # compact write-log form of `planes` for wide observations (Mortal's 934
+    # planes). When set, _package_game ships THIS instead of the dense tensor
+    # -- 98x less pickle traffic, and the trainer densifies per minibatch.
+    sparse_planes: Optional[object] = None
 
 
 @dataclass

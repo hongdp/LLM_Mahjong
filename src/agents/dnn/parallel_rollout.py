@@ -239,8 +239,12 @@ def _package_game(g, learner_seats, seed, cfg, cmode, league):
         # indicator or rescaled ratio in [0, 1], and the update forward runs
         # under bf16 autocast anyway, so fp16 storage is lossless in effect and
         # halves both the pickle traffic and the trainer's resident tensor.
+        logs = [st.sparse_planes for st in steps]
+        use_log = all(l is not None for l in logs)
         ep = {
-            "planes": torch.stack([s.planes for s in steps]).numpy().astype(np.float16),
+            "planes": (None if use_log else
+                       torch.stack([s.planes for s in steps]).numpy().astype(np.float16)),
+            "planes_log": logs if use_log else None,
             "scalars": torch.stack([s.scalars for s in steps]).numpy(),
             "mask": torch.stack([s.mask for s in steps]).numpy(),
             "actions": np.array([s.action_idx for s in steps], dtype=np.int64),
@@ -307,9 +311,23 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                 model_id = 0 if mid is None else mid + 1
                 rows.append((gi, ri, pid, actions, model_id, pool_variant.get(model_id, variant)))
         planes, scalars, masks, lookups, temps, mids = [], [], [], [], [], []
+        sparse_logs = []
         for gi, ri, pid, actions, model_id, var in rows:
             st = active[gi]
-            pl, sc = encode_state(st["table"], pid, variant=var)
+            sp_log = None
+            if var in ("mortal_v3", "mortal_v3_pure"):
+                # encode ONCE into the compact log, then densify locally for
+                # the RPC (the shared-memory protocol still wants a dense row).
+                # The log is what gets stored and shipped afterwards.
+                from src.agents.dnn.mortal_obs import (encode_mortal_obs_sparse,
+                                                       densify)
+                sp_log = encode_mortal_obs_sparse(
+                    st["table"], pid, derived=(var == "mortal_v3"))
+                pl = densify([sp_log])[0]
+                _, sc = encode_state(st["table"], pid, variant="v1")
+            else:
+                pl, sc = encode_state(st["table"], pid, variant=var)
+            sparse_logs.append(sp_log)
             mask, lookup = _space.mask(actions)
             planes.append(pl); scalars.append(sc); masks.append(mask); lookups.append(lookup)
             temps.append(float(st["temps"][pid])); mids.append(model_id)
@@ -335,7 +353,8 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         first_steps = [
             DnnStep(planes=planes[k], scalars=scalars[k], mask=masks[k],
                     action_idx=int(idx[k]), logprob=float(lp[k]),
-                    cfeats=critic_features(active[rows[k][0]]["table"], rows[k][2], cmode))
+                    cfeats=critic_features(active[rows[k][0]]["table"], rows[k][2], cmode),
+                    sparse_planes=sparse_logs[k])
             for k in range(len(rows))
         ]
         pending = []
@@ -363,7 +382,8 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                 follow[k] = (
                     DnnStep(planes=planes[k], scalars=scalars[k], mask=f_masks[j],
                             action_idx=a2, logprob=float(lp2[j]),
-                            cfeats=critic_features(active[gi]["table"], pid, cmode)),
+                            cfeats=critic_features(active[gi]["table"], pid, cmode),
+                            sparse_planes=sparse_logs[k]),
                     f_lookups[j][a2])
 
         # distribute replies per game and advance each generator
