@@ -4,6 +4,7 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
+| 2026-08-24 | `exp41_mortal_full_prereg`（A/B 两臂） | 完整对齐 Mortal 输入(934 平面 v3)+动作(46)+backbone，从零自对弈；A 含派生牌效特征 / B 置零 | 🚀 launching | A>1031.9 则架构表示可行；A−B 差=派生特征价值；双双<900 则判配方问题 |
 | 2026-08-24 | `exp40_mortal_backbone_prereg` | Mortal 型深度 SE-ResNet backbone（只借架构不借人类先验）对照：A 192×40 / B 192×6 拆预激活+SE 贡献 | 📐 designed | A>851.7 则 scale 复活；A/B 双崩则判问题在配方 |
 | 2026-08-24 | `exp38_hrf_combined_prereg` | HRF 最好一枪：恒定低熵+lr 6e-5+warmup 150 叠加 | ⏳ gated on exp37 | T1>896.2 叠加成立；≥1000 重回候选 |
 | 2026-08-24 | `exp39_horizon_extension_prereg` | 延长训练效果：以 ladder 斜率显著性为续训门控，产出"配置→收敛预算"表 | ⏳ gated | 斜率>0 且>1.5σ 才续训；含 12h flex 两段 resume 链设计 |
