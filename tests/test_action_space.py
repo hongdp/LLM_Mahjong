@@ -142,3 +142,50 @@ def test_resolve_returns_engine_action():
                 if space.follow_up(slot, acts) is not None:
                     continue
                 assert space.resolve(slot, lookup) in acts
+
+
+# ---------------------------------------------------- end-to-end through _choose
+
+def test_choose_returns_one_step_for_native_and_two_for_mortal_riichi():
+    """The multi-step machinery must actually fire in the real `_choose` path,
+    and must stay dormant for native."""
+    import torch
+    from src.agents.dnn.selfplay import _choose
+    from src.agents.dnn.arch_zoo import ZOO
+
+    class _Stub(torch.nn.Module):
+        """Policy that always picks the lowest legal slot, so the riichi
+        declaration slot (37) gets chosen when it is the only claim option."""
+        encoder_variant = "v1r"
+
+        def __init__(self, space, prefer=None):
+            super().__init__()
+            self.action_space = space
+            self.prefer = prefer
+
+        def act(self, planes, scalars, mask, temperature=1.0):
+            legal = mask[0].nonzero().flatten()
+            pick = legal[0]
+            if self.prefer is not None and bool(mask[0][self.prefer]):
+                pick = torch.tensor(self.prefer)
+            return pick, torch.tensor(-0.1)
+
+    random.seed(99)
+    t = PyMahjongTable(randomize_round=True)
+    t.text_obs = False
+    acts = t.get_legal_actions(t.turn)
+
+    steps, action = _choose(_Stub("native"), t, t.turn, acts, 1.0, "cpu")
+    assert len(steps) == 1, "native space must never produce a follow-up step"
+    assert action in acts
+    assert steps[0].mask.shape[0] == 374
+
+    # synthetic riichi decision: forcing slot 37 must yield two steps
+    riichi_acts = ['<action type="discard" tile="1m" />',
+                   '<action type="riichi" tile="3m" />',
+                   '<action type="riichi" tile="6m" />']
+    steps, action = _choose(_Stub("mortal46", prefer=IDX_RIICHI), t, t.turn,
+                            riichi_acts, 1.0, "cpu")
+    assert len(steps) == 2, "riichi must consume a declaration + a tile choice"
+    assert action in riichi_acts and "riichi" in action
+    assert all(s.mask.shape[0] == MORTAL_ACTION_DIM for s in steps)

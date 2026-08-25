@@ -32,6 +32,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 
 from src.agents.dnn import encoder as _enc
 from src.agents.dnn import mortal_action as _ma
@@ -49,7 +50,10 @@ class ActionSpace:
     dim: int = 0
 
     def mask(self, actions: List[str], mode: FollowUp = None
-             ) -> Tuple[np.ndarray, Dict[int, str]]:
+             ) -> Tuple[torch.Tensor, Dict[int, str]]:
+        """Returns a torch bool tensor of width `dim` (matching what
+        `encoder.legal_mask` has always returned, so callers can keep doing
+        `mask[None].to(device)` unchanged) plus the slot -> action lookup."""
         raise NotImplementedError
 
     def follow_up(self, slot: int, actions: List[str],
@@ -102,7 +106,7 @@ class MortalActionSpace(ActionSpace):
             at_riichi_select=(mode == "riichi"),
             at_kan_select=(mode == "kan"),
         )
-        return np.asarray(m, dtype=bool), lookup
+        return torch.tensor(m, dtype=torch.bool), lookup
 
     def follow_up(self, slot, actions, mode=None):
         if mode is not None:

@@ -181,11 +181,17 @@ class TestTrainerCallCompat(unittest.TestCase):
             from src.agents.dnn.encoder import VARIANT_SHAPE
             _, n_sc = VARIANT_SHAPE.get(variant, (None, N_SCALARS))
             n_pl = getattr(net, "in_planes", None) or (N_PLANES_V2 if order else N_PLANES)
+            # action width is per-model since the action-space adapter landed
+            # (2026-08-24): ask the net rather than assuming the native 374.
+            n_act = getattr(net, "action_dim", ACTION_DIM)
             p = torch.rand(2, n_pl, TILE_TYPES)
             s = torch.rand(2, n_sc)
-            m = torch.ones(2, ACTION_DIM, dtype=torch.bool)
+            m = torch.ones(2, n_act, dtype=torch.bool)
             logits, v = net.forward_with_value(p, s, m, cfeats=None)
             self.assertEqual(v.shape, (2,), name)
+            # the declared width must match what the head actually emits, or
+            # the rollout mask and the logits silently disagree
+            self.assertEqual(logits.shape, (2, n_act), name)
 
 
 class TestRolloutCarriesFeatures(unittest.TestCase):

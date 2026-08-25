@@ -474,7 +474,11 @@ class MjaiDnnBot:
         p["executed"] = executed
         xml = _event_to_action(executed, self.seat)
         p["executed_action"] = xml
-        p["override"] = (xml is not None and _norm_action(xml) != _norm_action(p["chosen"]))
+        verdict = compare_execution(p["chosen"], xml)
+        p["match"] = verdict                    # match | same_kind | override | unknown
+        # same_kind = the same tile TYPE, a different physical copy (plain vs
+        # red five): not a human decision change, so it is not an override.
+        p["override"] = verdict == "override"
         self._pending = None
 
     def _reconcile(self, msg: dict) -> None:
@@ -760,16 +764,18 @@ def _event_to_action(ev: dict, me: int) -> Optional[str]:
         return None                              # tsumo/ron indistinguishable here; fine
     if t == "dahai":
         kind = "riichi" if ev.get("reach") else "discard"
-        return f'<action type="{kind}" tile="{mjai_to_engine(ev["pai"])}" />'
+        # spelled: a red five is the engine's '0x' — folding it to '5x' here
+        # made "we played the red 5p" read as an override of itself.
+        return f'<action type="{kind}" tile="{mjai_to_engine_spelled(ev["pai"])}" />'
     if t == "chi":
-        a, b = [mjai_to_engine(c) for c in ev["consumed"]]
-        return f'<action type="chi" tile="{mjai_to_engine(ev["pai"])}" with="{a} {b}" />'
+        a, b = [mjai_to_engine_spelled(c) for c in ev["consumed"]]
+        return f'<action type="chi" tile="{mjai_to_engine_spelled(ev["pai"])}" with="{a} {b}" />'
     if t == "pon":
-        return f'<action type="pon" tile="{mjai_to_engine(ev["pai"])}" />'
+        return f'<action type="pon" tile="{mjai_to_engine_spelled(ev["pai"])}" />'
     if t in ("daiminkan", "kakan"):
-        return f'<action type="kan" tile="{mjai_to_engine(ev["pai"])}" />'
+        return f'<action type="kan" tile="{mjai_to_engine_spelled(ev["pai"])}" />'
     if t == "ankan":
-        return f'<action type="kan" tile="{mjai_to_engine(ev["consumed"][0])}" />'
+        return f'<action type="kan" tile="{mjai_to_engine_spelled(ev["consumed"][0])}" />'
     return None
 
 
@@ -778,3 +784,34 @@ def _norm_action(xml: str):
     if not m:
         return None
     return (m.group(1), m.group(2), tuple(sorted((m.group(3) or "").split())))
+
+
+def _plain(tile: Optional[str]) -> Optional[str]:
+    """Tile kind, red five folded onto the plain five ('0m' -> '5m')."""
+    return None if tile is None else ("5" + tile[1] if tile[0] == "0" else tile)
+
+
+_SAME_KIND_TYPES = {"discard", "riichi", "pon", "kan", "chi"}
+
+
+def compare_execution(chosen: str, executed_action: Optional[str]) -> str:
+    """How the table's actual action relates to the policy's pick:
+
+    "match"     — the same action;
+    "same_kind" — same action type and same tile KIND, different physical copy
+                  (plain vs red five). Counting this as a human override was
+                  misleading, so it is reported separately;
+    "override"  — a different action (assist mode: the human played something
+                  else; or Majsoul refused ours and the turn timed out);
+    "unknown"   — the outcome could not be observed (hora, kyoku end).
+    """
+    a, b = _norm_action(chosen), _norm_action(executed_action)
+    if b is None or a is None:
+        return "unknown"
+    if a == b:
+        return "match"
+    if (a[0] == b[0] and a[0] in _SAME_KIND_TYPES
+            and _plain(a[1]) == _plain(b[1])
+            and tuple(sorted(_plain(t) for t in a[2])) == tuple(sorted(_plain(t) for t in b[2]))):
+        return "same_kind"
+    return "override"

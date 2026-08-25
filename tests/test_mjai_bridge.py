@@ -303,3 +303,71 @@ class KokushiRobsAnkanTest(unittest.TestCase):
         bot2.react({"type": "dahai", "actor": 0, "pai": "2p", "tsumogiri": True})
         bot2.react({"type": "tsumo", "actor": 1, "pai": "?"})
         self.assertIsNone(bot2.react({"type": "ankan", "actor": 1, "consumed": ["E"] * 4}))
+
+
+class ExecutionVerdictTest(unittest.TestCase):
+    """Reconciliation must not report the SAME action as a human override
+    just because the red five has two spellings, and must report a
+    different physical copy of the same tile type apart from real overrides."""
+
+    def test_red_five_round_trips(self):
+        from src.agents.dnn.mjai_bridge import _event_to_action, compare_execution
+        ev = {"type": "dahai", "pai": "5pr", "tsumogiri": False}
+        self.assertEqual(_event_to_action(ev, 3), '<action type="discard" tile="0p" />')
+        self.assertEqual(compare_execution('<action type="discard" tile="0p" />',
+                                           _event_to_action(ev, 3)), "match")
+
+    def test_same_kind_other_copy(self):
+        from src.agents.dnn.mjai_bridge import _event_to_action, compare_execution
+        # policy wanted the plain 5p, the table played the red one
+        self.assertEqual(compare_execution('<action type="discard" tile="5p" />',
+                                           _event_to_action({"type": "dahai", "pai": "5pr"}, 3)),
+                         "same_kind")
+        # ... and the other way round
+        self.assertEqual(compare_execution('<action type="discard" tile="0p" />',
+                                           _event_to_action({"type": "dahai", "pai": "5p"}, 3)),
+                         "same_kind")
+        # a chi differing only in which copy was consumed is also same_kind
+        self.assertEqual(
+            compare_execution('<action type="chi" tile="6p" with="5p 7p" />',
+                              _event_to_action({"type": "chi", "pai": "6p",
+                                                "consumed": ["5pr", "7p"]}, 3)),
+            "same_kind")
+
+    def test_real_override_and_unknown(self):
+        from src.agents.dnn.mjai_bridge import _event_to_action, compare_execution
+        self.assertEqual(compare_execution('<action type="discard" tile="8s" />',
+                                           _event_to_action({"type": "dahai", "pai": "5sr"}, 3)),
+                         "override")
+        # riichi on a different tile is a real override
+        self.assertEqual(compare_execution('<action type="riichi" tile="3s" />',
+                                           _event_to_action({"type": "dahai", "pai": "6s",
+                                                             "reach": True}, 3)),
+                         "override")
+        # discard vs riichi of the same tile: different decision
+        self.assertEqual(compare_execution('<action type="discard" tile="3s" />',
+                                           _event_to_action({"type": "dahai", "pai": "3s",
+                                                             "reach": True}, 3)),
+                         "override")
+        # winning ends the kyoku: outcome not observable from the event
+        self.assertEqual(compare_execution('<action type="tsumo" />',
+                                           _event_to_action({"type": "hora"}, 3)), "unknown")
+
+    def test_bot_records_verdict(self):
+        bot = MjaiDnnBot(lambda tb, pid, acts: (acts[0], {a: 1.0 / len(acts) for a in acts}, 0.0), seat=1)
+        bot.react({"type": "start_game", "id": 1})
+        bot.react({"type": "start_kyoku", "bakaze": "E", "dora_marker": "1m", "honba": 0, "kyoku": 1,
+                   "kyotaku": 0, "oya": 0, "scores": [25000] * 4,
+                   "tehais": [["?"] * 13, ["1m", "2m", "3m", "4p", "5pr", "6p", "7s", "8s", "9s", "E", "E", "S", "W"],
+                              ["?"] * 13, ["?"] * 13]})
+        bot.react({"type": "tsumo", "actor": 0, "pai": "?"})
+        bot.react({"type": "dahai", "actor": 0, "pai": "9p", "tsumogiri": True})
+        bot.react({"type": "tsumo", "actor": 1, "pai": "5p"})
+        d = bot.last_decision
+        # the table plays the red copy of whatever tile the policy named
+        pai = d["reaction"]["pai"]
+        alt = ("5" + pai[1]) if pai.endswith("r") else (pai + "r" if pai[0] == "5" else None)
+        if alt:
+            bot.react({"type": "dahai", "actor": 1, "pai": alt, "tsumogiri": False})
+            self.assertEqual(d["match"], "same_kind")
+            self.assertFalse(d["override"])

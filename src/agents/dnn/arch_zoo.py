@@ -18,6 +18,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from src.agents.dnn.mortal_obs import MORTAL_V3_PLANES
+from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
 from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
                                     N_PLANES_V1R, N_PLANES_V3R,
                                     N_PLANES_V2, N_PLANES_V3, N_SCALARS,
@@ -119,9 +121,13 @@ class MortalBackbone(MahjongPolicyNet):
     NECK = 1024
 
     def __init__(self, channels=192, blocks=40, in_planes=N_PLANES,
-                 in_scalars=N_SCALARS, encoder_variant="v1"):
+                 in_scalars=N_SCALARS, encoder_variant="v1",
+                 action_space="native", action_dim=None):
         nn.Module.__init__(self)
         self.encoder_variant = encoder_variant
+        # declared like `encoder_variant`: the rollout loop reads it through
+        # action_space.get_space() and dispatches masks/follow-ups accordingly
+        self.action_space = action_space
         self.in_planes = in_planes
         self.critic_feat_dim = 0
         self.hazard = False
@@ -139,9 +145,11 @@ class MortalBackbone(MahjongPolicyNet):
             nn.Flatten(), nn.Linear(32 * TILE_TYPES, self.NECK), actv())
 
         self.scalar_fc = nn.Sequential(nn.Linear(in_scalars, 64), nn.ReLU())
+        out_dim = action_dim if action_dim is not None else ACTION_DIM
+        self.action_dim = out_dim
         self.head = nn.Sequential(
             nn.Linear(self.NECK + 64, 512), nn.ReLU(),
-            nn.Linear(512, ACTION_DIM),
+            nn.Linear(512, out_dim),
         )
         self.value = nn.Sequential(
             nn.Linear(self.NECK + 64, 256), nn.ReLU(),
@@ -477,6 +485,16 @@ ZOO.update({
     # is-it-depth-or-the-block-design attribution.
     "mortal_bb_xl_r": (lambda: MortalBackbone(192, 40, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
     "mortal_bb_m_r": (lambda: MortalBackbone(192, 6, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+    # exp41 full alignment: Mortal backbone + Mortal 934-plane obs + 46 actions.
+    # `_m46` is what action_space.space_of_arch keys on. Arm A feeds the derived
+    # tile-efficiency planes, arm B (`_pure`) zeroes them -- same tensor shape,
+    # so the two are directly comparable.
+    "mortal_full_xl_m46": (lambda: MortalBackbone(
+        192, 40, in_planes=MORTAL_V3_PLANES, encoder_variant="mortal_v3",
+        action_space="mortal46", action_dim=MORTAL_ACTION_DIM), False),
+    "mortal_full_xl_pure_m46": (lambda: MortalBackbone(
+        192, 40, in_planes=MORTAL_V3_PLANES, encoder_variant="mortal_v3_pure",
+        action_space="mortal46", action_dim=MORTAL_ACTION_DIM), False),
 })
 
 

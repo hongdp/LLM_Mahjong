@@ -104,15 +104,34 @@ class DnnGame:
 
 
 def _choose(net, table, pid, actions, temperature, device, cmode="none"):
-    planes, scalars = encode_state(table, pid,
-                                   variant=getattr(net, "encoder_variant", "v1"))
-    mask, lookup = legal_mask(actions)
-    idx, lp = net.act(planes[None].to(device), scalars[None].to(device),
-                      mask[None].to(device), temperature=temperature)
-    i = int(idx)
-    return (DnnStep(planes=planes, scalars=scalars, mask=mask, action_idx=i,
-                    logprob=float(lp),
-                    cfeats=critic_features(table, pid, cmode)), lookup[i])
+    """Query the policy for one engine action.
+
+    Returns ``(steps, action_str)`` where `steps` is a LIST because some action
+    spaces are multi-step: Mortal declares riichi (or the intent to kan) and
+    only then picks the tile, so one engine action can consume two policy
+    queries -- each a genuine decision that PPO must see, hence two DnnSteps.
+    The native 374-slot space never asks for a follow-up, so it always returns
+    exactly one step and its behaviour is unchanged.
+    """
+    from src.agents.dnn.action_space import get_space
+    space = get_space(net)
+    variant = getattr(net, "encoder_variant", "v1")
+    planes, scalars = encode_state(table, pid, variant=variant)
+    cf = critic_features(table, pid, cmode)
+
+    steps, mode = [], None
+    for _ in range(2):                      # at most one follow-up
+        mask, lookup = space.mask(actions, mode=mode)
+        idx, lp = net.act(planes[None].to(device), scalars[None].to(device),
+                          mask[None].to(device), temperature=temperature)
+        i = int(idx)
+        steps.append(DnnStep(planes=planes, scalars=scalars, mask=mask,
+                             action_idx=i, logprob=float(lp), cfeats=cf))
+        nxt = space.follow_up(i, actions, mode=mode)
+        if nxt is None:
+            return steps, space.resolve(i, lookup)
+        mode = nxt
+    raise RuntimeError(f"{space.name}: follow-up did not terminate")
 
 
 def play_game(net, temperature: float = 1.0, device="cpu",
@@ -142,14 +161,18 @@ def play_game(net, temperature: float = 1.0, device="cpu",
         actions = table.get_legal_actions(pid)
         if not actions:
             break
-        step, action_str = _choose(seat_nets.get(pid, net), table, pid, actions,
-                                   seat_temp[pid], device, cmode=critic_feats)
+        steps, action_str = _choose(seat_nets.get(pid, net), table, pid, actions,
+                                    seat_temp[pid], device, cmode=critic_feats)
         if shaping:
-            step.phi = potential(table, pid)
+            for st in steps:
+                st.phi = potential(table, pid)
         _, rewards, done, info = table.step(pid, action_str)
-        step.reward = rewards[pid]
-        step.is_terminal = done
-        game.trajectories[pid].append(step)
+        # a multi-step decision shares one engine transition: the reward and
+        # terminal flag land on the LAST step, earlier ones carry 0 so the
+        # return-to-go accumulates over them exactly once
+        steps[-1].reward = rewards[pid]
+        steps[-1].is_terminal = done
+        game.trajectories[pid].extend(steps)
 
         if (track_tenpai and info.get("discarded")
                 and tenpai_turns[pid] is None
@@ -170,21 +193,25 @@ def play_game(net, temperature: float = 1.0, device="cpu",
             options = table.get_interrupt_actions(other)
             if len(options) == 1:        # skip-only: no decision to make
                 continue
-            s, a_str = _choose(seat_nets.get(other, net), table, other, options,
-                               seat_temp[other], device, cmode=critic_feats)
+            s_list, a_str = _choose(seat_nets.get(other, net), table, other,
+                                    options, seat_temp[other], device,
+                                    cmode=critic_feats)
             if shaping:
-                s.phi = potential(table, other)
+                for st in s_list:
+                    st.phi = potential(table, other)
             m = ACTION_RE.search(a_str)
             candidates.append({"player_id": other, "parsed": a_str,
                                "type": m.group(1) if m else None,
                                "reward": 0.0})
-            cand_steps.append(s)
+            # keep the whole list: a multi-step space must not have its first
+            # query dropped from the trajectory (it is a real decision)
+            cand_steps.append(s_list)
 
         executed, done = _resolve_claims(table, candidates)
-        for cand, s in zip(candidates, cand_steps):
-            s.reward = cand["reward"]
-            s.is_terminal = done and cand in executed
-            game.trajectories[cand["player_id"]].append(s)
+        for cand, s_group in zip(candidates, cand_steps):
+            s_group[-1].reward = cand["reward"]
+            s_group[-1].is_terminal = done and cand in executed
+            game.trajectories[cand["player_id"]].extend(s_group)
         if done:
             break
         # Nothing was claimed: the engine still has to close the window —

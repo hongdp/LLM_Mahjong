@@ -73,6 +73,10 @@ VARIANT_SHAPE = {                            # encoder variant -> (planes, scala
     "v1": (N_PLANES, N_SCALARS), "v1r": (N_PLANES_V1R, N_SCALARS),
     "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
     "v4": (N_PLANES_V4, N_SCALARS_V3),
+    # exp41: Mortal-aligned observation (934 planes). The two variants share a
+    # shape so arm A / arm B checkpoints stay swappable; they differ only in
+    # whether the derived tile-efficiency planes are populated.
+    "mortal_v3": (934, N_SCALARS), "mortal_v3_pure": (934, N_SCALARS),
 }
 MAX_PLANES = max(p for p, _ in VARIANT_SHAPE.values())
 MAX_SCALARS = max(s for _, s in VARIANT_SHAPE.values())
@@ -85,6 +89,8 @@ def variant_shape(variant: str):
 def variant_of_arch(arch: str) -> str:
     """Encoder variant implied by a zoo arch name ('cnn_m_v3r' -> 'v3r')."""
     arch = arch or ""
+    if arch.startswith("mortal_full"):
+        return "mortal_v3_pure" if "_pure" in arch else "mortal_v3"
     for suf, v in (("_v4", "v4"), ("_v3r", "v3r"), ("_v3", "v3"), ("_r", "v1r")):
         if arch.endswith(suf):
             return v
@@ -280,6 +286,15 @@ def encode_state(table, player_id: int,
     numpy build + one from_numpy (perf 2026-08-22): the per-plane torch
     ops were ~20% of rollout time; values are bit-identical.
     """
+    if variant in ("mortal_v3", "mortal_v3_pure"):
+        from src.agents.dnn.mortal_obs import encode_mortal_obs
+        P = encode_mortal_obs(table, player_id,
+                              derived=(variant == "mortal_v3"))
+        # scalars are already inside Mortal's planes; the model still wants the
+        # tensor, so hand it the v1 scalars (harmless duplication, keeps the
+        # (planes, scalars) contract identical across every variant)
+        _, sc = encode_state(table, player_id, with_order=False, variant="v1")
+        return torch.from_numpy(P), sc
     if variant == "v3":
         return _encode_v3(table, player_id)
     if variant == "v3r":
