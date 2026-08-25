@@ -51,6 +51,108 @@ class CnnPolicy(MahjongPolicyNet):
         )
 
 
+class SEChannelAttention(nn.Module):
+    """Squeeze-excite over the 34-tile axis, transcribed from Mortal's
+    `ChannelAttention` (mortal/model.py): avg-pool AND max-pool along the tile
+    axis, share one bottleneck MLP, gate with their summed sigmoid."""
+
+    def __init__(self, channels, ratio=16, actv=nn.Mish):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(channels, channels // ratio),
+            actv(),
+            nn.Linear(channels // ratio, channels),
+        )
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):                      # x [B, C, 34]
+        w = (self.mlp(x.mean(-1)) + self.mlp(x.amax(-1))).sigmoid()
+        return w.unsqueeze(-1) * x
+
+
+class MortalResBlock(nn.Module):
+    """Pre-activation residual block + SE, matching Mortal v3/v4's ResBlock.
+
+    Differences from our own `net.ResBlock` (which is post-activation, no SE):
+    pre_actv puts BN/activation before each conv so the residual path stays a
+    clean identity at depth (this is what makes 40 blocks trainable), and the
+    SE gate rescales channels before the add. BN momentum 0.01 mirrors Mortal's
+    config (a much slower running-stat EMA than PyTorch's 0.1 default).
+    """
+
+    def __init__(self, ch, actv=nn.Mish):
+        super().__init__()
+        self.unit = nn.Sequential(
+            nn.BatchNorm1d(ch, momentum=0.01, eps=1e-3), actv(),
+            nn.Conv1d(ch, ch, 3, padding=1, bias=False),
+            nn.BatchNorm1d(ch, momentum=0.01, eps=1e-3), actv(),
+            nn.Conv1d(ch, ch, 3, padding=1, bias=False),
+        )
+        self.se = SEChannelAttention(ch, actv=actv)
+
+    def forward(self, x):
+        return x + self.se(self.unit(x))
+
+
+class MortalBackbone(MahjongPolicyNet):
+    """Mortal's ResNet trunk (192ch x 40 pre-activation SE blocks) under OUR
+    heads and OUR encoder — an architecture control, not a teacher model.
+
+    Provenance: backbone transcribed from Equim-chan/Mortal `mortal/model.py`
+    (ResNet/ResBlock/ChannelAttention) with sizes from its config.example.toml
+    (conv_channels=192, num_blocks=40). Nothing else is borrowed: no human
+    play data, no CQL/DQN objective, no GRP reward net, no dueling head.
+    Purity note: architecture is not teacher knowledge, so a from-scratch
+    self-play run with this trunk stays in the pure lineage.
+
+    Deliberately NOT matched to Mortal: its input is 1012x34 feature planes
+    (libriichi obs_shape(4)); ours is 21 (v1r). That gap is a separate
+    variable and is called out in the exp40 preregistration.
+
+    Trunk output follows Mortal's neck (Conv->32ch -> flatten -> Linear(1024))
+    instead of our usual flatten(channels*34); our scalar features are then
+    concatenated as elsewhere, so `head`/`value` keep our standard shapes.
+    """
+
+    NECK = 1024
+
+    def __init__(self, channels=192, blocks=40, in_planes=N_PLANES,
+                 in_scalars=N_SCALARS, encoder_variant="v1"):
+        nn.Module.__init__(self)
+        self.encoder_variant = encoder_variant
+        self.in_planes = in_planes
+        self.critic_feat_dim = 0
+        self.hazard = False
+        self.hazard_head = None
+
+        actv = nn.Mish
+        self.stem = nn.Conv1d(in_planes, channels, 3, padding=1, bias=False)
+        self.blocks = nn.Sequential(*[MortalResBlock(channels, actv)
+                                      for _ in range(blocks)])
+        # pre-activation stacks need a trailing norm+actv before the neck
+        self.tail = nn.Sequential(
+            nn.BatchNorm1d(channels, momentum=0.01, eps=1e-3), actv())
+        self.neck = nn.Sequential(
+            nn.Conv1d(channels, 32, 3, padding=1), actv(),
+            nn.Flatten(), nn.Linear(32 * TILE_TYPES, self.NECK), actv())
+
+        self.scalar_fc = nn.Sequential(nn.Linear(in_scalars, 64), nn.ReLU())
+        self.head = nn.Sequential(
+            nn.Linear(self.NECK + 64, 512), nn.ReLU(),
+            nn.Linear(512, ACTION_DIM),
+        )
+        self.value = nn.Sequential(
+            nn.Linear(self.NECK + 64, 256), nn.ReLU(),
+            nn.Linear(256, 1),
+        )
+
+    def trunk(self, planes, scalars):
+        h = self.neck(self.tail(self.blocks(self.stem(planes))))
+        return torch.cat([h, self.scalar_fc(scalars)], dim=1)
+
+
 class TilesTransformer(nn.Module):
     """Tiles-as-tokens: 34 tile tokens + 1 global token carrying scalars.
 
@@ -370,6 +472,11 @@ ZOO.update({
     # parameter-matched CNN controls for the scaled arms (same red/yakuhai planes)
     "cnn_l_r": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
     "cnn_xl_r": (lambda: CnnPolicy(192, 6, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+    # Mortal-shaped control (exp40): 192ch x 40 pre-activation SE blocks,
+    # our heads/encoder. `_m` is the depth-matched cheap variant for the
+    # is-it-depth-or-the-block-design attribution.
+    "mortal_bb_xl_r": (lambda: MortalBackbone(192, 40, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+    "mortal_bb_m_r": (lambda: MortalBackbone(192, 6, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
 })
 
 

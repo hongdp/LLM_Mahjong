@@ -4,6 +4,7 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
+| 2026-08-24 | `exp40_mortal_backbone_prereg` | Mortal 型深度 SE-ResNet backbone（只借架构不借人类先验）对照：A 192×40 / B 192×6 拆预激活+SE 贡献 | 📐 designed | A>851.7 则 scale 复活；A/B 双崩则判问题在配方 |
 | 2026-08-24 | `exp38_hrf_combined_prereg` | HRF 最好一枪：恒定低熵+lr 6e-5+warmup 150 叠加 | ⏳ gated on exp37 | T1>896.2 叠加成立；≥1000 重回候选 |
 | 2026-08-24 | `exp39_horizon_extension_prereg` | 延长训练效果：以 ladder 斜率显著性为续训门控，产出"配置→收敛预算"表 | ⏳ gated | 斜率>0 且>1.5σ 才续训；含 12h flex 两段 resume 链设计 |
 | 2026-08-24 | `dnn_exp37_hrf_lr6e5_20260824` | HRF 单变量归因：仅降 lr 1e-4→6e-5（KL∝LR² 定量取值），其余与 exp30 逐项对齐 | 🚀 launching | KL 落入 0.005-0.010 且波动≤±40；T1>852.1 则架构前判作废 |
