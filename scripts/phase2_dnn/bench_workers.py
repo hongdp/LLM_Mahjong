@@ -54,6 +54,9 @@ def main():
     ap.add_argument("--games", type=int, default=2048)
     ap.add_argument("--infer_wait_ms", type=float, default=0.0)
     ap.add_argument("--infer_max_batch", type=int, default=512)
+    # launch_g4_git.sh auto-appends --exp_dir for trainer runs; accept and
+    # ignore it so this script can be launched by the same path
+    ap.add_argument("--exp_dir", default=None)
     args = ap.parse_args()
 
     from src.agents.dnn.arch_zoo import ZOO
