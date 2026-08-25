@@ -39,10 +39,16 @@ def _fill_with_dnn(net, pairs, device="cpu", temperature: float = 1.0):
     only the function picking the action differs, which is exactly the
     comparison this supports.
     """
-    from src.agents.dnn.encoder import encode_state, legal_mask
+    from src.agents.dnn.encoder import encode_state
+    from src.agents.dnn.action_space import get_space
     import torch as _t
+    # Models declare their own action space (2026-08-25): evaluating a
+    # 46-slot Mortal-aligned model with the native 374 mask crashes on a
+    # shape mismatch, which is exactly how exp41 finished training but
+    # produced no Elo. Multi-step spaces are handled below.
+    space = get_space(net)
     for table, r in pairs:
-        mask, lookup = legal_mask(r.legal)
+        mask, lookup = space.mask(r.legal)
         if not lookup:
             # No parsable legal action (the engine can hand back an empty
             # list in rare states). The LLM side degrades to an unparsed
@@ -56,7 +62,17 @@ def _fill_with_dnn(net, pairs, device="cpu", temperature: float = 1.0):
             table, r.player_id, variant=getattr(net, "encoder_variant", "v1"))
         idx, _ = net.act(planes[None].to(device), scalars[None].to(device),
                          mask[None].to(device), temperature=temperature)
-        action = lookup.get(int(idx))
+        i = int(idx)
+        mode = space.follow_up(i, r.legal)
+        if mode is not None:
+            # declare-then-choose (Mortal riichi/kan): second query decides
+            # which tile, exactly as the rollout path does
+            m2, lk2 = space.mask(r.legal, mode=mode)
+            idx2, _ = net.act(planes[None].to(device), scalars[None].to(device),
+                              m2[None].to(device), temperature=temperature)
+            action = lk2.get(int(idx2))
+        else:
+            action = space.resolve(i, lookup)
         if action is None:                     # cannot happen with masking
             action = r.legal[0]
         if hasattr(net, "override"):           # diagnostic wrappers (overrides.py)
