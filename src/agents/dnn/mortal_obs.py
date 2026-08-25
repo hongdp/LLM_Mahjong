@@ -35,7 +35,7 @@ Engine-difference notes (honest deviations, none of them silent):
 from __future__ import annotations
 
 import math
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 
 import numpy as np
 
@@ -252,10 +252,113 @@ def _encode_kawa(ctx: _Ctx, item: Optional[dict]) -> None:
     ctx.idx += KAWA_ITEM_CHANNELS
 
 
+class SparseObs(NamedTuple):
+    """The encoder's write log -- a lossless, ~119x smaller stand-in for the
+    dense [934, 34] observation.
+
+    `_Ctx` already buffers every write, so this is not a re-derivation of the
+    encoding: it IS the write sequence, shipped instead of replayed locally.
+    `densify()` replays it (on GPU, batched) to reproduce the dense tensor
+    bit-for-bit -- `test_mortal_obs_identity` pins that.
+
+    Measured 2026-08-25: 88 fills + 143 assigns per observation = ~1.06 KB,
+    against 127 KB dense fp32. That difference is what dominated the rollout
+    (episode payload 11.1 MB/game, ~23 GB per iteration, and an OOM-killed arm).
+    """
+    fill_rows: np.ndarray     # int16  [F]
+    fill_vals: np.ndarray     # float32[F] -- see note
+    asg_rows: np.ndarray      # int16  [A]
+    asg_cols: np.ndarray      # uint8  [A]
+    asg_vals: np.ndarray      # float32[A]
+
+    # Values stay float32 even though 93.7% of them are exactly 0.0 or 1.0:
+    # the remaining 6.3% (rescaled scores, RBF terms, the exp(-0.2t) river
+    # decay) do not survive a float16 round-trip, and a first attempt at fp16
+    # storage failed the bit-identity test on the score planes. Rows/cols still
+    # shrink to int16/uint8, so the log is ~84x smaller than the dense tensor
+    # while remaining exactly reproducible.
+
+    def nbytes(self) -> int:
+        return sum(a.nbytes for a in self)
+
+
+def encode_mortal_obs_sparse(table: PyMahjongTable, player_id: int,
+                             derived: bool = True,
+                             at_kan_select: bool = False) -> SparseObs:
+    """Same encoding as `encode_mortal_obs`, returned as its write log."""
+    ctx = _encode_into_ctx(table, player_id, derived, at_kan_select)
+    # Canonicalise: keep only the LAST write to each location. Sequential
+    # replay already had last-write-wins semantics, but a GPU scatter with
+    # duplicate indices picks a race-dependent winner -- deduplicating here
+    # makes the log order-independent, so densify() is deterministic on any
+    # device (a first attempt without this passed on CPU and failed on CUDA).
+    # It also shrinks the log.
+    _f, _a = {}, {}
+    for r, v in ctx._fills:
+        _f[r] = v
+    for r, c, v in ctx._assigns:
+        _a[(r, c)] = v
+    f = list(_f.items())
+    a = [(r, c, v) for (r, c), v in _a.items()]
+    return SparseObs(
+        fill_rows=np.fromiter((r for r, _ in f), dtype=np.int16, count=len(f)),
+        fill_vals=np.fromiter((v for _, v in f), dtype=np.float32, count=len(f)),
+        asg_rows=np.fromiter((r for r, _, _ in a), dtype=np.int16, count=len(a)),
+        asg_cols=np.fromiter((c for _, c, _ in a), dtype=np.uint8, count=len(a)),
+        asg_vals=np.fromiter((v for _, _, v in a), dtype=np.float32, count=len(a)),
+    )
+
+
+def densify(obs_list, device="cpu", dtype=None):
+    """Replay a batch of write logs into a dense [B, 934, 34] tensor.
+
+    Two scatters for the whole batch, done wherever the caller wants (the
+    rollout server does it on the GPU, so only ~1 KB per row crosses the bus
+    instead of 127 KB). Fills are applied before assigns, matching the
+    sequential semantics `_Ctx.finish` documents and the golden test pins.
+    """
+    import torch
+    B = len(obs_list)
+    dtype = dtype or torch.float32
+    out = torch.zeros(B, MORTAL_V3_PLANES, TILE_TYPES, device=device, dtype=dtype)
+    if B == 0:
+        return out
+
+    def _cat(attr, np_dtype, torch_dtype):
+        parts = [getattr(o, attr) for o in obs_list]
+        arr = np.concatenate(parts) if parts else np.zeros(0, dtype=np_dtype)
+        return torch.as_tensor(arr.astype(np_dtype, copy=False),
+                               device=device).to(torch_dtype)
+
+    fb = torch.repeat_interleave(
+        torch.arange(B, device=device),
+        torch.tensor([len(o.fill_rows) for o in obs_list], device=device))
+    if fb.numel():
+        out[fb, _cat("fill_rows", np.int64, torch.long), :] = \
+            _cat("fill_vals", np.float32, dtype)[:, None]
+
+    ab = torch.repeat_interleave(
+        torch.arange(B, device=device),
+        torch.tensor([len(o.asg_rows) for o in obs_list], device=device))
+    if ab.numel():
+        out[ab, _cat("asg_rows", np.int64, torch.long),
+            _cat("asg_cols", np.int64, torch.long)] = \
+            _cat("asg_vals", np.float32, dtype)
+    return out
+
+
 def encode_mortal_obs(table: PyMahjongTable, player_id: int,
                       derived: bool = True,
                       at_kan_select: bool = False) -> np.ndarray:
     """[934, 34] float32, following obs_repr.rs version 3 group by group."""
+    return _encode_into_ctx(table, player_id, derived, at_kan_select).finish()
+
+
+def _encode_into_ctx(table: PyMahjongTable, player_id: int,
+                     derived: bool = True,
+                     at_kan_select: bool = False) -> "_Ctx":
+    """The single implementation of the encoding; both the dense and the sparse
+    entry points go through it, so they can never drift apart."""
     ctx = _Ctx(MORTAL_V3_PLANES, derived)
     me = player_id
     seats = [(me + i) % 4 for i in range(4)]      # relative: 0 = self
@@ -509,7 +612,7 @@ def encode_mortal_obs(table: PyMahjongTable, player_id: int,
     # source -- every group's width is validated by the total.
     assert ctx.idx == MORTAL_V3_PLANES, (
         f"plane cursor ended at {ctx.idx}, expected {MORTAL_V3_PLANES}")
-    return ctx.finish()
+    return ctx
 
 
 def _derived_discard_planes(ctx: _Ctx, table, hand, n_melds, shanten) -> None:
