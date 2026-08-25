@@ -86,11 +86,19 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
     for m in models:
         m = m.to(device).eval()
         n_pl, n_sc = variant_shape(getattr(m, "encoder_variant", "v1"))
+        # action width is per-model since the action-space adapter (2026-08-24)
+        n_act = int(getattr(m, "action_dim", ACTION_DIM))
         if device.startswith("cuda") and cfg.get("infer_cuda_graph", True):
             m = _GraphRunner(m, n_pl, n_sc, device, max_batch,
-                             bf16=bool(cfg.get("bf16_infer")))
-        hosted.append((m, n_pl, n_sc))
-    net = hosted                                # list of (runner, n_planes, n_scalars)
+                             bf16=bool(cfg.get("bf16_infer")), n_act=n_act)
+        hosted.append((m, n_pl, n_sc, n_act))
+    net = hosted                    # list of (runner, n_planes, n_scalars, n_act)
+    widths = {h[3] for h in hosted}
+    if len(widths) > 1:
+        raise ValueError(
+            f"hosted models disagree on action width {sorted(widths)}; a league "
+            "pool must share one action space (the batched logits tensor is "
+            "allocated once per batch)")
     gen = torch.Generator(device=device)
     gen.manual_seed(int(cfg.get("seed", 0)) * 31337 + 7)
     ready.set()
@@ -152,14 +160,18 @@ def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen, cfg=None)
             mids = shared.model_id[idx]
             t = shared.temp[idx].to(device)
             t3 = time.perf_counter()
-            logits = torch.empty(len(ids_np), ACTION_DIM, device=device)
+            # every hosted model must agree on action width here: a batch mixes
+            # rows from different model_ids into one logits tensor. League pools
+            # of mixed action spaces are rejected at startup (see below).
+            act_dim = net[0][3]
+            logits = torch.empty(len(ids_np), act_dim, device=device)
             for mid in torch.unique(mids).tolist():
                 sel = torch.nonzero(mids == mid, as_tuple=True)[0]
-                runner, n_pl, n_sc = net[mid]
+                runner, n_pl, n_sc, _ = net[mid]
                 sub = idx[sel]
                 p = shared.planes[sub, :n_pl].to(device, non_blocking=True)
                 s = shared.scalars[sub, :n_sc].to(device, non_blocking=True)
-                m = shared.mask[sub].to(device, non_blocking=True)
+                m = shared.mask[sub, :act_dim].to(device, non_blocking=True)
                 logits[sel] = runner(p, s, m)
             greedy = t <= 0
             logb = torch.log_softmax(logits / t.clamp(min=1e-6)[:, None], dim=1)
@@ -194,7 +206,8 @@ class _GraphRunner:
     BUCKETS = (8, 16, 32, 64, 128, 256)
     MAX_BUCKET_ENV = "INFER_MAX_BUCKET"   # cap buckets on memory-starved GPUs
 
-    def __init__(self, net, n_planes, n_scalars, device, max_batch, bf16=False):
+    def __init__(self, net, n_planes, n_scalars, device, max_batch, bf16=False,
+                 n_act=None):
         self.net, self.device = net, device
         # bf16 autocast is baked into the captured graphs; logits are cast
         # back to fp32 by the caller's assignment before log_softmax.
@@ -209,7 +222,7 @@ class _GraphRunner:
             for b in self.buckets:
                 p = torch.zeros(b, n_planes, TILE_TYPES, device=device)
                 sc = torch.zeros(b, n_scalars, device=device)
-                m = torch.ones(b, ACTION_DIM, dtype=torch.bool, device=device)
+                m = torch.ones(b, n_act or ACTION_DIM, dtype=torch.bool, device=device)
                 with torch.cuda.stream(side):
                     for _ in range(3):
                         with torch.autocast("cuda", torch.bfloat16, enabled=self.bf16):
@@ -309,7 +322,9 @@ class RemotePolicy:
         sh = self.shared
         sh.planes[sl, :planes.shape[1]].copy_(planes)
         sh.scalars[sl, :scalars.shape[1]].copy_(scalars)
-        sh.mask[sl].copy_(mask)
+        # narrower action spaces write only their own columns; the server
+        # reads back the same slice, so the tail is never observed
+        sh.mask[sl, :mask.shape[-1]].copy_(mask)
         sh.temp[sl] = temps
         sh.model_id[sl] = model_ids
         want = sh.done_gen[sl].clone() + 1
@@ -335,7 +350,7 @@ class RemotePolicy:
         r = self.rank * HANDLES.get("rows", 1)
         self.shared.planes[r, :planes.shape[1]].copy_(planes[0])
         self.shared.scalars[r, :scalars.shape[1]].copy_(scalars[0])
-        self.shared.mask[r].copy_(mask[0])
+        self.shared.mask[r, :mask.shape[-1]].copy_(mask[0])
         self.shared.temp[r] = float(temperature)
         self.shared.model_id[r] = self.model_id
         # generation read from the SLOT at request time: several shims

@@ -84,6 +84,10 @@ class DnnStep:
     is_terminal: bool = False
     phi: float = 0.0          # potential at this decision point (PBRS)
     cfeats: Optional[torch.Tensor] = None   # privileged critic-only features
+    # multi-step action spaces: the batched rollout contract returns ONE step
+    # per request, so an earlier query of the same decision rides here and is
+    # unpacked into the trajectory by _package_game. None for single-step.
+    extra_steps: Optional[list] = None
 
 
 @dataclass

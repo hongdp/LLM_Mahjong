@@ -162,6 +162,7 @@ def main():
     ap.add_argument("--exp_dir", default=None)
     args = ap.parse_args()
 
+    from src.agents.dnn.action_space import space_of_arch
     if args.tf32:
         torch.set_float32_matmul_precision("high")
     if args.entropy_schedule and args.entropy_auto:
@@ -291,7 +292,8 @@ def main():
                gpu_infer=args.gpu_infer, gpu_infer_opponents=args.gpu_infer_opponents,
                infer_max_batch=args.infer_max_batch,
                infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device,
-               bf16_infer=args.bf16_infer)
+               bf16_infer=args.bf16_infer,
+               action_space=space_of_arch(args.arch))
     if args.league:
         cfg["league"] = json.load(open(args.league))
         cfg["league_frac"] = args.league_frac

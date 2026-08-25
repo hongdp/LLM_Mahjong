@@ -218,6 +218,13 @@ def _package_game(g, learner_seats, seed, cfg, cmode, league):
         steps = g.trajectories[pid]
         if not steps:
             continue
+        if any(getattr(st, "extra_steps", None) for st in steps):
+            expanded = []
+            for st in steps:
+                expanded.extend(getattr(st, "extra_steps", None) or [])
+                st.extra_steps = None
+                expanded.append(st)
+            steps = expanded
         if cfg["shaping"]:
             apply_shaping(steps, cfg["gamma"])
         rets = returns_to_go(steps, cfg["gamma"])
@@ -255,6 +262,8 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
     that left single-game workers idle ~80% of the time and gives the
     server larger batches. Game logic: play_game_gen == play_game."""
     from src.agents.dnn.selfplay import play_game_gen, make_step
+    from src.agents.dnn.action_space import get_space, REGISTRY
+    _space = REGISTRY.get(cfg.get("action_space") or "native", REGISTRY["native"])
     variant = cfg.get("encoder_variant", "v1")
     pool_variant = {j + 1: e.get("encoder_variant", "v1") for j, e in enumerate(cfg.get("league") or [])}
     temps_list = cfg.get("rollout_temps")
@@ -294,7 +303,7 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         for gi, ri, pid, actions, model_id, var in rows:
             st = active[gi]
             pl, sc = encode_state(st["table"], pid, variant=var)
-            mask, lookup = legal_mask(actions)
+            mask, lookup = _space.mask(actions)
             planes.append(pl); scalars.append(sc); masks.append(mask); lookups.append(lookup)
             temps.append(float(st["temps"][pid])); mids.append(model_id)
         maxp = max(p.shape[0] for p in planes)
@@ -312,14 +321,55 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         if rank == 0 and _DIAG["rounds"] % 200 == 0 and os.environ.get("INFER_DIAG"):
             print(f"[worker0] rounds {_DIAG['rounds']} rows/round {_DIAG['rows']/_DIAG['rounds']:.1f} "
                   f"rpc {_DIAG['rpc']/_DIAG['rounds']*1000:.2f} ms/round wall {(time.perf_counter()-_DIAG['t0'])/_DIAG['rounds']*1000:.2f} ms/round", flush=True)
+        # Multi-step action spaces (Mortal's declare-then-choose riichi/kan)
+        # need a SECOND batched round for the rows that asked for a follow-up.
+        # Native never sets `pending`, so this whole block is skipped and the
+        # single-round behaviour is bit-for-bit what it always was.
+        first_steps = [
+            DnnStep(planes=planes[k], scalars=scalars[k], mask=masks[k],
+                    action_idx=int(idx[k]), logprob=float(lp[k]),
+                    cfeats=critic_features(active[rows[k][0]]["table"], rows[k][2], cmode))
+            for k in range(len(rows))
+        ]
+        pending = []
+        for k, (gi, ri, pid, actions, model_id, var) in enumerate(rows):
+            mode = _space.follow_up(int(idx[k]), actions)
+            if mode is not None:
+                pending.append((k, mode))
+        follow = {}
+        if pending:
+            f_masks, f_lookups = [], []
+            for k, mode in pending:
+                m2, lk2 = _space.mask(rows[k][3], mode=mode)
+                f_masks.append(m2); f_lookups.append(lk2)
+            P2 = torch.stack([planes[k] for k, _ in pending])
+            S2 = torch.stack([scalars[k] for k, _ in pending])
+            if P2.shape[1] < maxp:
+                P2 = torch.nn.functional.pad(P2, (0, 0, 0, maxp - P2.shape[1]))
+            idx2, lp2 = net.act_batch(
+                P2, S2, torch.stack(f_masks),
+                torch.tensor([temps[k] for k, _ in pending]),
+                torch.tensor([mids[k] for k, _ in pending], dtype=torch.int32))
+            for j, (k, _mode) in enumerate(pending):
+                gi, ri, pid, actions, model_id, var = rows[k]
+                a2 = int(idx2[j])
+                follow[k] = (
+                    DnnStep(planes=planes[k], scalars=scalars[k], mask=f_masks[j],
+                            action_idx=a2, logprob=float(lp2[j]),
+                            cfeats=critic_features(active[gi]["table"], pid, cmode)),
+                    f_lookups[j][a2])
+
         # distribute replies per game and advance each generator
         replies = {gi: [None] * len(active[gi]["reqs"]) for gi in active}
         for k, (gi, ri, pid, actions, model_id, var) in enumerate(rows):
-            a_idx = int(idx[k])
-            step = DnnStep(planes=planes[k], scalars=scalars[k], mask=masks[k],
-                           action_idx=a_idx, logprob=float(lp[k]),
-                           cfeats=critic_features(active[gi]["table"], pid, cmode))
-            replies[gi][ri] = (step, lookups[k][a_idx])
+            if k in follow:
+                step2, action_str = follow[k]
+                # the generator contract carries ONE step per request, so the
+                # declaration step rides along and is unpacked by _package_game
+                step2.extra_steps = [first_steps[k]]
+                replies[gi][ri] = (step2, action_str)
+            else:
+                replies[gi][ri] = (first_steps[k], lookups[k][int(idx[k])])
         for gi in list(active):
             st = active[gi]
             try:

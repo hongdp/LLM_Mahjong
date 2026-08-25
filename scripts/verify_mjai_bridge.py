@@ -35,9 +35,11 @@ def main():
     ap.add_argument("--games", type=int, default=50)
     ap.add_argument("--seed0", type=int, default=424242)
     ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--device", default="cpu",
+                    help="cuda is ~30x faster for the big handset models")
     a = ap.parse_args()
     torch.set_num_threads(4)
-    policy = load_policy(a.ckpt, "cpu", a.temperature)
+    policy = load_policy(a.ckpt, a.device, a.temperature)
     stats = collections.Counter()
 
     for g in range(a.games):
