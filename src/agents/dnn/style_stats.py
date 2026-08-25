@@ -109,7 +109,13 @@ def style_vs_anchors(net, anchor_nets: List, games: int, seed0: int,
     from src.agents.dnn.selfplay import play_game
     import torch
     if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # infer from where the caller already put the net: passing CPU nets and
+        # getting cuda inputs is a silent crash (regression 2026-08-24), so the
+        # net is the source of truth, not cuda availability.
+        try:
+            device = str(next(net.parameters()).device)
+        except StopIteration:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.set_num_threads(1)
     agg = new_agg()
     for g in range(games):
