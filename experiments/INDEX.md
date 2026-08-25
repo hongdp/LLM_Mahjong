@@ -5,7 +5,7 @@
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
 | 2026-08-24 | `exp24e_majsoul_exp31_4ext_final_20260824_000155`（done） | 雀魂实战：exp31-4ext 2.0M 收官（未 Elo 评级），1 局东风战 9 小局 | 4 位（−19800）；立直 0% / 副露 0%，与同谱系 1.6M 中途（立直 36%/副露 9%）判若两模型 | ⏳ ckpt 未评级不可下强度结论；四次实战部署风格差异大，建议下次优先用已评级 checkpoint |
-| 2026-08-24 | `exp41_mortal_full_prereg`（A/B 两臂） | 完整对齐 Mortal 输入(934 平面 v3)+动作(46)+backbone，从零自对弈；A 含派生牌效特征 / B 置零 | 🚀 launching | A>1031.9 则架构表示可行；A−B 差=派生特征价值；双双<900 则判配方问题 |
+| 2026-08-24 | `exp41_mortal_full_prereg`（A/B 两臂） | 完整对齐 Mortal 输入(934 v3)+动作(46)+backbone，从零自对弈 | ❌ A 924.4 / B 998.3 vs 对照 1052.1（纪元5） | **派生牌效特征显著有害 A−B=−73.9（4.8σ）**：喂向听数 ⇒ 贪心最小化向听 ⇒ 副露锁死(95.5%)；纯血臂自学出门清立直(31.6%)更快更强。Mortal 式设计在从零自对弈下不及 2M cnn 冠军配方 |
 | 2026-08-24 | `exp40_mortal_backbone_prereg` | Mortal 型深度 SE-ResNet backbone（只借架构不借人类先验）对照：A 192×40 / B 192×6 拆预激活+SE 贡献 | 📐 designed | A>851.7 则 scale 复活；A/B 双崩则判问题在配方 |
 | 2026-08-24 | `exp38_hrf_combined_prereg` | HRF 最好一枪：恒定低熵+lr 6e-5+warmup 150 叠加 | ⏳ gated on exp37 | T1>896.2 叠加成立；≥1000 重回候选 |
 | 2026-08-24 | `exp39_horizon_extension_prereg` | 延长训练效果：以 ladder 斜率显著性为续训门控，产出"配置→收敛预算"表 | ⏳ gated | 斜率>0 且>1.5σ 才续训；含 12h flex 两段 resume 链设计 |
