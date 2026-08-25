@@ -322,7 +322,8 @@ def main():
         games += len(results)
 
         cat = lambda k: np.concatenate([e[k] for e in episodes])
-        planes = torch.from_numpy(cat("planes")).to(dev)
+        # episodes ship planes as float16 (see _package_game); widen once here
+        planes = torch.from_numpy(cat("planes")).to(dev).float()
         scal = torch.from_numpy(cat("scalars")).to(dev)
         mask = torch.from_numpy(cat("mask")).to(dev)
         acts = torch.from_numpy(cat("actions")).to(dev)

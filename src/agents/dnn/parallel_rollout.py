@@ -232,8 +232,15 @@ def _package_game(g, learner_seats, seed, cfg, cmode, league):
         # numpy on the wire: torch tensors travel via shared-memory
         # file descriptors, which is fragile across fork + conda run
         # (observed: SocketClient FileNotFoundError). Arrays pickle.
+        # perf/memory 2026-08-25: observations dominate the episode payload
+        # (measured 11.1 MB per game for the 934-plane Mortal obs vs 0.3 MB for
+        # our 21-plane one -> ~23 GB per 2048-game iteration, which OOM-killed
+        # exp41 arm B). Ship them as float16: every plane is a probability,
+        # indicator or rescaled ratio in [0, 1], and the update forward runs
+        # under bf16 autocast anyway, so fp16 storage is lossless in effect and
+        # halves both the pickle traffic and the trainer's resident tensor.
         ep = {
-            "planes": torch.stack([s.planes for s in steps]).numpy(),
+            "planes": torch.stack([s.planes for s in steps]).numpy().astype(np.float16),
             "scalars": torch.stack([s.scalars for s in steps]).numpy(),
             "mask": torch.stack([s.mask for s in steps]).numpy(),
             "actions": np.array([s.action_idx for s in steps], dtype=np.int64),
