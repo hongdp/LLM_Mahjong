@@ -117,7 +117,7 @@ def harvest_game(path, out, stats):
                     stats["illegal_examples"].append(
                         {"file": fname, "seat": seat, "phase": bot.phase,
                          "kyoku": ctx["kyoku"], "human": a_xml,
-                         "legal": actions[:12]})
+                         "legal": list(actions)})
             return a_xml, {}, None
 
         bot = MjaiDnnBot(recorder, seat=me)
