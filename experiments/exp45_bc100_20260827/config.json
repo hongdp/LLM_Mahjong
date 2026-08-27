@@ -1,0 +1,23 @@
+{
+ "stage": "100pct",
+ "train_games": "all non-holdout (~18k)",
+ "holdout_games": 1000,
+ "max_epochs": 30,
+ "patience": 3,
+ "min_delta": 0.0005,
+ "batch": 1024,
+ "lr": 0.0003,
+ "workers": 12,
+ "seed": 0,
+ "engine_branch": "engine/exp45-action-gaps",
+ "note": "scaling comparison amended to 10% vs 100% (user directive skips the 30% point; backfill if the capacity-binding question needs a third point)",
+ "arms": [
+  "cnn_m_r",
+  "cnn_xl_r",
+  "convformer_m_r",
+  "handset_xl_cnn_m_r",
+  "hrf_xl_v4",
+  "mortal_full_xl_pure_m46"
+ ],
+ "status": "SHELVED (user 2026-08-27: too slow; H2/H3 evaluated at the 10% point instead)"
+}
