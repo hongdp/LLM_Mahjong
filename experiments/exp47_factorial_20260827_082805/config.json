@@ -1,0 +1,5 @@
+{"exp":"exp47","stage":"10pct-factorial","train_games":2000,"holdout_games":400,
+ "max_epochs":30,"patience":3,"min_delta":0.0005,"batch":1024,"lr":3e-4,"workers":10,"seed":0,
+ "engine_branch":"engine/exp45-action-gaps","git":"0383c425a2dad6de51ecedd3fa8cb8b56cfb9370",
+ "arms":["mortal_bb_xl_r","convformer_m_v3r","convformer_m_r_m46","convformer_m_v3r_m46","mortal_bb_xl_v3r_m46"],
+ "references":{"bc45_conv":1133.2,"bc45_mortal46":1147.4}}

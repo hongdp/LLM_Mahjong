@@ -343,6 +343,49 @@ class ConvFormer(TilesTransformer):
         return self.norm_f(x)
 
 
+class ConvFormer46(ConvFormer):
+    """ConvFormer trunk with Mortal's 46-slot action head (exp47).
+
+    Structured, not flattened: slots 0..33 score each tile token, 34..36
+    (red fives) re-score the 5m/5p/5s tokens through a red-specific
+    linear, 37..45 (riichi/chi*3/pon/kan/agari/ryukyoku/pass) come off
+    the global token. Heads are zero-initialised to keep exp19's
+    uniform-logits-at-step-0 property.
+    """
+
+    _RED_TOKENS = [4, 13, 22]                      # 5m / 5p / 5s
+
+    def __init__(self, d=160, layers=6, heads=5, in_planes=N_PLANES,
+                 in_scalars=N_SCALARS, encoder_variant="v1"):
+        super().__init__(d, layers, heads, in_planes=in_planes,
+                         in_scalars=in_scalars, encoder_variant=encoder_variant)
+        from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
+        self.action_space = "mortal46"
+        self.action_dim = MORTAL_ACTION_DIM
+        self.slot_tile = nn.Linear(d, 1)
+        self.slot_red = nn.Linear(d, 1)
+        self.slot_global = nn.Linear(d, 9)
+        for m in (self.slot_tile, self.slot_red, self.slot_global):
+            nn.init.zeros_(m.weight); nn.init.zeros_(m.bias)
+
+    def _logits46(self, h):
+        tiles = h[:, 1:, :]                                     # [B,34,d]
+        return torch.cat([
+            self.slot_tile(tiles).squeeze(-1),                  # 0..33
+            self.slot_red(tiles[:, self._RED_TOKENS]).squeeze(-1),  # 34..36
+            self.slot_global(h[:, 0, :]),                       # 37..45
+        ], dim=1)
+
+    def forward(self, planes, scalars, mask):
+        h = self.trunk(planes, scalars)
+        return self._logits46(h).masked_fill(~mask, float("-inf"))
+
+    def forward_with_value(self, planes, scalars, mask, cfeats=None):
+        h = self.trunk(planes, scalars)
+        return (self._logits46(h).masked_fill(~mask, float("-inf")),
+                self.value_head(h[:, 0, :]).squeeze(-1))
+
+
 # ----------------------------------------------------------------------
 # exp27: hand-as-a-SET encoder (tile instances, no positional encoding)
 # ----------------------------------------------------------------------
@@ -495,6 +538,16 @@ ZOO.update({
     "mortal_full_xl_pure_m46": (lambda: MortalBackbone(
         192, 40, in_planes=MORTAL_V3_PLANES, encoder_variant="mortal_v3_pure",
         action_space="mortal46", action_dim=MORTAL_ACTION_DIM), False),
+    # exp47 factorial (human-prior lineage): trunk x input x action space
+    "convformer_m_r_m46": (lambda: ConvFormer46(
+        160, 6, 5, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+    "convformer_m_v3r_m46": (lambda: ConvFormer46(
+        160, 6, 5, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3,
+        encoder_variant="v3r"), False),
+    "mortal_bb_xl_v3r_m46": (lambda: MortalBackbone(
+        192, 40, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3,
+        encoder_variant="v3r", action_space="mortal46",
+        action_dim=MORTAL_ACTION_DIM), False),
 })
 
 
