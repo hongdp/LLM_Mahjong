@@ -40,18 +40,35 @@ def is_holdout(path: str, holdout_pct: int = 10) -> bool:
     return int(h[:8], 16) % 100 < holdout_pct
 
 
-def game_decisions(path: str, seat: int, variant: str) -> List[dict]:
+def game_decisions(path: str, seat: int, variant: str,
+                   action_space: str = "native") -> List[dict]:
     """Replay one seat view of one game; returns decision rows.
 
-    Row: planes, scalars (torch), mask [374] bool, label (int), phase,
-    vs_riichi (defensive context: an opponent riichi is live).
+    Row: planes, scalars (torch), mask (bool, space-dim), label (int),
+    phase, vs_riichi (defensive context: an opponent riichi is live).
+
+    `action_space="mortal46"` expands a fused engine action into the SAME
+    decision sequence the rollout runs at play time (selfplay._choose):
+    riichi/kan first hit their declare slot, then — with the identical
+    observation tensors and only the mask changed — a second row picks the
+    tile. Both rows are genuine training decisions, exactly as PPO sees.
     """
     Ambiguous, derive_reaction, _norm, reaction_to_action = _derive()
     from tools.tenhou.mjlog_to_mjai import mask_for_seat, parse_mjlog
+    from src.agents.dnn.action_space import get_space
+    from src.agents.dnn.mortal_action import action_to_slot
 
+    space = get_space(action_space)
     events = parse_mjlog(open(path).read())["events"]
     rows: List[dict] = []
     ctx = {"i": 0}
+
+    def emit(planes, scalars, mask, label, phase, vs_riichi):
+        if label is None or not bool(mask[label]):
+            return                       # unmappable / outside mask: drop
+        rows.append({"planes": planes, "scalars": scalars, "mask": mask,
+                     "label": int(label), "phase": phase,
+                     "vs_riichi": vs_riichi})
 
     def recorder(table, pid, actions):
         try:
@@ -60,16 +77,23 @@ def game_decisions(path: str, seat: int, variant: str) -> List[dict]:
             return '<action type="skip" />', {}, None
         a_xml = reaction_to_action(reaction, bot)
         if _norm([a_xml]) <= _norm(actions):
-            idx = action_to_index(a_xml)
-            if idx is not None:
-                planes, scalars = encode_state(table, pid, variant=variant)
+            vs_r = any(table.riichi[p] for p in range(4) if p != pid)
+            planes, scalars = encode_state(table, pid, variant=variant)
+            if space.name == "mortal46":
+                slot1 = action_to_slot(a_xml)
+                m1, _ = space.mask(actions)
+                emit(planes, scalars, m1, slot1, bot.phase, vs_r)
+                fu = space.follow_up(slot1, actions) if slot1 is not None else None
+                if fu:                   # same obs, second mask — as at play time
+                    m2, _ = space.mask(actions, mode=fu)
+                    slot2 = action_to_slot(
+                        a_xml, at_riichi_select=(fu == "riichi"),
+                        at_kan_select=(fu == "kan"))
+                    emit(planes, scalars, m2, slot2, bot.phase, vs_r)
+            else:
                 m, _ = legal_mask(actions)
-                rows.append({
-                    "planes": planes, "scalars": scalars, "mask": m,
-                    "label": idx, "phase": bot.phase,
-                    "vs_riichi": any(table.riichi[p] for p in range(4)
-                                     if p != pid),
-                })
+                emit(planes, scalars, m, action_to_index(a_xml),
+                     bot.phase, vs_r)
         return a_xml, {}, None
 
     bot = MjaiDnnBot(recorder, seat=seat)
@@ -89,9 +113,11 @@ class HumanBCDataset(IterableDataset):
 
     def __init__(self, files: List[str], variant: str = "v3r",
                  shuffle_buffer: int = 20000, seed: int = 0,
-                 seats: Tuple[int, ...] = (0, 1, 2, 3)):
+                 seats: Tuple[int, ...] = (0, 1, 2, 3),
+                 action_space: str = "native"):
         self.units = [(f, s) for f in files for s in seats]
         self.variant = variant
+        self.action_space = action_space
         self.shuffle_buffer = shuffle_buffer
         self.seed = seed
         self.epoch = 0
@@ -102,7 +128,8 @@ class HumanBCDataset(IterableDataset):
     def _iter_rows(self, units) -> Iterator[dict]:
         for path, seat in units:
             try:
-                yield from game_decisions(path, seat, self.variant)
+                yield from game_decisions(path, seat, self.variant,
+                                          self.action_space)
             except Exception:                              # noqa: BLE001
                 # fidelity is the harvester's job; training just skips
                 continue

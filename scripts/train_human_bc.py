@@ -30,14 +30,23 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.agents.dnn.arch_zoo import ZOO                                # noqa: E402
 from src.agents.dnn.human_bc_data import HumanBCDataset, list_games    # noqa: E402
 
-# label -> reporting bucket, via ACTION_TYPES id (label // 34)
+# label -> reporting bucket. native: via ACTION_TYPES id (label // 34);
+# mortal46: declare/select slots (tile-select second steps count as discard)
 _BUCKET_OF = {0: "discard", 8: "discard", 1: "riichi", 9: "riichi",
               2: "call", 3: "call", 4: "call", 5: "win", 6: "win",
               7: "skip", 10: "kyuushu"}
 BUCKETS = ["discard", "riichi", "call", "win", "skip", "kyuushu"]
 
 
-def evaluate(net, loader, dev):
+def bucket_of(label: int, space: str) -> str:
+    if space == "mortal46":
+        return {37: "riichi", 38: "call", 39: "call", 40: "call",
+                41: "call", 42: "call", 43: "win", 44: "kyuushu",
+                45: "skip"}.get(label, "discard")
+    return _BUCKET_OF[label // 34]
+
+
+def evaluate(net, loader, dev, space="native"):
     net.eval()
     hit = {b: 0 for b in BUCKETS}
     tot = {b: 0 for b in BUCKETS}
@@ -49,7 +58,7 @@ def evaluate(net, loader, dev):
             pred = lg.float().argmax(1).cpu()
             ok = pred == y
             for b in BUCKETS:
-                sel = torch.tensor([_BUCKET_OF[int(t) // 34] == b for t in y])
+                sel = torch.tensor([bucket_of(int(t), space) == b for t in y])
                 hit[b] += int(ok[sel].sum())
                 tot[b] += int(sel.sum())
             dsel = vsr.bool()
@@ -77,24 +86,25 @@ def main():
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
-    if "m46" in a.arch:
-        raise SystemExit("mortal-46 label remap not wired yet (see exp45 notes)")
     factory, _ = ZOO[a.arch]
     torch.manual_seed(a.seed)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     net = factory().to(dev)
     variant = getattr(net, "encoder_variant", "v1")
+    from src.agents.dnn.action_space import get_space, space_of_arch
+    aspace = getattr(net, "action_space", None) or space_of_arch(a.arch)
     npar = sum(p.numel() for p in net.parameters())
 
     train_files = list_games(a.raw, holdout=False, limit=a.limit_games)
     hold_files = list_games(a.raw, holdout=True, limit=a.holdout_games)
     os.makedirs(a.out, exist_ok=True)
-    print(f"🏗 {a.arch} ({npar/1e6:.1f}M, variant={variant}) "
+    print(f"🏗 {a.arch} ({npar/1e6:.1f}M, variant={variant}, space={aspace}) "
           f"train {len(train_files)} games / holdout {len(hold_files)}", flush=True)
 
-    ds = HumanBCDataset(train_files, variant=variant, seed=a.seed)
+    ds = HumanBCDataset(train_files, variant=variant, seed=a.seed,
+                        action_space=aspace)
     hds = HumanBCDataset(hold_files, variant=variant, shuffle_buffer=1,
-                         seed=a.seed)
+                         seed=a.seed, action_space=aspace)
     hloader = DataLoader(hds, batch_size=2048, num_workers=max(2, a.workers // 2))
 
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.01)
@@ -119,7 +129,7 @@ def main():
             if n_seen % (a.batch * 200) < a.batch:
                 print(f"  [ep{e}] {n_seen} seen loss {loss_sum/n_seen:.4f} "
                       f"{n_seen/(time.time()-t0):.0f}/s", flush=True)
-        m = evaluate(net, hloader, dev)
+        m = evaluate(net, hloader, dev, aspace)
         m.update({"epoch": e, "train_loss": loss_sum / max(n_seen, 1),
                   "train_n": n_seen, "wall_min": (time.time() - t0) / 60})
         hist.append(m)
