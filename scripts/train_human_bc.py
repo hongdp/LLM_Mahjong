@@ -123,7 +123,7 @@ def main():
         loader = DataLoader(ds, batch_size=a.batch, num_workers=a.workers,
                             persistent_workers=False)
         net.train()
-        n_seen, loss_sum = 0, 0.0
+        n_seen, loss_sum, t_ep = 0, 0.0, time.time()
         for planes, scalars, mask, y, _, _ in loader:
             with torch.autocast("cuda", torch.bfloat16, enabled=dev == "cuda"):
                 lg = net(planes.to(dev), scalars.to(dev), mask.to(dev))
@@ -136,7 +136,7 @@ def main():
             loss_sum += float(loss.detach()) * len(y)
             if n_seen % (a.batch * 200) < a.batch:
                 print(f"  [ep{e}] {n_seen} seen loss {loss_sum/n_seen:.4f} "
-                      f"{n_seen/(time.time()-t0):.0f}/s", flush=True)
+                      f"{n_seen/(time.time()-t_ep):.0f}/s", flush=True)
         m = evaluate(net, hloader, dev, aspace)
         m.update({"epoch": e, "train_loss": loss_sum / max(n_seen, 1),
                   "train_n": n_seen, "wall_min": (time.time() - t0) / 60})
