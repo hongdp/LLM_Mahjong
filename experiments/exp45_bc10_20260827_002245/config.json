@@ -1,0 +1,4 @@
+{"stage":"10pct","train_games":2000,"holdout_games":400,"epochs":4,"batch":1024,
+ "lr":3e-4,"workers":10,"seed":0,"engine_branch":"engine/exp45-action-gaps",
+ "git":"efdcb06dbfd2fb02774e995dc9cb4aadc6cb7afa",
+ "arms":["cnn_m_r","cnn_xl_r","convformer_m_r","handset_xl_cnn_m_r","hrf_xl_v4"]}
