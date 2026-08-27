@@ -11,9 +11,14 @@ overall top-1 plus the preregistered buckets — discard / riichi / call
 (chi+pon+kan) / win (ron+tsumo) / skip, and the defensive slice
 (decisions while an opponent riichi is live).
 
+Convergence protocol (the preregistered "同早停规则"): train until the
+holdout accuracy gains < min_delta for `patience` consecutive epochs
+(cap max_epochs) — a fixed-epoch budget systematically biases against
+slow-hot architectures (exp19's ConvFormer lesson).
+
 Usage (10% scaling point ≈ 2000 games):
   PYTHONPATH=. python scripts/train_human_bc.py --arch cnn_m_r \
-      --limit_games 2000 --epochs 4 --out experiments/exp45_bc_<ts>
+      --limit_games 2000 --out experiments/exp45_bc_<ts>
 """
 
 import argparse
@@ -77,7 +82,10 @@ def main():
     ap.add_argument("--raw", default="data/tenhou/raw")
     ap.add_argument("--limit_games", type=int, default=0,
                     help="cap on TRAIN games (holdout always full 10%)")
-    ap.add_argument("--epochs", type=int, default=4)
+    ap.add_argument("--max_epochs", type=int, default=30)
+    ap.add_argument("--patience", type=int, default=3,
+                    help="stop after this many epochs without >min_delta gain")
+    ap.add_argument("--min_delta", type=float, default=0.0005)
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--workers", type=int, default=10)
@@ -108,9 +116,9 @@ def main():
     hloader = DataLoader(hds, batch_size=2048, num_workers=max(2, a.workers // 2))
 
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.01)
-    hist, best = [], 0.0
+    hist, best, stale = [], 0.0, 0
     t0 = time.time()
-    for e in range(a.epochs):
+    for e in range(a.max_epochs):
         ds.set_epoch(e)
         loader = DataLoader(ds, batch_size=a.batch, num_workers=a.workers,
                             persistent_workers=False)
@@ -136,14 +144,20 @@ def main():
         print(f"[ep{e}] loss {m['train_loss']:.4f} acc {m['acc']:.4f} "
               f"defense {m['defense_acc']:.4f} riichi {m['acc_riichi']:.3f} "
               f"call {m['acc_call']:.3f}", flush=True)
-        if m["acc"] > best:
-            best = m["acc"]
+        if m["acc"] > best + a.min_delta:
+            best, stale = m["acc"], 0
             torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                         "arch": a.arch, "encoder_variant": variant,
-                        "bc_acc": best, "train_games": len(train_files)},
+                        "bc_acc": best, "train_games": len(train_files),
+                        "epoch": e},
                        os.path.join(a.out, f"bc_{a.arch}_best.pt"))
+        else:
+            stale += 1
         with open(os.path.join(a.out, f"bc_{a.arch}_metrics.json"), "w") as f:
             json.dump(hist, f, indent=1)
+        if stale >= a.patience:
+            print(f"[early-stop] no >{a.min_delta} gain for {a.patience} epochs", flush=True)
+            break
     print(f"✅ {a.arch}: best holdout acc {best:.4f} "
           f"({(time.time()-t0)/60:.1f} min)", flush=True)
 

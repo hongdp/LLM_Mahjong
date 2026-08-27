@@ -1,4 +1,24 @@
-{"stage":"10pct","train_games":2000,"holdout_games":400,"epochs":4,"batch":1024,
- "lr":3e-4,"workers":10,"seed":0,"engine_branch":"engine/exp45-action-gaps",
- "git":"efdcb06dbfd2fb02774e995dc9cb4aadc6cb7afa",
- "arms":["cnn_m_r","cnn_xl_r","convformer_m_r","handset_xl_cnn_m_r","hrf_xl_v4"]}
+{
+ "stage": "10pct",
+ "train_games": 2000,
+ "holdout_games": 400,
+ "epochs": "early-stop",
+ "batch": 1024,
+ "lr": 0.0003,
+ "workers": 10,
+ "seed": 0,
+ "engine_branch": "engine/exp45-action-gaps",
+ "git": "efdcb06dbfd2fb02774e995dc9cb4aadc6cb7afa",
+ "arms": [
+  "cnn_m_r",
+  "cnn_xl_r",
+  "convformer_m_r",
+  "handset_xl_cnn_m_r",
+  "hrf_xl_v4",
+  "mortal_full_xl_pure_m46"
+ ],
+ "max_epochs": 30,
+ "patience": 3,
+ "min_delta": 0.0005,
+ "protocol_note": "2026-08-27: user pointed out 4 fixed epochs cannot settle H1 (curves still climbing; fixed budgets bias against slow-hot archs, exp19 lesson). Relaunched with convergence early-stopping; the 4-epoch pass is archived in ep4_snapshot/."
+}
