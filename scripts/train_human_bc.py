@@ -91,6 +91,8 @@ def main():
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--holdout_games", type=int, default=400)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--riichi_weight", type=float, default=1.0,
+                    help="CE weight for riichi-labelled samples (exp48 arm C)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -127,7 +129,16 @@ def main():
         for planes, scalars, mask, y, _, _ in loader:
             with torch.autocast("cuda", torch.bfloat16, enabled=dev == "cuda"):
                 lg = net(planes.to(dev), scalars.to(dev), mask.to(dev))
-                loss = torch.nn.functional.cross_entropy(lg.float(), y.to(dev))
+                yd = y.to(dev)
+                if a.riichi_weight != 1.0:
+                    is_r = ((yd // 34 == 1) | (yd // 34 == 9)) if aspace == "native" \
+                        else (yd == 37)
+                    w = torch.where(is_r, a.riichi_weight, 1.0).float()
+                    ce = torch.nn.functional.cross_entropy(lg.float(), yd,
+                                                           reduction="none")
+                    loss = (ce * w).sum() / w.sum()
+                else:
+                    loss = torch.nn.functional.cross_entropy(lg.float(), yd)
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)

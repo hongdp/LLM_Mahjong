@@ -621,9 +621,11 @@ class HandRiverFormer(nn.Module):
 
     def __init__(self, d=320, layers=8, heads=8, ctx_layers=2,
                  no_cross=False, no_temporal_pe=False, free_rank_emb=False,
-                 encoder_variant="v4"):
+                 encoder_variant="v4", action_space="native", action_dim=None):
         super().__init__()
         self.encoder_variant = encoder_variant
+        self.action_space = action_space
+        self.action_dim = action_dim if action_dim is not None else ACTION_DIM
         self.in_planes = N_PLANES_V4
         self.d = d
         self.no_cross, self.no_temporal_pe = no_cross, no_temporal_pe
@@ -655,7 +657,8 @@ class HandRiverFormer(nn.Module):
                                      for _ in range(layers)])
         self.ln_out = nn.LayerNorm(d)
         feat = 3 * d
-        self.head = nn.Sequential(nn.Linear(feat, 512), nn.ReLU(), nn.Linear(512, ACTION_DIM))
+        self.head = nn.Sequential(nn.Linear(feat, 512), nn.ReLU(),
+                                  nn.Linear(512, self.action_dim))
         nn.init.zeros_(self.head[-1].weight)
         nn.init.zeros_(self.head[-1].bias)
         self.value = nn.Sequential(nn.Linear(feat, 256), nn.ReLU(), nn.Linear(256, 1))
@@ -768,6 +771,11 @@ class HandRiverFormer(nn.Module):
 
 ZOO.update({
     "hrf_xl_v4": (lambda: HandRiverFormer(320, 8, 8, 2), False),
+    # exp48: pooled 46-slot declare head on the same trunk -- targets the
+    # diagnosed riichi failure (declines to declare; tile choice was right)
+    "hrf_xl_v4_m46": (lambda: HandRiverFormer(
+        320, 8, 8, 2, action_space="mortal46",
+        action_dim=MORTAL_ACTION_DIM), False),
     "hrf_xl_nocross_v4": (lambda: HandRiverFormer(320, 8, 8, 2, no_cross=True), False),
     "hrf_xl_notime_v4": (lambda: HandRiverFormer(320, 8, 8, 2, no_temporal_pe=True), False),
     "hrf_xl_freerank_v4": (lambda: HandRiverFormer(320, 8, 8, 2, free_rank_emb=True), False),
