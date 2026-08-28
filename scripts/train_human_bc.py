@@ -93,6 +93,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--riichi_weight", type=float, default=1.0,
                     help="CE weight for riichi-labelled samples (exp48 arm C)")
+    ap.add_argument("--lr_schedule", choices=["const", "cosine"], default="const",
+                    help="cosine anneals per epoch over max_epochs to 0.1x (exp49)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -118,6 +120,9 @@ def main():
     hloader = DataLoader(hds, batch_size=2048, num_workers=max(2, a.workers // 2))
 
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.01)
+    sched = (torch.optim.lr_scheduler.CosineAnnealingLR(
+                 opt, T_max=a.max_epochs, eta_min=a.lr * 0.1)
+             if a.lr_schedule == "cosine" else None)
     hist, best, stale = [], 0.0, 0
     t0 = time.time()
     for e in range(a.max_epochs):
@@ -166,6 +171,8 @@ def main():
             stale += 1
         with open(os.path.join(a.out, f"bc_{a.arch}_metrics.json"), "w") as f:
             json.dump(hist, f, indent=1)
+        if sched is not None:
+            sched.step()
         if stale >= a.patience:
             print(f"[early-stop] no >{a.min_delta} gain for {a.patience} epochs", flush=True)
             break
