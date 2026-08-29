@@ -25,3 +25,15 @@ def test_frac_respected_roughly():
     cfg = {"league": [{"name": "a", "path": "x"}], "league_frac": 0.5}
     n = sum(1 for s in range(2000) if league_plan(s, cfg)[1])
     assert 850 < n < 1150
+
+
+def test_variant_of_arch_ignores_action_space_suffix():
+    # exp46-C regression: '_m46' shadowed the encoder suffix under endswith,
+    # so 46-slot league opponents were encoded as v1 and crashed the stack.
+    from src.agents.dnn.encoder import variant_of_arch
+    assert variant_of_arch("convformer_m_v3r_m46") == "v3r"
+    assert variant_of_arch("mortal_bb_xl_v3r_m46") == "v3r"
+    assert variant_of_arch("hrf_xl_v4_m46") == "v4"
+    assert variant_of_arch("cnn_m_v3r") == "v3r"
+    assert variant_of_arch("cnn_m_r") == "v1r"
+    assert variant_of_arch("cnn_m") == "v1"

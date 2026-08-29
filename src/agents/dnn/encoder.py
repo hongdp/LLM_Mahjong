@@ -95,6 +95,9 @@ def variant_shape(variant: str):
 def variant_of_arch(arch: str) -> str:
     """Encoder variant implied by a zoo arch name ('cnn_m_v3r' -> 'v3r')."""
     arch = arch or ""
+    # action-space suffix ('..._m46') is not an encoder marker and would
+    # shadow the real one under endswith (exp46-C: v3r opponents read as v1)
+    arch = re.sub(r"_m\d+$", "", arch)
     if arch.startswith("mortal_full"):
         return "mortal_v3_pure" if "_pure" in arch else "mortal_v3"
     for suf, v in (("_v4", "v4"), ("_v3r", "v3r"), ("_v3", "v3"), ("_r", "v1r")):

@@ -141,8 +141,8 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
             tagged = []
             for entry in cfg["league"]:
                 blob = torch.load(entry["path"], map_location="cpu")
-                arch = blob.get("arch") or ""
-                tagged.append(dict(entry, encoder_variant=variant_of_arch(arch)))
+                var = blob.get("encoder_variant") or variant_of_arch(blob.get("arch") or "")
+                tagged.append(dict(entry, encoder_variant=var))
             cfg["league"] = tagged
         n_pl, n_sc = variant_shape(variant)
         K = int(cfg.get("games_per_worker", 1) or 1)
