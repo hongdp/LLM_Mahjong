@@ -55,6 +55,11 @@ N_SCALARS_V3 = N_SCALARS + 4 + 4 + 1        # + riichi turn x4, discard count x4
 N_PLANES_RED = 6
 N_PLANES_V1R = N_PLANES + N_PLANES_RED      # 21
 N_PLANES_V3R = N_PLANES_V3 + N_PLANES_RED   # 56
+# v3r2 (exp51): +12 defense-theory planes, still zero derived features —
+# post-riichi discards, first-occurrence discard order (the last-write
+# collision fix), and meld call junme recovered from the discarder's
+# called-away river events. Encoder-only; engine state untouched.
+N_PLANES_V3R2 = N_PLANES_V3R + 12            # 68
 
 # encoder v4 (exp30 HandRiverFormer, 2026-08-23): v1r planes + a packed
 # EVENT BUFFER rendered as extra pseudo-planes so the shared-memory RPC
@@ -72,6 +77,7 @@ N_PLANES_V4 = N_PLANES_V1R + EV_PLANES
 VARIANT_SHAPE = {                            # encoder variant -> (planes, scalars)
     "v1": (N_PLANES, N_SCALARS), "v1r": (N_PLANES_V1R, N_SCALARS),
     "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
+    "v3r2": (N_PLANES_V3R2, N_SCALARS_V3),
     "v4": (N_PLANES_V4, N_SCALARS_V3),
     # exp41: Mortal-aligned observation (934 planes). The two variants share a
     # shape so arm A / arm B checkpoints stay swappable; they differ only in
@@ -301,6 +307,12 @@ def encode_state(table, player_id: int,
         P, sc = _encode_v3(table, player_id, as_numpy=True)
         return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
                 torch.from_numpy(sc))
+    if variant == "v3r2":
+        P, sc = _encode_v3(table, player_id, as_numpy=True)
+        return (torch.from_numpy(np.concatenate([
+                    P, _red_planes(table, player_id),
+                    _v3r2_defense_planes(table, player_id)])),
+                torch.from_numpy(sc))
     if variant == "v1r":
         P, sc = encode_state(table, player_id, with_order=False, variant="v1")
         return torch.cat([P, torch.from_numpy(_red_planes(table, player_id))]), sc
@@ -364,6 +376,55 @@ def encode_state(table, player_id: int,
     planes = torch.from_numpy(planes)
     s = torch.from_numpy(s)
     return planes, s
+
+
+def _v3r2_defense_planes(table, player_id: int) -> np.ndarray:
+    """12 extra raw-fact planes (exp51, defense-theory audit 2026-08-28).
+
+    Per seat offset 0..3 (own seat first, matching every other group):
+      0-3   post-riichi discards: tiles the seat cut AT/AFTER its own
+            riichi declaration (explicit "passed after riichi" facts —
+            previously an implicit cross-modal comparison).
+      4-7   first-occurrence discard order: like the v3 order plane but
+            write-once, preserving the EARLY timing of a tile the seat
+            discarded twice (v3's plane keeps only the last).
+      8-11  meld call junme: opened-meld tiles stamped with the junme of
+            the call, recovered by matching the meld's tiles against the
+            discarder's called-away river events ("from" + called flag).
+    """
+    P = np.zeros((12, TILE_TYPES), dtype=np.float32)
+    # called-away events per discarder: (tile34, river position), consumable
+    called_pool = {d: [(tile_to_34(ev[0].replace("*", "")), j)
+                       for j, ev in enumerate(table.river_events[d]) if ev[3]]
+                   for d in range(4)}
+    for off in range(4):
+        pid = (player_id + off) % 4
+        rt = table.riichi_turn[pid]
+        for j, ev in enumerate(table.river_events[pid]):
+            t = tile_to_34(ev[0].replace("*", ""))
+            if rt is not None and ev[4] >= rt:
+                P[off][t] = 1.0
+            if P[4 + off][t] == 0.0:
+                P[4 + off][t] = min((j + 1) / 20.0, 1.0)
+        for m in table.melds[pid]:
+            if not m.get("opened", True) and m["type"] == "ankan":
+                continue                       # ankan has no call junme
+            frm = m.get("from")
+            if frm is None:
+                continue
+            tiles34 = [tile_to_34(t) for t in m["tiles"]]
+            match = None
+            for k, (t34, j) in enumerate(called_pool.get(frm, [])):
+                if t34 in tiles34:
+                    match = (k, j)
+                    break
+            if match is None:
+                continue
+            called_pool[frm].pop(match[0])     # consume: dedup across melds
+            val = min((match[1] + 1) / 20.0, 1.0)
+            for t34 in tiles34:
+                P[8 + off][t34] = val
+    return P
 
 
 def _encode_v3(table, player_id: int, as_numpy: bool = False):

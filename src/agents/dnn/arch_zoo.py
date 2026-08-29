@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from src.agents.dnn.mortal_obs import MORTAL_V3_PLANES
 from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
 from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
-                                    N_PLANES_V1R, N_PLANES_V3R,
+                                    N_PLANES_V1R, N_PLANES_V3R, N_PLANES_V3R2,
                                     N_PLANES_V2, N_PLANES_V3, N_SCALARS,
                                     N_SCALARS_V3, TILE_TYPES)
 from src.agents.dnn.net import MahjongPolicyNet, ResBlock
@@ -544,6 +544,9 @@ ZOO.update({
     "convformer_m_v3r_m46": (lambda: ConvFormer46(
         160, 6, 5, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3,
         encoder_variant="v3r"), False),
+    "convformer_m_v3r2_m46": (lambda: ConvFormer46(
+        160, 6, 5, in_planes=N_PLANES_V3R2, in_scalars=N_SCALARS_V3,
+        encoder_variant="v3r2"), False),
     "mortal_bb_xl_v3r_m46": (lambda: MortalBackbone(
         192, 40, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3,
         encoder_variant="v3r", action_space="mortal46",
