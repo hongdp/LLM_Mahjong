@@ -40,6 +40,10 @@ from src.agents.dnn.parallel_rollout import (apply_group_baseline,   # noqa: E40
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--init", default=None)
+    ap.add_argument("--bc_anchor", default=None,
+                    help="frozen BC checkpoint; adds bc_kl_coef * KL(pi || pi_BC) "
+                         "to the loss (exp46: keep the human prior while improving)")
+    ap.add_argument("--bc_kl_coef", type=float, default=0.0)
     ap.add_argument("--total_games", type=int, default=600000)
     ap.add_argument("--games_per_iter", type=int, default=2048)
     ap.add_argument("--dup_k", type=int, default=8)
@@ -230,6 +234,17 @@ def main():
             hazard=args.critic_feats == "hazard").to(dev)
         if use_cf:
             print(f"🔭 critic_feats: {args.critic_feats}", flush=True)
+    anchor = None
+    if args.bc_anchor:
+        from src.agents.dnn.arch_zoo import ZOO as _ZOO
+        from src.agents.dnn.net import load_compatible
+        anchor = _ZOO[args.arch][0]().to(dev)
+        load_compatible(anchor, torch.load(args.bc_anchor,
+                                           map_location=dev)["state_dict"])
+        anchor.eval()
+        for q in anchor.parameters():
+            q.requires_grad_(False)
+        print(f"⚓ BC anchor {args.bc_anchor} (coef {args.bc_kl_coef})", flush=True)
     if args.init:
         from src.agents.dnn.net import load_compatible
         skipped = load_compatible(net, torch.load(args.init,
@@ -403,7 +418,7 @@ def main():
 
         net.train()
         t_upd0 = time.time()
-        stop, passes, kls, closs, vloss, hloss = False, 0, [], [], [], []
+        stop, passes, kls, closs, vloss, hloss, bkls = False, 0, [], [], [], [], []
         for ep in range(args.ppo_epochs):
             order = idx_keep[torch.randperm(n_eff, device=dev)]
             pass_kl = []
@@ -429,6 +444,20 @@ def main():
                 ent = -(logp.exp() * safe).sum(1).mean()
                 vl = torch.nn.functional.mse_loss(v, rets[sel])
                 loss = pg + args.value_coef * vl - ent_alpha * ent
+                if anchor is not None and args.bc_kl_coef > 0:
+                    with torch.no_grad():
+                        alogits, _ = anchor.forward_with_value(
+                            planes[sel], scal[sel], mask[sel],
+                            cfeats=cfe[sel] if use_cf else None)
+                        alogp = torch.log_softmax(alogits.float(), 1)
+                    # sanitize BEFORE the multiply: where() keeps the un-taken
+                    # branch in the graph, so (-inf)-(-inf)=nan on masked slots
+                    # poisons the BACKWARD even though the forward is finite
+                    fin = torch.isfinite(logp) & torch.isfinite(alogp)
+                    diff = torch.where(fin, logp - alogp, torch.zeros_like(logp))
+                    bc_kl = (logp.exp() * diff).sum(1).mean()
+                    loss = loss + args.bc_kl_coef * bc_kl
+                    bkls.append(float(bc_kl.detach()))
                 if args.critic_feats == "hazard":
                     # supervised channel: completion is settled fact, so this
                     # loss is exempt from the on-policy/reuse constraints
@@ -497,6 +526,7 @@ def main():
                "entropy_before": ent_before, "entropy": ent_after,
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
                "explained_var": ev, "win_rate": win,
+               "bc_kl": float(np.mean(bkls)) if bkls else None,
                "entropy_coef": ent_alpha,
                "n_effective": n_eff, "n_raw": int(len(acts))}
         if hloss:
