@@ -34,16 +34,30 @@ SCALE = 240  # exact for {0,1} and the k/20 grid
 
 
 def _worker(args):
+    """Stream-append writer: O(one game) memory, not O(chunk).
+
+    v1 buffered the whole chunk and np.stack'd at the end — 14 workers x
+    ~5.5GB peak OOM-killed the pool on the 64GB box (2026-08-28), and a
+    killed child left pool.map hanging forever. Files are opened once and
+    appended per game; manifests are written at the end from counters.
+    """
     wid, files, variant, action_space, out_dir, holdout_pct = args
     import torch                                            # noqa: F401
-    buf = {"planes": [], "scalars": [], "mask": [], "label": [], "meta": []}
-    split_rows = {"train": dict(buf), "holdout": dict(buf)}
-    for k in split_rows:
-        split_rows[k] = {kk: [] for kk in buf}
+    handles, counts, dims = {}, {"train": 0, "holdout": 0}, {}
+
+    def get_handles(split):
+        if split not in handles:
+            d = os.path.join(out_dir, split, f"shard_{wid:03d}")
+            os.makedirs(d, exist_ok=True)
+            handles[split] = {k: open(os.path.join(d, f"{k}.bin"), "wb")
+                              for k in ("planes", "scalars", "mask",
+                                        "label", "meta")}
+        return handles[split]
+
     n_bad = 0
     for path in files:
         split = "holdout" if is_holdout(path, holdout_pct) else "train"
-        rows = split_rows[split]
+        h = get_handles(split)
         for seat in range(4):
             try:
                 for r in game_decisions(path, seat, variant, action_space):
@@ -51,36 +65,30 @@ def _worker(args):
                     q = np.rint(p * SCALE)
                     if not np.allclose(q / SCALE, p, atol=1e-6):
                         raise ValueError("plane value off the k/20 grid")
-                    rows["planes"].append(q.astype(np.uint8))
-                    rows["scalars"].append(r["scalars"].numpy().astype(np.float32))
-                    rows["mask"].append(np.asarray(r["mask"], dtype=np.uint8))
-                    rows["label"].append(np.uint8(r["label"]))
-                    rows["meta"].append(np.array(
+                    dims.setdefault("planes_shape", list(q.shape))
+                    dims.setdefault("scalars_dim", int(r["scalars"].shape[0]))
+                    dims.setdefault("mask_dim", int(len(r["mask"])))
+                    h["planes"].write(q.astype(np.uint8).tobytes())
+                    h["scalars"].write(
+                        r["scalars"].numpy().astype(np.float32).tobytes())
+                    h["mask"].write(
+                        np.asarray(r["mask"], dtype=np.uint8).tobytes())
+                    h["label"].write(bytes([r["label"]]))
+                    h["meta"].write(bytes(
                         [{"turn": 0, "claim": 1, "chankan": 2}[r["phase"]],
-                         int(r["vs_riichi"])], dtype=np.uint8))
+                         int(r["vs_riichi"])]))
+                    counts[split] += 1
             except Exception:                                # noqa: BLE001
                 n_bad += 1
     out = {}
-    for split, rows in split_rows.items():
-        if not rows["label"]:
-            continue
+    for split, hs in handles.items():
+        for f in hs.values():
+            f.close()
         d = os.path.join(out_dir, split, f"shard_{wid:03d}")
-        os.makedirs(d, exist_ok=True)
-        arr = {"planes": np.stack(rows["planes"]),
-               "scalars": np.stack(rows["scalars"]),
-               "mask": np.stack(rows["mask"]),
-               "label": np.asarray(rows["label"], dtype=np.uint8),
-               "meta": np.stack(rows["meta"])}
-        for k, a in arr.items():
-            a.tofile(os.path.join(d, f"{k}.bin"))
-        json.dump({"rows": int(arr["label"].shape[0]),
-                   "planes_shape": list(arr["planes"].shape[1:]),
-                   "scalars_dim": int(arr["scalars"].shape[1]),
-                   "mask_dim": int(arr["mask"].shape[1]),
-                   "scale": SCALE, "variant": variant,
-                   "action_space": action_space},
+        json.dump({"rows": counts[split], **dims, "scale": SCALE,
+                   "variant": variant, "action_space": action_space},
                   open(os.path.join(d, "manifest.json"), "w"))
-        out[split] = int(arr["label"].shape[0])
+        out[split] = counts[split]
     return out, n_bad
 
 
