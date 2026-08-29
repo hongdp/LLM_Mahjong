@@ -176,3 +176,11 @@
 回归测试同上；原 1520 局 6 例非法在修复引擎上复放全部转合法（3869 决策 0 非法）。
 注：最初报告的"这两例连 tsumo 都没给"是采集器非法样本日志截断（`actions[:12]`）
 造成的误读，已修——tsumo 一直在合法集里，缺的只有 riichi。
+
+## 2026-08-28：gpu_infer × games_per_worker=1 回退路径存在空 mask 请求（exp46 发射事故）
+
+单局 `_worker→play_game` 路径在某些请求上向推理服务器发全空动作 mask（multinomial 设备断言）；
+K≥2 的向量化路径（生产配置，README 配方 --games_per_worker 32）零复现。exp46 事故根因二连：
+① ConvFormer46 头用 Python list 索引在 forward 造 CPU 张量 → CUDA graph 捕获失败（已修：red_idx buffer）；
+② 发射命令漏 --games_per_worker → 走了带此 bug 的回退路径。回退路径的空 mask 来源未深挖
+（_choose 探针沉默，疑在请求生成器侧），INFER_DEBUG=1 时 server/vec/choose 三处探针可复用。

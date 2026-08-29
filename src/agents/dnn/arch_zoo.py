@@ -353,7 +353,6 @@ class ConvFormer46(ConvFormer):
     uniform-logits-at-step-0 property.
     """
 
-    _RED_TOKENS = [4, 13, 22]                      # 5m / 5p / 5s
 
     def __init__(self, d=160, layers=6, heads=5, in_planes=N_PLANES,
                  in_scalars=N_SCALARS, encoder_variant="v1"):
@@ -362,6 +361,11 @@ class ConvFormer46(ConvFormer):
         from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
         self.action_space = "mortal46"
         self.action_dim = MORTAL_ACTION_DIM
+        # red-five tokens as a device buffer: a python-list index creates a
+        # CPU tensor every forward, which breaks CUDA graph capture in the
+        # infer server (exp46 launch crash, 2026-08-28)
+        self.register_buffer("red_idx", torch.tensor([4, 13, 22]),
+                             persistent=False)
         self.slot_tile = nn.Linear(d, 1)
         self.slot_red = nn.Linear(d, 1)
         self.slot_global = nn.Linear(d, 9)
@@ -372,7 +376,7 @@ class ConvFormer46(ConvFormer):
         tiles = h[:, 1:, :]                                     # [B,34,d]
         return torch.cat([
             self.slot_tile(tiles).squeeze(-1),                  # 0..33
-            self.slot_red(tiles[:, self._RED_TOKENS]).squeeze(-1),  # 34..36
+            self.slot_red(tiles.index_select(1, self.red_idx)).squeeze(-1),  # 34..36
             self.slot_global(h[:, 0, :]),                       # 37..45
         ], dim=1)
 

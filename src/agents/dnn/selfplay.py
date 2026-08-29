@@ -130,6 +130,9 @@ def _choose(net, table, pid, actions, temperature, device, cmode="none"):
     steps, mode = [], None
     for _ in range(2):                      # at most one follow-up
         mask, lookup = space.mask(actions, mode=mode)
+        if os.environ.get("INFER_DEBUG") and not bool(mask.any()):
+            with open("/tmp/choose_debug.txt", "a") as _f:
+                _f.write(f"EMPTY mask mode={mode} pid={pid} actions={actions}\n")
         idx, lp = net.act(planes[None].to(device), scalars[None].to(device),
                           mask[None].to(device), temperature=temperature)
         i = int(idx)

@@ -329,6 +329,9 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                 pl, sc = encode_state(st["table"], pid, variant=var)
             sparse_logs.append(sp_log)
             mask, lookup = _space.mask(actions)
+            if os.environ.get("INFER_DEBUG") and not bool(mask.any()):
+                with open("/tmp/vec_debug.txt", "a") as _f:
+                    _f.write(f"EMPTY vec mask pid={pid} actions={actions!r}\n")
             planes.append(pl); scalars.append(sc); masks.append(mask); lookups.append(lookup)
             temps.append(float(st["temps"][pid])); mids.append(model_id)
         maxp = max(p.shape[0] for p in planes)
@@ -367,6 +370,9 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             f_masks, f_lookups = [], []
             for k, mode in pending:
                 m2, lk2 = _space.mask(rows[k][3], mode=mode)
+                if os.environ.get("INFER_DEBUG") and not bool(m2.any()):
+                    with open("/tmp/vec_debug.txt", "a") as _f:
+                        _f.write(f"EMPTY vec FOLLOWUP mode={mode} actions={rows[k][3]!r}\n")
                 f_masks.append(m2); f_lookups.append(lk2)
             P2 = torch.stack([planes[k] for k, _ in pending])
             S2 = torch.stack([scalars[k] for k, _ in pending])

@@ -184,6 +184,15 @@ def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen, cfg=None)
             greedy = t <= 0
             logb = torch.log_softmax(logits / t.clamp(min=1e-6)[:, None], dim=1)
             probs = torch.nan_to_num(logb.exp(), nan=0.0)
+            if os.environ.get("INFER_DEBUG"):
+                bad = (probs.sum(1) <= 0)
+                if bad.any():
+                    k = int(torch.nonzero(bad)[0])
+                    with open("/tmp/infer_debug.txt", "a") as f:
+                        f.write(f"row={k} temp={float(t[k])} mask_sum={int(shared.mask[idx[k], :logits.shape[1]].sum())} "
+                                f"logit_min={float(logits[k].min())} logit_max={float(logits[k].max())} "
+                                f"finite={int(torch.isfinite(logits[k]).sum())} mid={int(mids[k])}\n")
+                    probs[bad] = 1.0          # keep serving; we just want the dump
             samp = torch.multinomial(probs, 1, generator=gen).squeeze(1)
             act = torch.where(greedy, logits.argmax(1), samp)
             # behaviour logprob: log b(a) with b = softmax(logits/T) (greedy rows: log pi)
