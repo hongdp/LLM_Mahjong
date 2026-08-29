@@ -56,10 +56,13 @@ def evaluate(net, loader, dev, space="native"):
     hit = {b: 0 for b in BUCKETS}
     tot = {b: 0 for b in BUCKETS}
     dhit = dtot = 0
+    ce_sum = 0.0
     with torch.no_grad():
         for planes, scalars, mask, y, phase, vsr in loader:
             with torch.autocast("cuda", torch.bfloat16, enabled=dev == "cuda"):
                 lg = net(planes.to(dev), scalars.to(dev), mask.to(dev))
+            ce_sum += float(torch.nn.functional.cross_entropy(
+                lg.float(), y.to(dev), reduction="sum"))
             pred = lg.float().argmax(1).cpu()
             ok = pred == y
             for b in BUCKETS:
@@ -71,6 +74,7 @@ def evaluate(net, loader, dev, space="native"):
             dtot += int(dsel.sum())
     n = sum(tot.values())
     return {"acc": sum(hit.values()) / max(n, 1), "n": n,
+            "holdout_ce": ce_sum / max(n, 1),
             "defense_acc": dhit / max(dtot, 1), "defense_n": dtot,
             **{f"acc_{b}": hit[b] / max(tot[b], 1) for b in BUCKETS},
             **{f"n_{b}": tot[b] for b in BUCKETS}}
