@@ -56,9 +56,10 @@ def main():
         shutil.copy(init, best)
         shutil.copy(init, n1)
 
-    league = json.dumps([{"name": "init", "path": init},
-                         {"name": "best", "path": best},
-                         {"name": "n1", "path": n1}])
+    league_file = os.path.join(pool, "league.json")
+    json.dump([{"name": "init", "path": init},
+               {"name": "best", "path": best},
+               {"name": "n1", "path": n1}], open(league_file, "w"))
     for k in range(1, N_CHUNKS + 1):
         target = k * CHUNK
         cmd = [sys.executable, "scripts/train_dnn_ppo.py",
@@ -68,7 +69,7 @@ def main():
                "--games_per_worker", "32", "--infer_max_batch", "128",
                "--lr", "6e-5", "--warmup_updates", "150",
                "--entropy_coef", "0.003", "--gae_lambda", "0.95",
-               "--league", league, "--league_frac", "1.0",
+               "--league", league_file, "--league_frac", "1.0",
                "--milestones", ",".join(str(i * CHUNK) for i in range(1, N_CHUNKS)),
                "--exp_dir", exp]
         if k == 1:
