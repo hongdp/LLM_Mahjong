@@ -95,6 +95,9 @@ def main():
                     help="CE weight for riichi-labelled samples (exp48 arm C)")
     ap.add_argument("--lr_schedule", choices=["const", "cosine"], default="const",
                     help="cosine anneals per epoch over max_epochs to 0.1x (exp49)")
+    ap.add_argument("--cache_dir", default=None,
+                    help="materialized shards (materialize_bc.py); replaces "
+                         "per-epoch replay with mmap reads (exp51 optimization)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -107,17 +110,25 @@ def main():
     aspace = getattr(net, "action_space", None) or space_of_arch(a.arch)
     npar = sum(p.numel() for p in net.parameters())
 
-    train_files = list_games(a.raw, holdout=False, limit=a.limit_games)
-    hold_files = list_games(a.raw, holdout=True, limit=a.holdout_games)
     os.makedirs(a.out, exist_ok=True)
-    print(f"🏗 {a.arch} ({npar/1e6:.1f}M, variant={variant}, space={aspace}) "
-          f"train {len(train_files)} games / holdout {len(hold_files)}", flush=True)
-
-    ds = HumanBCDataset(train_files, variant=variant, seed=a.seed,
-                        action_space=aspace)
-    hds = HumanBCDataset(hold_files, variant=variant, shuffle_buffer=1,
-                         seed=a.seed, action_space=aspace)
-    hloader = DataLoader(hds, batch_size=2048, num_workers=max(2, a.workers // 2))
+    if a.cache_dir:
+        from src.agents.dnn.human_bc_data import MaterializedBCDataset
+        ds = MaterializedBCDataset(a.cache_dir, "train")
+        hds = MaterializedBCDataset(a.cache_dir, "holdout")
+        print(f"🏗 {a.arch} ({npar/1e6:.1f}M, variant={variant}, space={aspace}) "
+              f"cache {a.cache_dir}: train {len(ds)} rows / holdout {len(hds)} rows",
+              flush=True)
+        hloader = DataLoader(hds, batch_size=2048, num_workers=4)
+    else:
+        train_files = list_games(a.raw, holdout=False, limit=a.limit_games)
+        hold_files = list_games(a.raw, holdout=True, limit=a.holdout_games)
+        print(f"🏗 {a.arch} ({npar/1e6:.1f}M, variant={variant}, space={aspace}) "
+              f"train {len(train_files)} games / holdout {len(hold_files)}", flush=True)
+        ds = HumanBCDataset(train_files, variant=variant, seed=a.seed,
+                            action_space=aspace)
+        hds = HumanBCDataset(hold_files, variant=variant, shuffle_buffer=1,
+                             seed=a.seed, action_space=aspace)
+        hloader = DataLoader(hds, batch_size=2048, num_workers=max(2, a.workers // 2))
 
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.01)
     sched = (torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -126,9 +137,14 @@ def main():
     hist, best, stale = [], 0.0, 0
     t0 = time.time()
     for e in range(a.max_epochs):
-        ds.set_epoch(e)
-        loader = DataLoader(ds, batch_size=a.batch, num_workers=a.workers,
-                            persistent_workers=False)
+        if a.cache_dir:
+            loader = DataLoader(ds, batch_size=a.batch, shuffle=True,
+                                num_workers=a.workers, pin_memory=True,
+                                persistent_workers=False)
+        else:
+            ds.set_epoch(e)
+            loader = DataLoader(ds, batch_size=a.batch, num_workers=a.workers,
+                                persistent_workers=False)
         net.train()
         n_seen, loss_sum, t_ep = 0, 0.0, time.time()
         for planes, scalars, mask, y, _, _ in loader:
@@ -164,7 +180,8 @@ def main():
             best, stale = m["acc"], 0
             torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                         "arch": a.arch, "encoder_variant": variant,
-                        "bc_acc": best, "train_games": len(train_files),
+                        "bc_acc": best,
+                       "train_games": (a.limit_games or "cache"),
                         "epoch": e},
                        os.path.join(a.out, f"bc_{a.arch}_best.pt"))
         else:

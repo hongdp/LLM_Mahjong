@@ -19,6 +19,7 @@ import os
 import random
 from typing import Iterator, List, Optional, Tuple
 
+import numpy as np
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
@@ -168,3 +169,56 @@ def list_games(raw_dir: str, holdout: Optional[bool] = None,
     if holdout is not None:
         files = [f for f in files if is_holdout(f, holdout_pct) == holdout]
     return files[:limit] if limit else files
+
+
+class MaterializedBCDataset(torch.utils.data.Dataset):
+    """Map-style dataset over the shards written by materialize_bc.py.
+
+    Planes come back as float32 = uint8 / scale (exact round-trip for the
+    k/20 grid, asserted at materialization). ~30GB of shards fit the page
+    cache, so after the first epoch reads are RAM-speed and training is
+    GPU-bound — the whole point of the exp51 pipeline optimization.
+    """
+
+    def __init__(self, cache_dir: str, split: str):
+        import glob as _glob
+        import json as _json
+        self.shards = []
+        self.index = []                       # (shard_id, row)
+        for d in sorted(_glob.glob(os.path.join(cache_dir, split, "shard_*"))):
+            man = _json.load(open(os.path.join(d, "manifest.json")))
+            n = man["rows"]
+            pshape = tuple(man["planes_shape"])
+            sh = {
+                "planes": np.memmap(os.path.join(d, "planes.bin"), dtype=np.uint8,
+                                    mode="r", shape=(n, *pshape)),
+                "scalars": np.memmap(os.path.join(d, "scalars.bin"), dtype=np.float32,
+                                     mode="r", shape=(n, man["scalars_dim"])),
+                "mask": np.memmap(os.path.join(d, "mask.bin"), dtype=np.uint8,
+                                  mode="r", shape=(n, man["mask_dim"])),
+                "label": np.memmap(os.path.join(d, "label.bin"), dtype=np.uint8,
+                                   mode="r", shape=(n,)),
+                "meta": np.memmap(os.path.join(d, "meta.bin"), dtype=np.uint8,
+                                  mode="r", shape=(n, 2)),
+                "scale": float(man["scale"]),
+            }
+            sid = len(self.shards)
+            self.shards.append(sh)
+            self.index.extend((sid, i) for i in range(n))
+        if not self.index:
+            raise FileNotFoundError(f"no shards under {cache_dir}/{split}")
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, i):
+        sid, r = self.index[i]
+        sh = self.shards[sid]
+        planes = torch.from_numpy(
+            np.asarray(sh["planes"][r], dtype=np.float32)) / sh["scale"]
+        scalars = torch.from_numpy(np.asarray(sh["scalars"][r]))
+        mask = torch.from_numpy(np.asarray(sh["mask"][r])).bool()
+        meta = sh["meta"][r]
+        return (planes, scalars, mask,
+                torch.tensor(int(sh["label"][r]), dtype=torch.long),
+                int(meta[0]), int(meta[1]))
