@@ -130,6 +130,8 @@ def main():
                              seed=a.seed, action_space=aspace)
         hloader = DataLoader(hds, batch_size=2048, num_workers=max(2, a.workers // 2))
 
+    from torch.utils.tensorboard import SummaryWriter
+    tb = SummaryWriter(os.path.join(a.out, f"tensorboard_{a.arch}"))
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.01)
     sched = (torch.optim.lr_scheduler.CosineAnnealingLR(
                  opt, T_max=a.max_epochs, eta_min=a.lr * 0.1)
@@ -173,6 +175,10 @@ def main():
         m.update({"epoch": e, "train_loss": loss_sum / max(n_seen, 1),
                   "train_n": n_seen, "wall_min": (time.time() - t0) / 60})
         hist.append(m)
+        for k in ("acc", "defense_acc", "acc_riichi", "acc_call",
+                  "acc_discard", "train_loss"):
+            tb.add_scalar(k, m[k], e)
+        tb.flush()
         print(f"[ep{e}] loss {m['train_loss']:.4f} acc {m['acc']:.4f} "
               f"defense {m['defense_acc']:.4f} riichi {m['acc_riichi']:.3f} "
               f"call {m['acc_call']:.3f}", flush=True)
