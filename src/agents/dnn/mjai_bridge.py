@@ -22,6 +22,11 @@ that bot, built on two pieces:
   own chi-pon), runs the policy and converts the engine action XML back
   into an MJAI reaction (`dahai`, `reach`+`reach_dahai`, `chi`, `pon`,
   `daiminkan`, `ankan`, `kakan`, `hora`, `none`).
+* `DnnPolicy` — wraps whatever net was loaded; `action_space.get_space()`
+  resolves its output layout (native 374-slot, or exp49's Mortal-46 space)
+  from the checkpoint metadata, so a two-step decision (declare riichi/kan,
+  then pick the tile) is invisible to `MjaiDnnBot` — it always gets back one
+  resolved engine action.
 
 Known gaps vs. Majsoul rules (see tools/majsoul_bridge/README.md): the
 engine is single-round (no renchan/honba/hanchan placement pressure; honba
@@ -38,7 +43,8 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 
-from src.agents.dnn.encoder import encode_state, legal_mask
+from src.agents.dnn.action_space import get_space
+from src.agents.dnn.encoder import encode_state
 from src.tasks.mahjong.table import ACTION_RE, PyMahjongTable, sort_key
 
 # ----------------------------------------------------------------------
@@ -380,31 +386,52 @@ class ShadowTable(PyMahjongTable):
 # Policy wrapper
 # ----------------------------------------------------------------------
 class DnnPolicy:
-    """Thin callable around a loaded `MahjongPolicyNet`-family module."""
+    """Thin callable around a loaded `MahjongPolicyNet`-family module.
+
+    Transparently drives multi-step action spaces (`action_space.get_space`)
+    so a checkpoint's output layout is invisible to the caller: native
+    374-slot models resolve in one query exactly as before; Mortal-46
+    checkpoints (e.g. exp49's conv/mortal-backbone BC models) declare
+    riichi/kan and only then pick the tile — `follow_up()` says so and this
+    loop re-queries the SAME observation with the narrowed second-step mask.
+    """
 
     def __init__(self, net, device: str = "cpu", temperature: float = 0.0):
         self.net = net.to(device).eval()
         self.device = device
         self.temperature = temperature
         self.variant = getattr(net, "encoder_variant", "v1")
+        self.space = get_space(net)
 
     @torch.no_grad()
     def __call__(self, table, pid: int, actions: List[str]
                  ) -> Tuple[str, Dict[str, float], float]:
-        """Returns (chosen action xml, {action: prob}, value)."""
+        """Returns (chosen action xml, {action: prob}, value).
+
+        `probs`/`value` are always from the query that actually resolved the
+        action, so `chosen` is guaranteed to be one of `probs`' keys even for
+        a two-step decision (the reported distribution is then over the
+        follow-up's options — e.g. which tile to riichi/kan on — not the
+        higher-level riichi-vs-not choice, which was already decided).
+        """
         planes, scalars = encode_state(table, pid, variant=self.variant)
-        mask, lookup = legal_mask(actions)
-        logits, v = self.net.forward_with_value(
-            planes[None].to(self.device), scalars[None].to(self.device),
-            mask[None].to(self.device))
-        logits = logits[0].float().cpu()
-        probs = torch.softmax(logits, 0)
-        if self.temperature <= 0:
-            idx = int(torch.argmax(logits))
-        else:
-            idx = int(torch.multinomial(torch.softmax(logits / self.temperature, 0), 1))
-        dist = {lookup[i]: float(probs[i]) for i in lookup}
-        return lookup[idx], dist, float(v[0])
+        mode = None
+        for _ in range(2):                      # at most one follow-up
+            mask, lookup = self.space.mask(actions, mode=mode)
+            logits, v = self.net.forward_with_value(
+                planes[None].to(self.device), scalars[None].to(self.device),
+                mask[None].to(self.device))
+            logits = logits[0].float().cpu()
+            probs = torch.softmax(logits, 0)
+            if self.temperature <= 0:
+                idx = int(torch.argmax(logits))
+            else:
+                idx = int(torch.multinomial(torch.softmax(logits / self.temperature, 0), 1))
+            mode = self.space.follow_up(idx, actions, mode=mode)
+            if mode is None:
+                dist = {lookup[i]: float(probs[i]) for i in lookup}
+                return self.space.resolve(idx, lookup), dist, float(v[0])
+        raise RuntimeError(f"{self.space.name}: follow-up did not terminate")
 
 
 def load_policy(ckpt_path: str, device: str = "cpu", temperature: float = 0.0) -> DnnPolicy:
