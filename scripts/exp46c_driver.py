@@ -1,15 +1,19 @@
-"""exp46-C driver: three-opponent league gens, self-contained on the VM.
+"""exp46-C driver: self-history league gens, self-contained on the VM.
 
-User-designed ecology fix (2026-08-29): the learner never plays its
-current self. Opponents = {init (bc49, permanent floor), best (gated
-champion-so-far), n-1 (previous chunk snapshot)}; league_frac 1.0 kills
-pure mirror games; entropy 0.003 (no exploration tax on a sharp prior);
-learner-seat trajectories only (trainer default).
+User-designed ecology fix (2026-08-29, rev2): the learner never plays
+its current self; opponents come only from its own training history
+(self-improvement purity). Pool per chunk = init (bc49, permanent
+floor) + best (gated champion-so-far) + 3 most recent gen snapshots +
+1 uniformly random older gen — cap 6, the measured knee of the infer
+server's per-model batch-fragmentation cost (bench 2026-08-29: eager
+window 1.9x at N=3, 3.4x at N=6, 5.3x at N=10). league_frac 1.0 kills
+pure mirror games; entropy 0.003 (no exploration tax on a sharp
+prior); learner-seat trajectories only (trainer default).
 
 Chunked resume implements the dynamic pool with zero trainer changes:
-after each 100k-game chunk, n-1 := chunk snapshot, and best := snapshot
-only if it beats the incumbent (100 duplicate deals, share > 0.55 —
-the promotion gate that keeps the pool unpolluted).
+after each 100k-game chunk the snapshot joins the gen history, and
+best := snapshot only if it beats the incumbent (100 duplicate deals,
+share > 0.55 — the promotion gate that keeps the pool unpolluted).
 
 Runs under run_dnn_cloud.sh via launch_g4_git.sh; --exp_dir is appended
 by the launcher. Gate results land in <exp_dir>/gens.jsonl (synced to
@@ -19,6 +23,7 @@ GCS with everything else).
 import argparse
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -32,6 +37,23 @@ CHUNK = 100_000
 N_CHUNKS = 10
 GATE_DEALS = 100
 GATE_SHARE = 0.55
+POOL_RECENT = 3          # most recent gen snapshots always in the pool
+POOL_CAP_NOTE = 6        # init + best + recent 3 + 1 random older
+
+
+def build_league(pool, init, best, k):
+    """Self-history pool for chunk k: init + best + last POOL_RECENT gens
+    + 1 random older gen. Deterministic per chunk (seeded by k)."""
+    entries = [{"name": "init", "path": init}, {"name": "best", "path": best}]
+    gens = [g for g in range(1, k) if os.path.exists(
+        os.path.join(pool, f"gen_{g}.pt"))]
+    recent, older = gens[-POOL_RECENT:], gens[:-POOL_RECENT]
+    if older:
+        pick = random.Random(4600 + k).choice(older)
+        recent = [pick] + recent
+    entries += [{"name": f"gen_{g}", "path": os.path.join(pool, f"gen_{g}.pt")}
+                for g in recent]
+    return entries
 
 
 def sh(cmd, **kw):
@@ -50,17 +72,15 @@ def main():
 
     init = os.path.join(pool, "init.pt")
     best = os.path.join(pool, "best.pt")
-    n1 = os.path.join(pool, "n1.pt")
     if not os.path.exists(init):
         assert sh(["gsutil", "-q", "cp", FLAG_GS, init]) == 0
         shutil.copy(init, best)
-        shutil.copy(init, n1)
 
     league_file = os.path.join(pool, "league.json")
-    json.dump([{"name": "init", "path": init},
-               {"name": "best", "path": best},
-               {"name": "n1", "path": n1}], open(league_file, "w"))
     for k in range(1, N_CHUNKS + 1):
+        entries = build_league(pool, init, best, k)
+        json.dump(entries, open(league_file, "w"))
+        print(f"chunk {k} pool: {[e['name'] for e in entries]}", flush=True)
         target = k * CHUNK
         cmd = [sys.executable, "scripts/train_dnn_ppo.py",
                "--arch", "convformer_m_v3r_m46",
@@ -83,7 +103,6 @@ def main():
         snap_src = os.path.join(exp, "latest.pt")
         snap = os.path.join(pool, f"gen_{k}.pt")
         shutil.copy(snap_src, snap)
-        shutil.copy(snap, n1)                       # n-1 := this chunk
 
         # promotion gate: snapshot vs incumbent best, duplicate deals
         from scripts.run_elo_league import play_pair
