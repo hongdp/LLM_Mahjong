@@ -519,6 +519,13 @@ def main():
         # comes from the arena, where different policies actually meet.
         update_s = time.time() - t_upd0
         win = sum(1 for r in results if "荣和" in r or "自摸" in r) / max(len(results), 1)
+        lg = getattr(collect_parallel, "last_league", None)
+        if lg:
+            # rollout ratings (exp46-C rev3): learner-vs-pool point-share per
+            # opponent, one jsonl row per iteration; chunk drivers aggregate
+            # these to pick the next pool (strongest = lowest learner_share)
+            with open(f"{exp_dir}/league_stats.jsonl", "a") as f:
+                f.write(json.dumps({"iter": it, "games": games, "vs": lg}) + "\n")
         el = time.time() - t0
         row = {"iter": it, "games": games, "wall_s": round(el, 1),
                "rollout_s": round(rollout_s, 1), "update_s": round(update_s, 1),

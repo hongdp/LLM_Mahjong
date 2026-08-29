@@ -116,7 +116,7 @@ def _worker(rank, n_games, seeds, state_np, cfg):
         g = play_game(net, temperature=temperature, device="cpu",
                       deal_seed=seed, shaping=cfg["shaping"],
                       critic_feats=cmode, seat_nets=seat_nets)
-        payload.append(_package_game(g, learner_seats, seed, cfg, cmode, bool(opp)))
+        payload.append(_package_game(g, learner_seats, seed, cfg, cmode, opp))
     return payload
 
 
@@ -181,6 +181,26 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
                  game.get("n_discards"), seats=game.get("learner_seats") or range(4),
                  points=game.get("points"), start_points=game.get("start_points"))
     collect_parallel.last_style = agg
+    # rollout ratings (exp46-C rev3): the learner is every pool member's
+    # common opponent, so pairwise point-share vs the learner IS an
+    # Elo-consistent strength order over the pool — for free, no ladder.
+    pool_names = [e.get("name", str(j)) for j, e in enumerate(cfg.get("league") or [])]
+    lg = {}
+    for game in collected:
+        opp = game.get("league") or {}
+        if not isinstance(opp, dict) or not opp:
+            continue
+        pts = game.get("points") or []
+        if len(pts) != 4:
+            continue
+        for L in game.get("learner_seats") or []:
+            for seat, j in opp.items():
+                name = pool_names[j] if j < len(pool_names) else str(j)
+                w, n = lg.get(name, (0.0, 0))
+                s = 1.0 if pts[L] > pts[seat] else 0.0 if pts[L] < pts[seat] else 0.5
+                lg[name] = (w + s, n + 1)
+    collect_parallel.last_league = {
+        k: {"learner_share": round(w / n, 4), "n": n} for k, (w, n) in lg.items()}
     return episodes, results
 
 
@@ -209,7 +229,10 @@ def apply_group_baseline(episodes, gamma: float) -> None:
 
 
 def _package_game(g, learner_seats, seed, cfg, cmode, league):
-    """Compact numpy episodes for one finished game (both worker paths)."""
+    """Compact numpy episodes for one finished game (both worker paths).
+    `league` is the {seat: pool_idx} opponent map ({} for mirror games) —
+    shipped so the trainer can score learner-vs-pool outcomes for free
+    (exp46-C rev3 rollout ratings)."""
     labels = completion_labels(g.result or "") if cmode == "hazard" else None
     eps = []
     for pid in range(4):
@@ -295,7 +318,7 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         try:
             table, reqs = next(gen)
         except StopIteration as e:
-            payload.append(_package_game(e.value, learner_seats, seed, cfg, cmode, bool(opp)))
+            payload.append(_package_game(e.value, learner_seats, seed, cfg, cmode, opp))
             return
         active[i] = {"gen": gen, "table": table, "reqs": reqs, "seed": seed,
                      "learner": learner_seats, "opp": opp, "temps": temps}
@@ -408,7 +431,7 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             try:
                 st["table"], st["reqs"] = st["gen"].send(replies[gi])
             except StopIteration as e:
-                payload.append(_package_game(e.value, st["learner"], st["seed"], cfg, cmode, bool(st["opp"])))
+                payload.append(_package_game(e.value, st["learner"], st["seed"], cfg, cmode, st["opp"]))
                 del active[gi]
                 if queue:
                     start(queue.pop(0))

@@ -69,3 +69,4 @@ exp50 量化了目标：旗舰 BC（1191.4）距真 Mortal（1218.6）27±17。�
 - [14:0x] C 首发两次均折戟：①`--league` 传了内联 JSON（要文件路径，1588ffb 修）；②真凶 `variant_of_arch("..._m46")` 被动作空间后缀遮蔽 → 46 槽对手按 v1（15 面）编码，worker stack 崩（10bc519 修，回归测试入 tests/test_league.py）。本地 N=6 联赛端到端基准同炉验证。
 - [14:1x] **设计 rev2（用户指示）**：坚持自我提升谱系，但池改为**自身历史 checkpoint**：init + best + 最近 3 代 + 随机 1 老代（帽 6）。依据：推理服务器按 model_id 拆批的碎片化实测（eager 窗口 N=3→1.9×，N=6→3.4×，N=10→5.3×；显存无关紧要 8MB/模型）。每 iteration 对手 >3（历史积累后），fictitious self-play 采样。driver 848a339。
 - 成功标准不变：半庄 vs init ≥0.5 且 vs 纯血冠军为正；防守 defense_iq 不塌。
+- [15:0x] **rev3（用户设计）**：rollout 顺带测 Elo——学习者是全池共同锚，逐迭代记 learner-vs-每对手 点数胜份（league_stats.jsonl，免费无额外对局）；下一 chunk 池 = init + best + 最新代 + **按评分最强的 2 个老代** + 随机 1 代（帽 6）。端到端基准：N=6 仅 -11% 吞吐（80.1 vs 89.8 局/s，CUDA graph 吸收碎片化）。冒烟：6 同体对手测得 0.47-0.50 ✓。
