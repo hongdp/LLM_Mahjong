@@ -113,6 +113,11 @@ def _worker(rank, n_games, seeds, state_np, cfg):
             temperature = {p: rng.choice(temps) for p in range(4)}
         else:
             temperature = cfg["temperature"]
+        if opp and cfg.get("league_opp_temp") is not None:
+            if not isinstance(temperature, dict):
+                temperature = {p: temperature for p in range(4)}
+            for pid in opp:
+                temperature[pid] = cfg["league_opp_temp"]
         g = play_game(net, temperature=temperature, device="cpu",
                       deal_seed=seed, shaping=cfg["shaping"],
                       critic_feats=cmode, seat_nets=seat_nets)
@@ -314,6 +319,13 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             temps = {p: rng.choice(temps_list) for p in range(4)}
         else:
             temps = {p: cfg["temperature"] for p in range(4)}
+        if opp and cfg.get("league_opp_temp") is not None:
+            # deterministic opponents (exp46-C'a): with frozen pool seats at
+            # T~0, same-wall replicas diverge only through the learner's own
+            # sampling — the dominant line-luck source (75.9% of return
+            # variance measured 2026-08-29) drops out of the advantages
+            for pid in opp:
+                temps[pid] = cfg["league_opp_temp"]
         gen = play_game_gen(deal_seed=seed, shaping=cfg["shaping"])
         try:
             table, reqs = next(gen)

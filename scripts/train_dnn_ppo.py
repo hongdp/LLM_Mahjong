@@ -78,6 +78,9 @@ def main():
     ap.add_argument("--league_learner_seats", type=int, default=0,
                     help="fixed learner seat count in league games "
                          "(0 = legacy random 1-2)")
+    ap.add_argument("--league_opp_temp", type=float, default=None,
+                    help="sampling temperature for frozen pool seats "
+                         "(None = global temperature; 0 = greedy opponents)")
     ap.add_argument("--bf16_infer", action="store_true",
                     help="bf16 autocast in the rollout inference server "
                          "(2x-ish on attention archs; logits sampled in fp32)")
@@ -328,8 +331,11 @@ def main():
         cfg["league"] = json.load(open(args.league))
         cfg["league_frac"] = args.league_frac
         cfg["league_learner_seats"] = args.league_learner_seats
+        cfg["league_opp_temp"] = args.league_opp_temp
         print(f"🏟 league: {len(cfg['league'])} frozen opponents, frac {args.league_frac}, "
-              f"learner seats {args.league_learner_seats or 'rand 1-2'}", flush=True)
+              f"learner seats {args.league_learner_seats or 'rand 1-2'}, "
+              f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
+              flush=True)
     if args.gpu_infer:
         print(f"🚀 gpu_infer: batched rollout inference on {args.train_device} "
               f"(max_batch {args.infer_max_batch}, wait {args.infer_wait_ms} ms)", flush=True)

@@ -133,6 +133,9 @@ def main():
                # game means 8192 games/iter restores mirror's 8192 episodes
                # per update cycle exactly
                "--league_learner_seats", "1",
+               # C'a: greedy frozen opponents — same-wall replicas diverge
+               # only through the learner (kills the 76% line-luck component)
+               "--league_opp_temp", "0",
                "--games_per_iter", "8192",
                "--league", league_file, "--league_frac", "1.0",
                "--milestones", ",".join(str(i * CHUNK) for i in range(1, N_CHUNKS)),
