@@ -31,3 +31,7 @@ exp50 量化了目标：旗舰 BC（1191.4）距真 Mortal（1218.6）27±17。�
 - [2026-08-28] 基建三件套冒烟通过（--init warm-start / 46 槽 rollout / KL 锚）；
   发现并修复 torch.where 未选分支 -inf 毒化反向梯度的 NaN（值有限、梯度 nan——
   与熵项的 safe 防护同源教训）。等 exp51 判决。
+- [2026-08-29] 发射历经三次基建事故后稳定：① ConvFormer46 list 索引破坏图捕获（red_idx 修复）；
+  ② K=1 回退路径空 mask（known issue，生产 K=32 规避）；③ 分配器碎片棘轮 ~1GB/迭代
+  （expandable_segments 根治，10min delta 0）。A 臂在跑：46.8 局/s、H 0.48→0.57、EV 0.073、
+  KL 0.012，1M 局 ≈6h/臂，B 臂自动接力。
