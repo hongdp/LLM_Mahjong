@@ -7,6 +7,7 @@ sticks behave identically. Only the policy differs, which is the point of
 the comparison.
 """
 
+import os
 import random
 import re
 from dataclasses import dataclass, field
