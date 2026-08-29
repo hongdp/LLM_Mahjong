@@ -140,12 +140,12 @@ def main():
         if k == 1:
             cmd += ["--init", init]
         else:
-            cmd += ["--resume", os.path.join(exp, "latest.pt")]
+            cmd += ["--resume", os.path.join(exp, "games_final.pt")]
         rc = sh(cmd)
         if rc != 0:
             print(f"!!! chunk {k} failed rc={rc}", flush=True)
             break
-        snap_src = os.path.join(exp, "latest.pt")
+        snap_src = os.path.join(exp, "games_final.pt")
         snap = os.path.join(pool, f"gen_{k}.pt")
         shutil.copy(snap_src, snap)
         ratings = rollout_ratings(exp, mark)     # this chunk's rollout Elo
