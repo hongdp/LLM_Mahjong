@@ -128,10 +128,12 @@ def main():
                "--games_per_worker", "32", "--infer_max_batch", "128",
                "--lr", "6e-5", "--warmup_updates", "150",
                "--entropy_coef", "0.003", "--gae_lambda", "0.95",
-               # learner-only trajectories at 1.5 seats/game avg = 37.5% of
-               # mirror's data per game; 5460 games/iter restores mirror's
-               # 8192 episodes per update cycle (user req 2026-08-29)
-               "--games_per_iter", "5460",
+               # learner fixed at 1 seat (user 2026-08-29): 3 opponent seats
+               # per game, zero learner-learner correlation; 1 trajectory per
+               # game means 8192 games/iter restores mirror's 8192 episodes
+               # per update cycle exactly
+               "--league_learner_seats", "1",
+               "--games_per_iter", "8192",
                "--league", league_file, "--league_frac", "1.0",
                "--milestones", ",".join(str(i * CHUNK) for i in range(1, N_CHUNKS)),
                "--exp_dir", exp]

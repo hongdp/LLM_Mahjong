@@ -75,6 +75,9 @@ def main():
                          "opponents; a fraction of deals seats the learner "
                          "against them (design docs/design_league_exp22.md)")
     ap.add_argument("--league_frac", type=float, default=0.5)
+    ap.add_argument("--league_learner_seats", type=int, default=0,
+                    help="fixed learner seat count in league games "
+                         "(0 = legacy random 1-2)")
     ap.add_argument("--bf16_infer", action="store_true",
                     help="bf16 autocast in the rollout inference server "
                          "(2x-ish on attention archs; logits sampled in fp32)")
@@ -324,8 +327,9 @@ def main():
     if args.league:
         cfg["league"] = json.load(open(args.league))
         cfg["league_frac"] = args.league_frac
-        print(f"🏟 league: {len(cfg['league'])} frozen opponents, frac {args.league_frac}",
-              flush=True)
+        cfg["league_learner_seats"] = args.league_learner_seats
+        print(f"🏟 league: {len(cfg['league'])} frozen opponents, frac {args.league_frac}, "
+              f"learner seats {args.league_learner_seats or 'rand 1-2'}", flush=True)
     if args.gpu_infer:
         print(f"🚀 gpu_infer: batched rollout inference on {args.train_device} "
               f"(max_batch {args.infer_max_batch}, wait {args.infer_wait_ms} ms)", flush=True)

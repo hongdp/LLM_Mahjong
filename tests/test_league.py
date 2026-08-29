@@ -37,3 +37,11 @@ def test_variant_of_arch_ignores_action_space_suffix():
     assert variant_of_arch("cnn_m_v3r") == "v3r"
     assert variant_of_arch("cnn_m_r") == "v1r"
     assert variant_of_arch("cnn_m") == "v1"
+
+
+def test_fixed_learner_seats():
+    cfg = {"league": [{"name": "a", "path": "x"}], "league_frac": 1.0,
+           "league_learner_seats": 1}
+    for s in range(200):
+        learner, opp = league_plan(s, cfg)
+        assert len(learner) == 1 and len(opp) == 3

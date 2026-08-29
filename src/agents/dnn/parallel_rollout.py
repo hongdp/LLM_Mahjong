@@ -56,7 +56,7 @@ def league_plan(seed, cfg):
     rng = random.Random(int(seed) * 7919 + 17)
     if rng.random() >= frac:
         return list(range(4)), {}
-    n_learner = rng.choice((1, 2))
+    n_learner = int(cfg.get("league_learner_seats") or 0) or rng.choice((1, 2))
     learner = sorted(rng.sample(range(4), n_learner))
     opp = {pid: rng.randrange(len(pool)) for pid in range(4) if pid not in learner}
     return learner, opp
