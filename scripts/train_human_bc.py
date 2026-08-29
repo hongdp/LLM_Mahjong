@@ -102,8 +102,13 @@ def main():
     ap.add_argument("--cache_dir", default=None,
                     help="materialized shards (materialize_bc.py); replaces "
                          "per-epoch replay with mmap reads (exp51 optimization)")
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--exp_dir", default=None,
+                    help="accepted for launch_g4_git compat; alias of --out")
     a = ap.parse_args()
+    a.out = a.out or a.exp_dir
+    if not a.out:
+        ap.error("--out (or --exp_dir) is required")
 
     factory, _ = ZOO[a.arch]
     torch.manual_seed(a.seed)

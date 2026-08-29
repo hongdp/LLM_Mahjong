@@ -8,7 +8,7 @@ case " $* " in *" --exp_dir "*) ;; *) set -- "$@" --exp_dir "experiments/$N";; e
 P=workstation-185016
 # hard gate: the pinned commit must already be on GitHub (the VM clones it)
 git fetch -q origin
-git merge-base --is-ancestor "$SHA" origin/master || { echo "ABORT: $SHA is not on origin/master — push first"; exit 2; }
+git branch -r --contains "$SHA" 2>/dev/null | grep -q "origin/" || { echo "ABORT: $SHA is not on any origin branch — push first"; exit 2; }
 if ! gcloud compute instances describe $VM --zone=$ZONE --project=$P >/dev/null 2>&1; then
   for a in 1 2 3; do
     gcloud compute instances create $VM --project=$P --zone=$ZONE --machine-type=g4-standard-48 \
@@ -27,6 +27,7 @@ set -e
 if [ ! -d \$HOME/LLM_Mahjong/.git ]; then git clone -q https://github.com/hongdp/LLM_Mahjong.git \$HOME/LLM_Mahjong; fi
 cd \$HOME/LLM_Mahjong && git fetch -q origin && git checkout -q $SHA && echo "code at \$(git rev-parse --short HEAD)"
 ${CKPT_GS:+gsutil -q cp $CKPT_GS /tmp/resume.pt && echo "CKPT_OK \$(ls -la /tmp/resume.pt | awk '{print \$5}')"}
+${DATA_GS:+sudo apt-get install -y -q zstd >/dev/null 2>&1 || true; gsutil -q cp $DATA_GS /tmp/data.tar.zst && mkdir -p \$HOME/LLM_Mahjong/data/tenhou && tar --zstd -xf /tmp/data.tar.zst -C \$HOME/LLM_Mahjong/data/tenhou && echo "DATA_OK \$(find \$HOME/LLM_Mahjong/data/tenhou/raw -name '*.mjlog' | wc -l) logs"}
 nohup bash \$HOME/LLM_Mahjong/scripts/phase2_dnn/run_dnn_cloud.sh $N python $* > \$HOME/${N}_nohup.log 2>&1 &
 disown; echo "LAUNCHED $N pid=\$!"
 EOS
