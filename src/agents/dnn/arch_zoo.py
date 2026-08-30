@@ -386,8 +386,13 @@ class ConvFormer46(ConvFormer):
 
     def forward_with_value(self, planes, scalars, mask, cfeats=None):
         h = self.trunk(planes, scalars)
+        # value_detach (exp46-H2): critic trains on stopped features so its
+        # gradients never remodel the shared trunk — with EV capped at
+        # ~0.02-0.07 by deal luck, value gradients into the trunk are mostly
+        # noise continuously eroding the policy's representation
+        hv = h.detach() if getattr(self, "value_detach", False) else h
         return (self._logits46(h).masked_fill(~mask, float("-inf")),
-                self.value_head(h[:, 0, :]).squeeze(-1))
+                self.value_head(hv[:, 0, :]).squeeze(-1))
 
 
 # ----------------------------------------------------------------------

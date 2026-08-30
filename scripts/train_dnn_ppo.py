@@ -112,6 +112,11 @@ def main():
                          "fp32). Local bench 2026-08-24, HRF, B=512: 258.9ms->"
                          "171.3ms (1.51x) and 9.3GB->5.4GB peak activation mem "
                          "(matters most for wide attention archs at real batch)")
+    ap.add_argument("--value_detach", action="store_true",
+                    help="critic trains on detached trunk features (exp46-H2): "
+                         "EV is luck-capped at ~0.02-0.07, so value gradients "
+                         "into the shared trunk are mostly noise that "
+                         "continuously remodels the policy's representation")
     ap.add_argument("--value_warmup", type=int, default=0,
                     help="first N optimizer updates of a FRESH run train the "
                          "critic only (policy/entropy losses zeroed). The "
@@ -335,6 +340,7 @@ def main():
                         writer.add_scalar(TB_TAG.get(k, k), float(v), int(r["games"]))
     else:
         save("games_0", 0)
+    net.value_detach = bool(args.value_detach)
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
                temperature=args.temperature, gamma=args.gamma,
                games_per_worker=args.games_per_worker,
