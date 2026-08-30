@@ -47,6 +47,10 @@ N_SCALARS = 20
 # visible-tile count >= k (k=1..4, union of everything on the table).
 N_PLANES_V3 = 15 + 16 + 12 + 3 + 4          # = 50
 N_SCALARS_V3 = N_SCALARS + 4 + 4 + 1        # + riichi turn x4, discard count x4, wall-turn
+# v3rh (exp55-D): + within-wind round number, honba, all-last flag — the
+# only match context v3 scalars were missing (points/kyotaku/wind/dealer
+# are already in s[0..17]); honba lives driver-side, read via getattr
+N_SCALARS_V3H = N_SCALARS_V3 + 3
 # red-dora variants (2026-08-23): base planes + 6 — own red fives (at the
 # 5x columns), per relative seat red fives visible in river/melds, and the
 # yakuhai plane (round wind, seat wind, dragons: a rule fact placed on the
@@ -78,6 +82,7 @@ VARIANT_SHAPE = {                            # encoder variant -> (planes, scala
     "v1": (N_PLANES, N_SCALARS), "v1r": (N_PLANES_V1R, N_SCALARS),
     "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
     "v3r2": (N_PLANES_V3R2, N_SCALARS_V3),
+    "v3rh": (N_PLANES_V3R, N_SCALARS_V3H),
     "v4": (N_PLANES_V4, N_SCALARS_V3),
     # exp41: Mortal-aligned observation (934 planes). The two variants share a
     # shape so arm A / arm B checkpoints stay swappable; they differ only in
@@ -100,7 +105,8 @@ def variant_of_arch(arch: str) -> str:
     arch = re.sub(r"_m\d+$", "", arch)
     if arch.startswith("mortal_full"):
         return "mortal_v3_pure" if "_pure" in arch else "mortal_v3"
-    for suf, v in (("_v4", "v4"), ("_v3r", "v3r"), ("_v3", "v3"), ("_r", "v1r")):
+    for suf, v in (("_v4", "v4"), ("_v3rh", "v3rh"), ("_v3r", "v3r"),
+                   ("_v3", "v3"), ("_r", "v1r")):
         if arch.endswith(suf):
             return v
     return "v1"
@@ -310,6 +316,15 @@ def encode_state(table, player_id: int,
         P, sc = _encode_v3(table, player_id, as_numpy=True)
         return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
                 torch.from_numpy(sc))
+    if variant == "v3rh":
+        P, sc = _encode_v3(table, player_id, as_numpy=True)
+        ex = np.zeros(3, dtype=np.float32)
+        ex[0] = getattr(table, "round_number", 1) / 4.0
+        ex[1] = min(getattr(table, "honba", 0) / 8.0, 1.0)
+        ex[2] = 1.0 if (table.round_wind_idx >= 1
+                        and getattr(table, "round_number", 1) >= 4) else 0.0
+        return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
+                torch.from_numpy(np.concatenate([sc, ex])))
     if variant == "v3r2":
         P, sc = _encode_v3(table, player_id, as_numpy=True)
         return (torch.from_numpy(np.concatenate([
