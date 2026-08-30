@@ -48,7 +48,7 @@
 ---
 ### Status Snapshot (2026-08-02 — supersedes the May/early-Aug snapshot)
 - **Naming convention (adopted 2026-08-02)**: experiments get descriptive names (`exp1_shaping_arms`, `exp2_settlement_vs_pbrs`, …); `infra revN` refers ONLY to the training-stack configuration (rev1 baseline / rev2 fast-path+4-game batching / rev3 bf16_lora+12-game batching+update batch 4). Never number experiments by infra revision — that conflation caused real confusion in the 08-02 session.
-- **exp1 (shaping arms) COMPLETE**: PBRS+REINFORCE vs +PPO vs PPO+value-bundle on infra rev3, stopped at ep24-26, arena-judged. Verdict: no significant strength change vs SFT anchors in any arm (+1038/+331/−1475, all CIs cross zero) despite large style migration. Full report: `docs/report_exp1_shaping_arms_20260802.md`.
+- **exp1 (shaping arms) COMPLETE**: PBRS+REINFORCE vs +PPO vs PPO+value-bundle on infra rev3, stopped at ep24-26, arena-judged. Verdict: no significant strength change vs SFT anchors in any arm (+1038/+331/−1475, all CIs cross zero) despite large style migration. Full report: `experiments/reports/report_exp1_shaping_arms_20260802.md`.
 - **May-era blocking issues all resolved**: format collapse (weak adapter) fixed by 3-epoch SFT adapters; action-type whitelist enforced in `table.py` ACTION_RE; reward exploits eliminated by the v2 engine + PBRS rewards (docs/reward_energy_pbrs.md).
 - **Algorithm stack**: PBRS potential rewards (telescoping-consistent, unfarmable) + optional dora value term; PPO (no critic, KL early stop) or REINFORCE; optional initial-hand covariate baseline. 47 unit tests.
 - **Throughput stack**: batched parallel rollout (near-linear to 24 games), bf16 LoRA on A100 (+55% over nf4), fast-path kernels; per-game cost 525s → 100s (5.2×).
@@ -259,14 +259,6 @@
   90%+、Elo −55。熵奖励的本质是给替代风格续命，不是逐步探索——熵计划要"高原够长+晚降"，不是"平滑低目标"。
   这是"过早锐化卡死 local minimum"的第一个实锤，卡的层级在防守之前（门清/立直）。
 
-## 2026-08-24 候选配方：handset + 恒定低熵 = 自组织分阶段探索（首个"有效 recipe"候选）
-exp31-4ext（handset_xl，熵系数恒定 0.01，无 schedule，2.0M 局）观察到完整的自组织探索周期：
-熵平台 ~0.7（孵化）→ 立直风格成型 → 熵降至 0.51（变现，T1 1044.4@1.6M，超冠军 schedule 配方 1031.9）→
-**熵自发回升 0.52→0.60，第二次转型**（副露率 0.11→0.3、和牌率/速度同步改善）。
-意义：探索节奏不再需要手工 schedule——表达力足够的架构（set-attention）在恒定系数下自己分阶段调配探索。
-反例警示：cnn_xl 同系数崩盘（851.7）→ 该性质是架构相关的，不是"调低系数"就行。
-确认门槛（未过完不许写进 README 结论）：① 2.0M 收官 T1；② exp31-6（cnn_m 恒定格）归因；③ exp35 种子复刻；④ 大模型 exp34 复现。
-
 ## 2026-08-24 教训：验证段→正式段必须换 run 名，guard 删除必须门控在收尾成功上
 `--resume` 续训到正式长度时，**绝不能沿用验证段的 run 名**——旧的 `games_final.pt` 还在同一 GCS 路径，
 `watch_run.sh` 只判文件存在不判局数，resume 后几分钟内就误判 DONE，触发收尾链和删机。
@@ -359,41 +351,6 @@ guard 也不会继续删 VM。
 还有 4.2 s/迭代的固定开销——**复用一个常驻服务器能同时解决两者**，但需要权重热更新路径
 （漏更新 = 用旧策略采样却按新策略算 ratio，静默致命），未做。
 
-## 2026-08-25 派生特征（向听/进张/听牌候选）在从零自对弈中是显著负收益
-exp41 两臂唯一差异是输入是否含预算好的牌效分析：**A（有）924.4 vs B（无）998.3，
-差 −73.9 ≈ 4.8σ**。机制在风格里看得很清楚：拿到向听数 ⇒ 贪心最小化向听 ⇒ 副露最快推进向听
-⇒ **坍塌进副露锁死**（call 95.5% / riichi 1.2%）；没有捷径的一臂被迫学价值，
-自己发现门清立直（riichi 31.6%）且更快更强。
-**规则**：纯血线继续坚持「零派生特征」——这现在有定量证据支持，不只是纯度洁癖。
-未来若有人提议注入领域知识加速学习，先引用这条：**答案写进输入 = 通往局部最优的高速公路**。
-
-## 2026-08-27 exp45：人类牌谱 BC 一天改写三条定论
-
-- **exp10 的「BC 保真度不兑现强度」是弱教师伪象**：自家启发式教师 81-90% 就饱和、测不出架构差异。
-  换凤凰卓人类数据后，BC 精度直接兑现为 Elo（+4pp→+90），精度冠军=强度冠军。诊断性结论受限于
-  数据源难度——教师太弱时"无差异"不可信（与 SKILLS:106 探针要带正对照同理）。
-- **样本效率的量纲**：2000 局人类牌谱 + 30 分钟 BC ≥ 2,000,000 局调优自对弈 RL（cnn_m 1043.6 vs 1052.1；
-  Mortal 设计 1147.4 vs 自身从零 998.3）。人类示范每局的信息量约等于自对弈的千倍。
-- **防守只能从示范来（exp21 结案）**：六个 BC 臂 defense_iq 全过 0.03（历代自对弈最高 0.016）；
-  HRF 0.172 且弃牌随手牌强度条件分化。单局自对弈目标给了防守定价（放铳扣分）但优化路径给不出
-  行为——押退是 ~10 手协调宏观行为，反事实奖励 + 微观探索采不到（同理支持 exp43 的节奏假设）。
-- **从零自对弈下的架构定论不可外推到示范数据 regime**：exp41 判 Mortal 设计 998「不及冠军配方」、
-  exp30/36/37 判 HRF 852-896「架构上限」——同样的网络吃人类数据后一个登顶 1147、一个成防守之王。
-  架构结论必须绑定训练信号源声明。
-- **未收敛不比较**（用户抓的）：固定 4 epochs 会把 ConvFormer（17 epochs 收敛、起跑落后 1.2pp）的
-  H1 信号判成 null。跨架构比较一律用同一早停规则跑到各自平台。
-
-## 2026-08-28 exp49：数据缩放三定论
-
-- **小数据点的架构排序不可外推**：v3r+46 组合在 2000 局垫底（1134.9）、18.4k 局登顶（1191.4 池史新高）。
-  设计比较必须在目标数据量上做终审；10% 筛选只用于淘汰、不用于加冕。
-- **容量叙事第三次阵亡（终审）**：11M SEres 在 9× 数据 + 独立 lr sweep（1e-4/cosine 均 <+0.1pp）后
-  仍全面不敌 2M ConvFormer。本项目范围内"更大=更强"在 BC 与 RL 两个 regime 都不成立，
-  结构（注意力/局部性先验）才是兑现变量。
-- **BC 数据缩放汇率**：10%→100%（9×）= +3.7-4.0pp 精度 = +27~57 Elo = 防守 +0.03-0.07，
-  20k 局未见饱和——数据扩容（10 万局级）是当前最高期望值杠杆，届时回放管线需做 3-5× 优化
-  （解析缓存/4 座共享/小变体物化）。
-
 ## 2026-08-28 exp46 基建教训：torch.where 不隔离未选分支的梯度
 
 KL(π‖π_BC) 写成 `where(finite, p*(logp−alogp), 0)` 时前向有限但反向 NaN——masked 槽的
@@ -413,15 +370,9 @@ KL(π‖π_BC) 写成 `where(finite, p*(logp−alogp), 0)` 时前向有限但反
   （sed 的源路径、grep 的目标串）含有该字符串照样自杀，退出码 144。铁律：**kill 类命令必须
   独立成单条调用**，且调用里不得出现目标字符串的任何明文形态。
 
-## 2026-08-29 资源规则（用户）：本地 GPU 只做小规模测试/debug/benchmark
-
-小时级训练一律云上（launch_g4_git + GCS 数据已就位）。本地保留：冒烟、profile、
-compile 基准、评估批。exp46 双臂在本地各占 ~7h 是本规则的直接起因。
 
 ## 心跳监控的报警时延必须匹配故障时标（2026-08-30）
 今天两次发射期静默死亡（SSH 段静默失败、日志永不出现）都是用户先于监控发现的——旧心跳只有"60 分钟无变化"一档报警，为训练中途卡死设计，对发射失败（~10 分钟内 GCS 必有日志对象，否则即死）完全失聪。规则：**心跳必须分相**——发射相带 15 分钟死线（无日志对象即刻 ALERT），训练相 30 分钟无变化报 STALL；终止标记（DRIVER DONE/failed/Traceback）即时报。另：触发标记必须取被监控日志实际会出现的行（此前"code at <sha>"指纹只存在于本地发射日志，导致心跳整场哑火）。
 
-## exp46 C~J 收官要点（2026-08-30，供状态快照）
-- A/B 的"RL 净毁值"仅适用于修复前的训练器。四条已修病因：①价值梯度经共享 trunk 扰乱策略（修复 `--value_detach`，唯一让 pg_loss 转负的干预）；②熵扩散（噪声追逐的内生熵增；锚是唯一有效熵控制器，熵奖励既不必要也不充分，已默认 0）；③优势对称 clamp 审查放铳尾部（已默认去除）；④**T=1 族内评分对部署强度严重失真**（I：族内 -9 同时贪心头对头 +48）——终审一律 T=0 + 族外梯子 + 半庄 n≥300。
-- 当前最强 RL 产物 exp46-I（league+锚0.3+detach+熵0）：T=0 族外 1196.2 vs bc49 1210.6（-14±20）。**部署冠军仍为 bc49**。北极星再校准：部署协议下 bc49 距 Mortal 仅 ~8±20（T=1 刻度的 27 中 ~19 是采样税）。
-- exp55-D（半庄排位训练）管线已建：残差 W 信用（分盘位验收）、ΔW telescoping 生成器、v3rh 编码器（+3 局间标量，bc49 零列手术热启动）。
+## 实验结果总结的存放地（2026-08-30 起）
+结果类总结一律进 [experiments/FINDINGS.md](experiments/FINDINGS.md)（结果台账）与各 `experiments/*_prereg/EXPERIMENT.md`；本文件只保留教训 / 方法论 / 运维与硬件约束。
