@@ -2,21 +2,37 @@
 
 在这个仓库工作前，必须先读 [SKILLS.md](SKILLS.md)（教训/方法论/硬件约束）和 [README.md](README.md)（架构与运行方式）；当前实验状态看 [experiments/INDEX.md](experiments/INDEX.md) 与 [experiments/FINDINGS.md](experiments/FINDINGS.md)。
 
-## 文档分区（什么写到哪里，2026-08-30 定）
+## 项目地图（顶层目录职责，2026-08-30 审定）
+| 目录 | 职责 | git |
+|---|---|---|
+| `src/` | 库代码（引擎 `src/tasks/mahjong/`、DNN `src/agents/dnn/`）；只放可复用模块 | ✅ |
+| `scripts/` | 入口与驱动（训练/评测/云发射/数据管道）；一次性探针放 scratchpad 不入库 | ✅ |
+| `tests/` | pytest 全部在此；金样本数据 `tests/data/` | ✅ |
+| `experiments/` | 实验记录与工件（细分见下表）；整体 gitignore、记录文件白名单 | 部分 |
+| `docs/` | 长期参考（引擎已知问题、总设计书、GCP 成本、路线图、交接） | ✅ |
+| `data/` | 语料与外部资产（`tenhou/raw`、SFT jsonl、`mortal_ext/`——Mortal 权重不得再分发） | ❌ |
+| `tools/` | 外围工具（majsoul_bridge、tenhou 下载器、webui） | ✅ |
+| `paper/` | 论文素材（`.git/info/exclude` 屏蔽，发布前不入库） | ❌ |
+| `checkpoints/`、`logs/` | LLM 时代遗留工件目录，已冻结，勿新增 | ❌ |
+| 顶层文件 | 仅限：CLAUDE/SKILLS/TASKS/README(.en)/Dockerfile/requirements.txt；**禁止把输出文件丢在顶层** | ✅ |
+
+## 写入规则（什么内容写到哪里）
 | 内容 | 位置 |
 |---|---|
 | 规则（本文件）：唯一权威，别处不重复 | `CLAUDE.md` |
 | 教训 / 方法论 / 运维事故 / 硬件细节（带日期追加） | `SKILLS.md` |
+| 任务队列快照 | `TASKS.md`（指针页，详情在 INDEX/preregs） |
 | 实验一行总账（每个 run 一行，云上 run 也要记） | `experiments/INDEX.md` |
 | 实验结果综合台账 | `experiments/FINDINGS.md` |
 | 系列级预注册 + 进度 + 判决（云 run 的本地记录本体） | `experiments/<系列>_prereg/EXPERIMENT.md` |
-| 本地训练 run（EXPERIMENT.md + config 快照 + 工件） | `experiments/<name>_<时间戳>/` |
+| 本地训练 run 记录（EXPERIMENT.md + `config*.json` 快照，二者必须齐） | `experiments/<name>_<时间戳>/` |
 | 云 run 工件（ckpt/日志/TB） | GCS `gs://llm-mahjong-experiments/<run>/`；本地只镜像 TB 到 `experiments/_cloud_mirror/` |
 | 实验设计文档 | `experiments/designs/` |
-| 历史发射配置（无代码引用的 run config） | `experiments/configs/` |
 | 实验报告（成文版） | `experiments/reports/` |
-| 长期参考（引擎已知问题、总设计书、GCP 成本、路线图） | `docs/` |
-| 论文素材（不入库） | `paper/`（.git/info/exclude 屏蔽） |
+| 历史发射配置（无代码引用的 run config） | `experiments/configs/` |
+| 评测产物（梯子历史/对局存档） | `experiments/elo_league/`（history.jsonl + matches/） |
+| 新脚本的运行时配置 | 命令行 flags + run 目录 config 快照；**不新建顶层 configs/** |
+| 临时文件/一次性探针 | 会话 scratchpad（/tmp/claude-*），不入库 |
 
 ## 关键规则
 - 允许在逻辑里程碑处自动 `git commit`（单一主题、信息清晰）；`git push` 与历史改写须用户确认（已白名单的分支除外）。

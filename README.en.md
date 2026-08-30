@@ -18,7 +18,7 @@ capability-ordering) · [experiments/INDEX.md](experiments/INDEX.md) (experiment
 
 - **Phase 1 (2026-05 to 08-14, archived)**: LLM (Qwen + LoRA) + text rollouts + PBRS/PPO. Verdict: all
   arena results null, returns undecodable from hidden states → line retired. Legacy = the engine, the
-  reward registry, the arena protocol, and the GCP workflow. Archives: docs/report_exp1..exp5,
+  reward registry, the arena protocol, and the GCP workflow. Archives: experiments/reports/report_exp1..exp5,
   `src/core/`, `scripts/phase1_ce/`.
 - **Phase 2 (current)**: small dedicated networks (2–23M params) + tensor encodings + pure self-play PPO.
   One 1.0M-game training run ≈ 85 minutes / ~$3 on a g4-standard-48 flex-start VM.

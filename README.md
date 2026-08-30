@@ -15,7 +15,7 @@
 
 - **Phase 1（2026-05~08-14，已归档）**：LLM（Qwen + LoRA）+ 文本 rollout + PBRS/PPO。
   结论：竞技场全 null、回报不可解码 → 路线退役，遗产 = 引擎、奖励 registry、竞技场协议、GCP 工作流。
-  档案：docs/report_exp1..exp5、`src/core/`、`scripts/phase1_ce/`。
+  档案：experiments/reports/report_exp1..exp5、`src/core/`、`scripts/phase1_ce/`。
 - **Phase 2（当前）**：小型专用网络（2–23M）+ 张量编码 + 纯自对弈 PPO。一条 1.0M 局训练 =
   g4-standard-48 flex 上 ~85 分钟、~$3。
 
