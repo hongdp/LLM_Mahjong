@@ -1,6 +1,6 @@
 """Elo anchor-league rating for DNN mahjong policies.
 
-Design doc: docs/design_elo_league.md. Two modes:
+Design doc: experiments/designs/design_elo_league.md. Two modes:
 
   calibrate  — round-robin among the anchor pool, joint MLE (bc_cnn pinned
                at 1000), writes experiments/elo_league/anchors.json
@@ -103,20 +103,80 @@ def expected(ra, rb):
     return 1.0 / (1.0 + 10 ** ((rb - ra) / 400.0))
 
 
+def play_pair_vector(path_a, path_b, deals, seed0, parallel, device,
+                     temp_a: float = 1.0):
+    """Vectorized duplicate match (perf 2026-08-30): reuses the trainer's
+    batched-GPU rollout (collect_parallel arena mode) instead of the
+    batch-1 per-move arena path — measured ~50x on the rating workload.
+    Orientation rides the seed's low bit; wall seed = seed >> 1.
+    Returns (per-deal scores for A, per-deal point diffs)."""
+    from src.agents.dnn.parallel_rollout import collect_parallel
+    import torch as _t
+    blob = _t.load(path_a, map_location="cpu")
+    net = load_dnn(path_a, "cpu")
+    cfg = dict(channels=blob.get("channels", 64), blocks=blob.get("blocks", 3),
+               arch=blob.get("arch"),
+               temperature=1.0, gamma=1.0, games_per_worker=16,
+               rollout_temps=None, shaping=False, seed=seed0,
+               critic_feats="none", gpu_infer=True, gpu_infer_opponents=True,
+               infer_max_batch=128, infer_wait_ms=0.0, infer_device=device,
+               bf16_infer=False, arena=True, arena_temp_a=temp_a,
+               no_episodes=True, league_frac=1.0,
+               league=[{"name": "B", "path": path_b}],
+               encoder_variant=getattr(net, "encoder_variant", "v1"),
+               action_space=getattr(net, "action_space", "native"))
+    seeds = []
+    for d in range(deals):
+        w = seed0 + d
+        seeds += [w * 2, w * 2 + 1]
+    collect_parallel(net, len(seeds), cfg, parallel, seeds)
+    games = collect_parallel.last_games
+    per_wall = {}
+    for g in games:
+        w = g["seed"] >> 1
+        a_pts = sum(g["points"][p] for p in g["learner_seats"])
+        b_pts = sum(g["points"][p] for p in range(4)
+                    if p not in g["learner_seats"])
+        pa, pb = per_wall.get(w, (0, 0))
+        per_wall[w] = (pa + a_pts, pb + b_pts)
+    scores, diffs = [], []
+    for w in sorted(per_wall):
+        pa, pb = per_wall[w]
+        scores.append(1.0 if pa > pb else 0.0 if pa < pb else 0.5)
+        diffs.append(float(pa - pb))
+    return scores, diffs
+
+
 def play_pair(name_a, path_a, name_b, path_b, deals, seed0, parallel, device,
-              temp_a: float = 1.0):
+              temp_a: float = 1.0, legacy: bool = False):
     """One duplicate-deal match; returns per-deal scores for side A.
     temp_a: the candidate's sampling temperature (anchors always play at
     T=1, their calibration condition); 0 = greedy rating (exp28)."""
     t0 = time.time()
-    policies = {"A": load_dnn(path_a, device), "B": load_dnn(path_b, device)}
-    seeds = [seed0 + i for i in range(deals)]
-    rows = run_match(None, None, seeds, parallel=parallel,
-                     dnn_policies=policies, dnn_device=device,
-                     dnn_temperature={"A": temp_a, "B": 1.0})
-    scores = deal_scores(rows)
-    diffs = [r["diff"] for r in rows]
-    mean = sum(diffs) / len(diffs)
+    def _space(path):
+        import torch as _t
+        from src.agents.dnn.action_space import space_of_arch
+        return space_of_arch(_t.load(path, map_location="cpu").get("arch") or "")
+    fast_ok = (not legacy and str(device).startswith("cuda")
+               and _space(path_a) == _space(path_b))
+    # the batched server hosts one logits tensor per batch, so mixed action
+    # spaces (46-slot candidate vs 374-slot legacy anchors) must fall back
+    if not legacy and not fast_ok:
+        pass  # falls through to the legacy arena path below
+    if fast_ok:
+        scores, diffs = play_pair_vector(path_a, path_b, deals, seed0,
+                                         parallel, device, temp_a)
+        rows = [{"seed": seed0 + i, "diff": diffs[i]} for i in range(len(diffs))]
+        mean = sum(diffs) / len(diffs)
+    else:
+        policies = {"A": load_dnn(path_a, device), "B": load_dnn(path_b, device)}
+        seeds = [seed0 + i for i in range(deals)]
+        rows = run_match(None, None, seeds, parallel=parallel,
+                         dnn_policies=policies, dnn_device=device,
+                         dnn_temperature={"A": temp_a, "B": 1.0})
+        scores = deal_scores(rows)
+        diffs = [r["diff"] for r in rows]
+        mean = sum(diffs) / len(diffs)
     out = {"a": name_a, "b": name_b, "path_a": path_a, "path_b": path_b,
            "deals": deals, "seed0": seed0, "score_a": sum(scores),
            "mean_diff": mean, "elapsed_s": round(time.time() - t0, 1),
