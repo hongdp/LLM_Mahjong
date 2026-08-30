@@ -21,9 +21,9 @@ import torch.nn.functional as F
 from src.agents.dnn.mortal_obs import MORTAL_V3_PLANES
 from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
 from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
-                                    N_PLANES_V1R, N_PLANES_V3R,
+                                    N_PLANES_V1R, N_PLANES_V3R, N_PLANES_V3R2,
                                     N_PLANES_V2, N_PLANES_V3, N_SCALARS,
-                                    N_SCALARS_V3, TILE_TYPES)
+                                    N_SCALARS_V3, N_SCALARS_V3H, TILE_TYPES)
 from src.agents.dnn.net import MahjongPolicyNet, ResBlock
 
 
@@ -343,6 +343,58 @@ class ConvFormer(TilesTransformer):
         return self.norm_f(x)
 
 
+class ConvFormer46(ConvFormer):
+    """ConvFormer trunk with Mortal's 46-slot action head (exp47).
+
+    Structured, not flattened: slots 0..33 score each tile token, 34..36
+    (red fives) re-score the 5m/5p/5s tokens through a red-specific
+    linear, 37..45 (riichi/chi*3/pon/kan/agari/ryukyoku/pass) come off
+    the global token. Heads are zero-initialised to keep exp19's
+    uniform-logits-at-step-0 property.
+    """
+
+
+    def __init__(self, d=160, layers=6, heads=5, in_planes=N_PLANES,
+                 in_scalars=N_SCALARS, encoder_variant="v1"):
+        super().__init__(d, layers, heads, in_planes=in_planes,
+                         in_scalars=in_scalars, encoder_variant=encoder_variant)
+        from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
+        self.action_space = "mortal46"
+        self.action_dim = MORTAL_ACTION_DIM
+        # red-five tokens as a device buffer: a python-list index creates a
+        # CPU tensor every forward, which breaks CUDA graph capture in the
+        # infer server (exp46 launch crash, 2026-08-28)
+        self.register_buffer("red_idx", torch.tensor([4, 13, 22]),
+                             persistent=False)
+        self.slot_tile = nn.Linear(d, 1)
+        self.slot_red = nn.Linear(d, 1)
+        self.slot_global = nn.Linear(d, 9)
+        for m in (self.slot_tile, self.slot_red, self.slot_global):
+            nn.init.zeros_(m.weight); nn.init.zeros_(m.bias)
+
+    def _logits46(self, h):
+        tiles = h[:, 1:, :]                                     # [B,34,d]
+        return torch.cat([
+            self.slot_tile(tiles).squeeze(-1),                  # 0..33
+            self.slot_red(tiles.index_select(1, self.red_idx)).squeeze(-1),  # 34..36
+            self.slot_global(h[:, 0, :]),                       # 37..45
+        ], dim=1)
+
+    def forward(self, planes, scalars, mask):
+        h = self.trunk(planes, scalars)
+        return self._logits46(h).masked_fill(~mask, float("-inf"))
+
+    def forward_with_value(self, planes, scalars, mask, cfeats=None):
+        h = self.trunk(planes, scalars)
+        # value_detach (exp46-H2): critic trains on stopped features so its
+        # gradients never remodel the shared trunk — with EV capped at
+        # ~0.02-0.07 by deal luck, value gradients into the trunk are mostly
+        # noise continuously eroding the policy's representation
+        hv = h.detach() if getattr(self, "value_detach", False) else h
+        return (self._logits46(h).masked_fill(~mask, float("-inf")),
+                self.value_head(hv[:, 0, :]).squeeze(-1))
+
+
 # ----------------------------------------------------------------------
 # exp27: hand-as-a-SET encoder (tile instances, no positional encoding)
 # ----------------------------------------------------------------------
@@ -495,6 +547,22 @@ ZOO.update({
     "mortal_full_xl_pure_m46": (lambda: MortalBackbone(
         192, 40, in_planes=MORTAL_V3_PLANES, encoder_variant="mortal_v3_pure",
         action_space="mortal46", action_dim=MORTAL_ACTION_DIM), False),
+    # exp47 factorial (human-prior lineage): trunk x input x action space
+    "convformer_m_r_m46": (lambda: ConvFormer46(
+        160, 6, 5, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+    "convformer_m_v3r_m46": (lambda: ConvFormer46(
+        160, 6, 5, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3,
+        encoder_variant="v3r"), False),
+    "convformer_m_v3rh_m46": (lambda: ConvFormer46(
+        160, 6, 5, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3H,
+        encoder_variant="v3rh"), False),
+    "convformer_m_v3r2_m46": (lambda: ConvFormer46(
+        160, 6, 5, in_planes=N_PLANES_V3R2, in_scalars=N_SCALARS_V3,
+        encoder_variant="v3r2"), False),
+    "mortal_bb_xl_v3r_m46": (lambda: MortalBackbone(
+        192, 40, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3,
+        encoder_variant="v3r", action_space="mortal46",
+        action_dim=MORTAL_ACTION_DIM), False),
 })
 
 
@@ -568,9 +636,11 @@ class HandRiverFormer(nn.Module):
 
     def __init__(self, d=320, layers=8, heads=8, ctx_layers=2,
                  no_cross=False, no_temporal_pe=False, free_rank_emb=False,
-                 encoder_variant="v4"):
+                 encoder_variant="v4", action_space="native", action_dim=None):
         super().__init__()
         self.encoder_variant = encoder_variant
+        self.action_space = action_space
+        self.action_dim = action_dim if action_dim is not None else ACTION_DIM
         self.in_planes = N_PLANES_V4
         self.d = d
         self.no_cross, self.no_temporal_pe = no_cross, no_temporal_pe
@@ -602,7 +672,8 @@ class HandRiverFormer(nn.Module):
                                      for _ in range(layers)])
         self.ln_out = nn.LayerNorm(d)
         feat = 3 * d
-        self.head = nn.Sequential(nn.Linear(feat, 512), nn.ReLU(), nn.Linear(512, ACTION_DIM))
+        self.head = nn.Sequential(nn.Linear(feat, 512), nn.ReLU(),
+                                  nn.Linear(512, self.action_dim))
         nn.init.zeros_(self.head[-1].weight)
         nn.init.zeros_(self.head[-1].bias)
         self.value = nn.Sequential(nn.Linear(feat, 256), nn.ReLU(), nn.Linear(256, 1))
@@ -715,6 +786,11 @@ class HandRiverFormer(nn.Module):
 
 ZOO.update({
     "hrf_xl_v4": (lambda: HandRiverFormer(320, 8, 8, 2), False),
+    # exp48: pooled 46-slot declare head on the same trunk -- targets the
+    # diagnosed riichi failure (declines to declare; tile choice was right)
+    "hrf_xl_v4_m46": (lambda: HandRiverFormer(
+        320, 8, 8, 2, action_space="mortal46",
+        action_dim=MORTAL_ACTION_DIM), False),
     "hrf_xl_nocross_v4": (lambda: HandRiverFormer(320, 8, 8, 2, no_cross=True), False),
     "hrf_xl_notime_v4": (lambda: HandRiverFormer(320, 8, 8, 2, no_temporal_pe=True), False),
     "hrf_xl_freerank_v4": (lambda: HandRiverFormer(320, 8, 8, 2, free_rank_emb=True), False),

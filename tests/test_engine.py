@@ -772,3 +772,53 @@ class TestRiichiAnkanExactTripletReading(unittest.TestCase):
         # 55m pair + 456m... simplest: 5m in a run, no koutsu -> refused.
         self.assertFalse(_tile_only_as_triplet(
             ['4m', '5m', '6m', '5m', '5m', '2p', '3p', '4p', '6p', '7p', '8p', '1z', '1z', '1z'], '5m', 4))
+
+
+class TestExp45ActionGaps(unittest.TestCase):
+    """Two action-space gaps found by exp45 human-log replay (2026-08-26).
+
+    Both scenarios are verbatim from 凤凰卓 logs where the human's action
+    was legal on tenhou but missing from our legal set."""
+
+    def setUp(self):
+        random.seed(11)
+        self.t = PyMahjongTable()
+
+    def _four_pons(self, pid):
+        self.t.melds[pid] = [
+            {"type": "pon", "tiles": [x] * 3, "opened": True, "from": 1}
+            for x in ('6z', '1m', '1s', '5z')]
+
+    def test_kakan_allowed_with_four_melds(self):
+        # 2026080109gm-...-0ffd660c: toitoi, 4 pons, draws the 4th 1m.
+        self._four_pons(0)
+        rig(self.t, 0, ['1m', '7z'], drawn='1m')
+        self.assertTrue(self.t._can_shouminkan(0, '1m'))
+        self.assertIn('<action type="kan" tile="1m" />',
+                      self.t.get_legal_actions(0))
+        self.t.step(0, '<action type="kan" tile="1m" />')
+        self.t.resolve_pending_kan()                  # chankan window closes
+        self.assertEqual(len(self.t.melds[0]), 4)     # upgraded, not added
+        self.assertEqual(self.t.melds[0][1]["type"], "shouminkan")
+        self.assertEqual(self.t.kan_count, 1)
+
+    def test_kakan_still_capped_by_max_kans(self):
+        self._four_pons(0)
+        rig(self.t, 0, ['1m', '7z'], drawn='1m')
+        self.t.kan_count = self.t.MAX_KANS
+        self.assertFalse(self.t._can_shouminkan(0, '1m'))
+
+    def test_new_meld_kans_still_capped_by_max_melds(self):
+        # ankan as a 5th meld stays impossible
+        self._four_pons(0)
+        rig(self.t, 0, ['7z'] * 4 + ['1m'], drawn='7z')
+        self.assertFalse(self.t._can_ankan(0, '7z'))
+
+    def test_riichi_offered_from_completed_hand(self):
+        # 2026060121gm-...-20043503: complete 2m2m 567m 789m 234s 567s;
+        # the human declines the tsumo and riichis discarding 2s.
+        rig(self.t, 0, ['2m', '2m', '5m', '6m', '7m', '7m', '8m', '9m',
+                        '2s', '3s', '4s', '5s', '6s', '7s'], drawn='2m')
+        acts = self.t.get_legal_actions(0)
+        self.assertIn('<action type="tsumo" />', acts)
+        self.assertIn('<action type="riichi" tile="2s" />', acts)

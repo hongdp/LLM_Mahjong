@@ -40,6 +40,10 @@ from src.agents.dnn.parallel_rollout import (apply_group_baseline,   # noqa: E40
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--init", default=None)
+    ap.add_argument("--bc_anchor", default=None,
+                    help="frozen BC checkpoint; adds bc_kl_coef * KL(pi || pi_BC) "
+                         "to the loss (exp46: keep the human prior while improving)")
+    ap.add_argument("--bc_kl_coef", type=float, default=0.0)
     ap.add_argument("--total_games", type=int, default=600000)
     ap.add_argument("--games_per_iter", type=int, default=2048)
     ap.add_argument("--dup_k", type=int, default=8)
@@ -71,6 +75,20 @@ def main():
                          "opponents; a fraction of deals seats the learner "
                          "against them (design docs/design_league_exp22.md)")
     ap.add_argument("--league_frac", type=float, default=0.5)
+    ap.add_argument("--league_learner_seats", type=int, default=0,
+                    help="fixed learner seat count in league games "
+                         "(0 = legacy random 1-2)")
+    ap.add_argument("--hanchan", action="store_true",
+                    help="exp55-D: rollout full hanchan with the four-seat "
+                         "table {learner T1, greedy twin T0, bc anchor T0, "
+                         "sampled top T0}; per-deal credit = placement-value "
+                         "increments (see --hanchan_w_path). games_per_iter "
+                         "then counts MATCHES (~10 deals each).")
+    ap.add_argument("--hanchan_w_path",
+                    default="experiments/placement_value/w_resid.pt")
+    ap.add_argument("--league_opp_temp", type=float, default=None,
+                    help="sampling temperature for frozen pool seats "
+                         "(None = global temperature; 0 = greedy opponents)")
     ap.add_argument("--bf16_infer", action="store_true",
                     help="bf16 autocast in the rollout inference server "
                          "(2x-ish on attention archs; logits sampled in fp32)")
@@ -102,13 +120,31 @@ def main():
                          "fp32). Local bench 2026-08-24, HRF, B=512: 258.9ms->"
                          "171.3ms (1.51x) and 9.3GB->5.4GB peak activation mem "
                          "(matters most for wide attention archs at real batch)")
+    ap.add_argument("--value_detach", action="store_true",
+                    help="critic trains on detached trunk features (exp46-H2): "
+                         "EV is luck-capped at ~0.02-0.07, so value gradients "
+                         "into the shared trunk are mostly noise that "
+                         "continuously remodels the policy's representation")
+    ap.add_argument("--value_warmup", type=int, default=0,
+                    help="first N optimizer updates of a FRESH run train the "
+                         "critic only (policy/entropy losses zeroed). The "
+                         "--init value head is factory-random and GAE(lambda"
+                         "<1) bootstraps its noise into biased advantages "
+                         "exactly when KL steps are largest (measured: iter-1 "
+                         "KL 0.016 at EV 0.00). No-op on --resume chunks.")
     ap.add_argument("--warmup_updates", type=int, default=0,
                     help="linear LR warmup over N optimizer updates "
                          "(0 = off; transformers in RL want ~1000)")
-    ap.add_argument("--adv_clamp", type=float, default=5.0,
-                    help="normalized-advantage winsorize bound (sigma); a "
-                         "yakuman event sits near 8 sigma, so the 5.0 "
-                         "default caps big-hand policy gradients")
+    ap.add_argument("--adv_clamp", type=float, default=None,
+                    help="optional normalized-advantage winsorize bound "
+                         "(sigma). Default OFF (user decision 2026-08-30): "
+                         "mahjong's negative fat tail IS the fold lesson — a "
+                         "ron mirrors the win as one player's equal-size "
+                         "loss, so censoring it removes exactly the deal-in "
+                         "disasters defense must learn from. Remaining rails: "
+                         "batch-mean over 4096 samples, PPO ratio clip, "
+                         "target_kl early stop. Pass a value only to "
+                         "reproduce historical runs (old default: 5.0).")
     ap.add_argument("--drop_zero_return", action="store_true")
     ap.add_argument("--gae_lambda", type=float, default=None,
                     help="Use GAE(lambda) advantages instead of Monte-Carlo "
@@ -230,6 +266,17 @@ def main():
             hazard=args.critic_feats == "hazard").to(dev)
         if use_cf:
             print(f"🔭 critic_feats: {args.critic_feats}", flush=True)
+    anchor = None
+    if args.bc_anchor:
+        from src.agents.dnn.arch_zoo import ZOO as _ZOO
+        from src.agents.dnn.net import load_compatible
+        anchor = _ZOO[args.arch][0]().to(dev)
+        load_compatible(anchor, torch.load(args.bc_anchor,
+                                           map_location=dev)["state_dict"])
+        anchor.eval()
+        for q in anchor.parameters():
+            q.requires_grad_(False)
+        print(f"⚓ BC anchor {args.bc_anchor} (coef {args.bc_kl_coef})", flush=True)
     if args.init:
         from src.agents.dnn.net import load_compatible
         skipped = load_compatible(net, torch.load(args.init,
@@ -288,12 +335,20 @@ def main():
                 log = []
         print(f"⏩ resume from {args.resume}: {start_games} games, "
               f"{len(log)} log rows kept", flush=True)
-        for r in log:                       # replay history into TensorBoard
-            for k, v in r.items():
-                if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
-                    writer.add_scalar(TB_TAG.get(k, k), float(v), int(r["games"]))
+        # replay history into TensorBoard — but only into a FRESH tb dir.
+        # Chunked drivers resume into the same dir every chunk; replaying
+        # there duplicates the whole curve per event file and TB renders a
+        # sawtooth that "resets to 0 steps" at every chunk boundary.
+        import glob as _glob
+        prior_events = _glob.glob(os.path.join(exp_dir, "tensorboard", "events.*"))
+        if len(prior_events) <= 1:          # just the writer's own new file
+            for r in log:
+                for k, v in r.items():
+                    if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
+                        writer.add_scalar(TB_TAG.get(k, k), float(v), int(r["games"]))
     else:
         save("games_0", 0)
+    net.value_detach = bool(args.value_detach)
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
                temperature=args.temperature, gamma=args.gamma,
                games_per_worker=args.games_per_worker,
@@ -309,13 +364,20 @@ def main():
     if args.league:
         cfg["league"] = json.load(open(args.league))
         cfg["league_frac"] = args.league_frac
-        print(f"🏟 league: {len(cfg['league'])} frozen opponents, frac {args.league_frac}",
+        cfg["league_learner_seats"] = args.league_learner_seats
+        cfg["league_opp_temp"] = args.league_opp_temp
+        cfg["hanchan"] = bool(args.hanchan)
+        cfg["hanchan_w_path"] = args.hanchan_w_path
+        print(f"🏟 league: {len(cfg['league'])} frozen opponents, frac {args.league_frac}, "
+              f"learner seats {args.league_learner_seats or 'rand 1-2'}, "
+              f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
               flush=True)
     if args.gpu_infer:
         print(f"🚀 gpu_infer: batched rollout inference on {args.train_device} "
               f"(max_batch {args.infer_max_batch}, wait {args.infer_wait_ms} ms)", flush=True)
 
     games, it, t0, next_ms = start_games, start_iter, time.time(), 0
+    upd_total = 0
     while next_ms < len(milestones) and milestones[next_ms] <= start_games:
         next_ms += 1
     while games < args.total_games:
@@ -398,12 +460,13 @@ def main():
         else:
             adv_raw = rets - vals
         adv = ((adv_raw - adv_raw[idx_keep].mean())
-               / (adv_raw[idx_keep].std() + 1e-8)).clamp(-args.adv_clamp,
-                                                        args.adv_clamp)
+               / (adv_raw[idx_keep].std() + 1e-8))
+        if args.adv_clamp:
+            adv = adv.clamp(-args.adv_clamp, args.adv_clamp)
 
         net.train()
         t_upd0 = time.time()
-        stop, passes, kls, closs, vloss, hloss = False, 0, [], [], [], []
+        stop, passes, kls, closs, vloss, hloss, bkls = False, 0, [], [], [], [], []
         for ep in range(args.ppo_epochs):
             order = idx_keep[torch.randperm(n_eff, device=dev)]
             pass_kl = []
@@ -428,7 +491,24 @@ def main():
                 safe = torch.where(torch.isfinite(logp), logp, torch.zeros_like(logp))
                 ent = -(logp.exp() * safe).sum(1).mean()
                 vl = torch.nn.functional.mse_loss(v, rets[sel])
-                loss = pg + args.value_coef * vl - ent_alpha * ent
+                in_vwarm = (args.value_warmup and start_games == 0
+                            and upd_total < args.value_warmup)
+                loss = (args.value_coef * vl if in_vwarm else
+                        pg + args.value_coef * vl - ent_alpha * ent)
+                if not in_vwarm and anchor is not None and args.bc_kl_coef > 0:
+                    with torch.no_grad():
+                        alogits, _ = anchor.forward_with_value(
+                            planes[sel], scal[sel], mask[sel],
+                            cfeats=cfe[sel] if use_cf else None)
+                        alogp = torch.log_softmax(alogits.float(), 1)
+                    # sanitize BEFORE the multiply: where() keeps the un-taken
+                    # branch in the graph, so (-inf)-(-inf)=nan on masked slots
+                    # poisons the BACKWARD even though the forward is finite
+                    fin = torch.isfinite(logp) & torch.isfinite(alogp)
+                    diff = torch.where(fin, logp - alogp, torch.zeros_like(logp))
+                    bc_kl = (logp.exp() * diff).sum(1).mean()
+                    loss = loss + args.bc_kl_coef * bc_kl
+                    bkls.append(float(bc_kl.detach()))
                 if args.critic_feats == "hazard":
                     # supervised channel: completion is settled fact, so this
                     # loss is exempt from the on-policy/reuse constraints
@@ -437,6 +517,15 @@ def main():
                     loss = loss + args.hazard_coef * hz
                     hloss.append(hz.item())
                 opt.zero_grad(); loss.backward()
+                if in_vwarm:
+                    # value-only means value-HEAD-only: the head shares the
+                    # trunk, and pure value gradients remodel it against the
+                    # policy with nothing pushing back (measured: warmup v1
+                    # gave iter-1 KL 0.0456, WORSE than no warmup)
+                    for pname, prm in net.named_parameters():
+                        if "value" not in pname and prm.grad is not None:
+                            prm.grad = None
+                upd_total += 1
                 torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
                 if args.warmup_updates:
                     n_upd += 1
@@ -462,6 +551,9 @@ def main():
             ent_after = float(-(lp1.exp() * s1).sum(1).mean())
             ev = float(1 - (rets[idx_keep] - vals[idx_keep]).var()
                        / (rets[idx_keep].var() + 1e-9))
+            ret_std = float(rets[idx_keep].std())
+            v_mean = float(vals[idx_keep].mean())
+            v_std = float(vals[idx_keep].std())
         if args.entropy_auto and args.entropy_floor_schedule:
             knots = sorted((int(g), float(v)) for g, v in
                            (p.split(":") for p in args.entropy_floor_schedule.split(",")))
@@ -490,6 +582,20 @@ def main():
         # comes from the arena, where different policies actually meet.
         update_s = time.time() - t_upd0
         win = sum(1 for r in results if "荣和" in r or "自摸" in r) / max(len(results), 1)
+        hz = getattr(collect_parallel, "last_hanchan", None)
+        if hz:
+            with open(f"{exp_dir}/hanchan_stats.jsonl", "a") as f:
+                f.write(json.dumps({"iter": it, "games": games, "roles": hz})
+                        + "\n")
+            for role, v in hz.items():
+                writer.add_scalar(f"hanchan/uma_{role}", v["mean_uma"], games)
+        lg = getattr(collect_parallel, "last_league", None)
+        if lg:
+            # rollout ratings (exp46-C rev3): learner-vs-pool point-share per
+            # opponent, one jsonl row per iteration; chunk drivers aggregate
+            # these to pick the next pool (strongest = lowest learner_share)
+            with open(f"{exp_dir}/league_stats.jsonl", "a") as f:
+                f.write(json.dumps({"iter": it, "games": games, "vs": lg}) + "\n")
         el = time.time() - t0
         row = {"iter": it, "games": games, "wall_s": round(el, 1),
                "rollout_s": round(rollout_s, 1), "update_s": round(update_s, 1),
@@ -497,6 +603,12 @@ def main():
                "entropy_before": ent_before, "entropy": ent_after,
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
                "explained_var": ev, "win_rate": win,
+               # value-scale context (user 2026-08-30): value_loss is MSE in
+               # squared normalized-reward units — read it against ret_std;
+               # v_std/ret_std is the critic's conservatism ratio
+               "value/ret_std": ret_std, "value/v_mean": v_mean,
+               "value/v_std": v_std,
+               "bc_kl": float(np.mean(bkls)) if bkls else None,
                "entropy_coef": ent_alpha,
                "n_effective": n_eff, "n_raw": int(len(acts))}
         if hloss:

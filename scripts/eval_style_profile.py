@@ -40,6 +40,10 @@ DRAW_TENPAI_RE = re.compile(r"流局 \| 听牌: \[([^\]]*)\]")
 # Human-expert reference bands (Tenhou 鳳凰卓 published aggregates, per-hand).
 # Caveats: humans play full hanchan (orasu/placement distortions, continuing
 # scores); our env is one hand with randomized context. Direction, not decimals.
+# 2026-08-28: if data/tenhou/human_style_reference.json exists (exact values
+# measured from our 20k+ downloaded houou logs by human_style_reference.py),
+# it OVERRIDES these cited bands with mean±95%CI from the very distribution
+# the BC models are trained on. East/South splits live in the same file.
 HUMAN_EXPERT = {
     "agari_rate":      (0.21, 0.25),
     "houjuu_rate":     (0.11, 0.13),
@@ -51,6 +55,25 @@ HUMAN_EXPERT = {
     "draw_tenpai_rate": (0.42, 0.50), # tenpai share at exhaustive draw
     "win_points":      (5800, 6800),  # 平均打点 (here: winner net delta incl. sticks)
 }
+
+_MEASURED = "data/tenhou/human_style_reference.json"
+if os.path.exists(_MEASURED):
+    _m = json.load(open(_MEASURED))["all"]
+    def _band(key, ci):
+        v = _m[key]
+        return (round(v - ci, 4), round(v + ci, 4))
+    HUMAN_EXPERT = {
+        "agari_rate": _band("agari_rate", _m["agari_ci"]),
+        "houjuu_rate": _band("houjuu_rate", _m["houjuu_ci"]),
+        "riichi_rate": _band("riichi_rate", _m["riichi_ci"]),
+        "call_rate": _band("call_rate", _m["call_ci"]),
+        "win_turn": _band("win_turn", 0.05),              # ±1% relative-ish
+        "tenpai_turn": HUMAN_EXPERT["tenpai_turn"],       # not derivable from logs yet
+        "tenpai_rate": HUMAN_EXPERT["tenpai_rate"],
+        "draw_tenpai_rate": _band("draw_tenpai_rate", 0.005),
+        "win_points": _band("win_points", 70.0),
+    }
+    print(f"[ref] measured houou reference loaded ({_m['hands']} hands)")
 
 
 def _worker(args):

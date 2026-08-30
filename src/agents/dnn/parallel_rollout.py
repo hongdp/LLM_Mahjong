@@ -56,7 +56,7 @@ def league_plan(seed, cfg):
     rng = random.Random(int(seed) * 7919 + 17)
     if rng.random() >= frac:
         return list(range(4)), {}
-    n_learner = rng.choice((1, 2))
+    n_learner = int(cfg.get("league_learner_seats") or 0) or rng.choice((1, 2))
     learner = sorted(rng.sample(range(4), n_learner))
     opp = {pid: rng.randrange(len(pool)) for pid in range(4) if pid not in learner}
     return learner, opp
@@ -113,10 +113,15 @@ def _worker(rank, n_games, seeds, state_np, cfg):
             temperature = {p: rng.choice(temps) for p in range(4)}
         else:
             temperature = cfg["temperature"]
+        if opp and cfg.get("league_opp_temp") is not None:
+            if not isinstance(temperature, dict):
+                temperature = {p: temperature for p in range(4)}
+            for pid in opp:
+                temperature[pid] = cfg["league_opp_temp"]
         g = play_game(net, temperature=temperature, device="cpu",
                       deal_seed=seed, shaping=cfg["shaping"],
                       critic_feats=cmode, seat_nets=seat_nets)
-        payload.append(_package_game(g, learner_seats, seed, cfg, cmode, bool(opp)))
+        payload.append(_package_game(g, learner_seats, seed, cfg, cmode, opp))
     return payload
 
 
@@ -141,8 +146,8 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
             tagged = []
             for entry in cfg["league"]:
                 blob = torch.load(entry["path"], map_location="cpu")
-                arch = blob.get("arch") or ""
-                tagged.append(dict(entry, encoder_variant=variant_of_arch(arch)))
+                var = blob.get("encoder_variant") or variant_of_arch(blob.get("arch") or "")
+                tagged.append(dict(entry, encoder_variant=var))
             cfg["league"] = tagged
         n_pl, n_sc = variant_shape(variant)
         K = int(cfg.get("games_per_worker", 1) or 1)
@@ -181,6 +186,42 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
                  game.get("n_discards"), seats=game.get("learner_seats") or range(4),
                  points=game.get("points"), start_points=game.get("start_points"))
     collect_parallel.last_style = agg
+    # rollout ratings (exp46-C rev3): the learner is every pool member's
+    # common opponent, so pairwise point-share vs the learner IS an
+    # Elo-consistent strength order over the pool — for free, no ladder.
+    pool_names = [e.get("name", str(j)) for j, e in enumerate(cfg.get("league") or [])]
+    lg = {}
+    for game in collected:
+        opp = game.get("league") or {}
+        if not isinstance(opp, dict) or not opp:
+            continue
+        pts = game.get("points") or []
+        if len(pts) != 4:
+            continue
+        for L in game.get("learner_seats") or []:
+            for seat, j in opp.items():
+                name = pool_names[j] if j < len(pool_names) else str(j)
+                w, n, d = lg.get(name, (0.0, 0, 0.0))
+                s = 1.0 if pts[L] > pts[seat] else 0.0 if pts[L] < pts[seat] else 0.5
+                lg[name] = (w + s, n + 1, d + (pts[L] - pts[seat]))
+    # share is sign-based (deal-luck robust); mean_diff keeps the magnitude
+    # view so big-hand styles aren't underrated (user 2026-08-29)
+    collect_parallel.last_league = {
+        k: {"learner_share": round(w / n, 4), "n": n,
+            "mean_diff": round(d / n, 1)} for k, (w, n, d) in lg.items()}
+    # exp55-D: per-role hanchan uma (the greedy twin's mean uma is the live
+    # deployment-form rating; learner uma shows the exploration tax)
+    hz = {}
+    for game in collected:
+        h, roles = game.get("hanchan"), game.get("roles")
+        if not h or not roles:
+            continue
+        for role in ("learner", "twin", "bc", "top"):
+            seat = roles[role]
+            u, n = hz.get(role, (0.0, 0))
+            hz[role] = (u + h["uma_points"][seat], n + 1)
+    collect_parallel.last_hanchan = {
+        k: {"mean_uma": round(u / n, 1), "n": n} for k, (u, n) in hz.items()}
     return episodes, results
 
 
@@ -209,7 +250,10 @@ def apply_group_baseline(episodes, gamma: float) -> None:
 
 
 def _package_game(g, learner_seats, seed, cfg, cmode, league):
-    """Compact numpy episodes for one finished game (both worker paths)."""
+    """Compact numpy episodes for one finished game (both worker paths).
+    `league` is the {seat: pool_idx} opponent map ({} for mirror games) —
+    shipped so the trainer can score learner-vs-pool outcomes for free
+    (exp46-C rev3 rollout ratings)."""
     labels = completion_labels(g.result or "") if cmode == "hazard" else None
     eps = []
     for pid in range(4):
@@ -261,6 +305,7 @@ def _package_game(g, learner_seats, seed, cfg, cmode, league):
             ep["hlabels"] = np.array(labels[pid], dtype=np.float32)
         eps.append(ep)
     return {"episodes": eps, "result": g.result or "", "league": league,
+            "hanchan": getattr(g, "hanchan", None),
             "riichi": list(g.riichi or []), "n_melds": list(g.n_melds or []),
             "n_discards": g.n_discards, "learner_seats": sorted(learner_seats),
             "points": list(g.points or []), "start_points": list(g.start_points or [])}
@@ -283,22 +328,65 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
     active = {}            # game idx -> dict(gen, pending, seed, learner, opp, temps)
     _DIAG = {"rpc": 0.0, "rounds": 0, "rows": 0, "t0": time.perf_counter()}
 
+    hanchan_credit = None
+    if cfg.get("hanchan"):
+        from src.tasks.mahjong.hanchan import PlacementCredit
+        hanchan_credit = PlacementCredit(cfg["hanchan_w_path"])
+
+    def hanchan_plan(seed):
+        """exp55-D four-seat table (user spec): learner T=1, greedy twin of
+        the CURRENT weights T=0 (live deployment-form measurement), bc
+        anchor T=0, one sampled top pool member T=0. Seat roles rotate
+        with the match seed; dup replicas share it, so the group-baseline
+        key still compares like with like."""
+        rng = random.Random(int(seed) * 6011 + 3)
+        order = rng.sample(range(4), 4)
+        learner, twin, bc_seat, top_seat = order
+        pool = cfg.get("league") or []
+        # entry 0 is the bc anchor by driver convention; top sampled from rest
+        top_idx = 0 if len(pool) <= 1 else 1 + rng.randrange(len(pool) - 1)
+        opp = {bc_seat: 0, top_seat: top_idx}
+        temps = {learner: cfg["temperature"], twin: 0.0,
+                 bc_seat: 0.0, top_seat: 0.0}
+        roles = {"learner": learner, "twin": twin, "bc": bc_seat,
+                 "top": top_seat, "top_idx": top_idx}
+        return [learner], opp, temps, roles
+
     def start(i):
         seed = seeds[i] if seeds else None
-        learner_seats, opp = league_plan(seed, cfg)
-        if temps_list:
-            rng = random.Random((seed or 0) * 7919 + i)
-            temps = {p: rng.choice(temps_list) for p in range(4)}
+        roles = None
+        if cfg.get("hanchan"):
+            learner_seats, opp, temps, roles = hanchan_plan(seed)
         else:
-            temps = {p: cfg["temperature"] for p in range(4)}
-        gen = play_game_gen(deal_seed=seed, shaping=cfg["shaping"])
+            learner_seats, opp = league_plan(seed, cfg)
+            if temps_list:
+                rng = random.Random((seed or 0) * 7919 + i)
+                temps = {p: rng.choice(temps_list) for p in range(4)}
+            else:
+                temps = {p: cfg["temperature"] for p in range(4)}
+            if opp and cfg.get("league_opp_temp") is not None:
+                # deterministic opponents (exp46-C'a): with frozen pool seats
+                # at T~0, same-wall replicas diverge only through the
+                # learner's own sampling — the dominant line-luck source
+                # (75.9% of return variance measured 2026-08-29) drops out
+                for pid in opp:
+                    temps[pid] = cfg["league_opp_temp"]
+        if cfg.get("hanchan"):
+            from src.tasks.mahjong.hanchan import play_hanchan_gen
+            gen = play_hanchan_gen(seed, shaping=cfg["shaping"],
+                                   credit=hanchan_credit)
+        else:
+            gen = play_game_gen(deal_seed=seed, shaping=cfg["shaping"])
         try:
             table, reqs = next(gen)
         except StopIteration as e:
-            payload.append(_package_game(e.value, learner_seats, seed, cfg, cmode, bool(opp)))
+            pkg = _package_game(e.value, learner_seats, seed, cfg, cmode, opp)
+            pkg["roles"] = roles
+            payload.append(pkg)
             return
         active[i] = {"gen": gen, "table": table, "reqs": reqs, "seed": seed,
-                     "learner": learner_seats, "opp": opp, "temps": temps}
+                     "learner": learner_seats, "opp": opp, "temps": temps,
+                     "roles": roles}
 
     while queue and len(active) < K:
         start(queue.pop(0))
@@ -329,6 +417,9 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                 pl, sc = encode_state(st["table"], pid, variant=var)
             sparse_logs.append(sp_log)
             mask, lookup = _space.mask(actions)
+            if os.environ.get("INFER_DEBUG") and not bool(mask.any()):
+                with open("/tmp/vec_debug.txt", "a") as _f:
+                    _f.write(f"EMPTY vec mask pid={pid} actions={actions!r}\n")
             planes.append(pl); scalars.append(sc); masks.append(mask); lookups.append(lookup)
             temps.append(float(st["temps"][pid])); mids.append(model_id)
         maxp = max(p.shape[0] for p in planes)
@@ -367,6 +458,9 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             f_masks, f_lookups = [], []
             for k, mode in pending:
                 m2, lk2 = _space.mask(rows[k][3], mode=mode)
+                if os.environ.get("INFER_DEBUG") and not bool(m2.any()):
+                    with open("/tmp/vec_debug.txt", "a") as _f:
+                        _f.write(f"EMPTY vec FOLLOWUP mode={mode} actions={rows[k][3]!r}\n")
                 f_masks.append(m2); f_lookups.append(lk2)
             P2 = torch.stack([planes[k] for k, _ in pending])
             S2 = torch.stack([scalars[k] for k, _ in pending])
@@ -402,7 +496,9 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             try:
                 st["table"], st["reqs"] = st["gen"].send(replies[gi])
             except StopIteration as e:
-                payload.append(_package_game(e.value, st["learner"], st["seed"], cfg, cmode, bool(st["opp"])))
+                pkg = _package_game(e.value, st["learner"], st["seed"], cfg, cmode, st["opp"])
+                pkg["roles"] = st.get("roles")
+                payload.append(pkg)
                 del active[gi]
                 if queue:
                     start(queue.pop(0))

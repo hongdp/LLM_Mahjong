@@ -81,7 +81,10 @@ def play_chunk(args):
             vb = ("tenpai" if sh_now <= 0 else "mid" if sh_now == 1 else "weak")
             planes, scalars = encode_state(
                 table, pid, variant=getattr(net, "encoder_variant", "v1"))
-            vmask, _ = legal_mask(actions)
+            # value read must use the net's own action space (46-slot
+            # models crash on the raw 374 mask; exp45 BC eval, 2026-08-27)
+            from src.agents.dnn.action_space import get_space
+            vmask, _ = get_space(net).mask(actions)
             with torch.no_grad():
                 _, vv = net.forward_with_value(planes[None], scalars[None],
                                                vmask[None])

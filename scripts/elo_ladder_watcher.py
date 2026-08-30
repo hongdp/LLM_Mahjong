@@ -94,6 +94,38 @@ def cmd_backfill(args):
         prev = rate_one(p, run_name, games, prev, args, device, writer)
 
 
+def cmd_localwatch(args):
+    """Continuous ladder for a LOCAL run dir (exp46): poll for new
+    milestone checkpoints, rate each once (history-label dedup like
+    watch mode), write elo/rating scalars into the run's TB dir."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    run_name = os.path.basename(args.run_dir.rstrip("/"))
+    writer = tb_writer(run_name)
+    prev, rated = 1000.0, set()
+    if os.path.exists(f"{LEAGUE_DIR}/history.jsonl"):
+        for line in open(f"{LEAGUE_DIR}/history.jsonl"):
+            r = json.loads(line)
+            if r["label"].startswith(f"{run_name}@"):
+                rated.add(int(r["label"].split("@")[1]))
+                prev = r["elo"]
+    while True:
+        ckpts = []
+        for pth in glob.glob(f"{args.run_dir}/games_*.pt"):
+            m = re.match(r"games_(\d+)\.pt", os.path.basename(pth))
+            if m and int(m.group(1)) >= args.min_games \
+                    and int(m.group(1)) not in rated:
+                ckpts.append((int(m.group(1)), pth))
+        for games, pth in sorted(ckpts):
+            prev = rate_one(pth, run_name, games, prev, args, device, writer)
+            rated.add(games)
+        if os.path.exists(f"{args.run_dir}/games_final.pt") and not ckpts:
+            done_marker = f"{args.run_dir}/.ladder_done"
+            if os.path.exists(done_marker):
+                return
+            open(done_marker, "w").write("1")
+        time.sleep(args.poll)
+
+
 def gcs_train_log_games(run):
     try:
         out = subprocess.run(
@@ -154,7 +186,11 @@ def main():
     wa = sub.add_parser("watch")
     wa.add_argument("--gcs_run", required=True)
     wa.add_argument("--poll", type=int, default=600)
-    for p in (bf, wa):
+    lw = sub.add_parser("localwatch")
+    lw.add_argument("--run_dir", required=True)
+    lw.add_argument("--poll", type=int, default=600)
+    lw.set_defaults(fn=cmd_localwatch)
+    for p in (bf, wa, lw):
         for flag, dv in common.values():
             p.add_argument(flag, type=int, default=dv)
         p.add_argument("--allow_engine_mismatch", action="store_true")

@@ -47,8 +47,13 @@ def _meld_event(table, pid: int, before: int, discarder: int, called: str) -> Op
 
 
 def play_game_mjai(table: PyMahjongTable, policies: Dict[int, Policy],
-                   observer: int, sink: Sink, max_steps: int = 600) -> None:
-    """Drive `table` (already reset) to completion, emitting MJAI events."""
+                   observer: Optional[int], sink: Sink, max_steps: int = 600) -> None:
+    """Drive `table` (already reset) to completion, emitting MJAI events.
+
+    observer=None (exp50) emits the FULL-INFORMATION stream — real tsumo
+    pai for every seat and all four tehais — so a caller can fan out
+    per-seat masked views to multiple bots. The single-observer default
+    is byte-identical to the historical behaviour."""
     me = observer
     pending_reach_acc: Optional[int] = None
 
@@ -64,7 +69,7 @@ def play_game_mjai(table: PyMahjongTable, policies: Dict[int, Policy],
     def emit_tsumo(pid: int):
         emit({"type": "tsumo", "actor": pid,
               "pai": (engine_to_mjai(table.last_drawn[pid], red=table.last_drawn_red[pid])
-                      if pid == me else "?")})
+                      if (me is None or pid == me) else "?")})
 
     def emit_new_dora(n_before: int):
         for ind in table.dora_indicators[n_before:]:
@@ -72,11 +77,12 @@ def play_game_mjai(table: PyMahjongTable, policies: Dict[int, Policy],
 
     # ---- start_kyoku ---------------------------------------------------
     tehais = [["?"] * 13 for _ in range(4)]
-    my_hand = table.display_hand(me)              # reds spelled '0x'
-    if me == table.dealer:
-        my_hand.remove("0" + table.last_drawn[me][-1] if table.last_drawn_red[me]
-                       else table.last_drawn[me])
-    tehais[me] = [engine_to_mjai(t) for t in my_hand]
+    for pid in (range(4) if me is None else [me]):
+        hand = table.display_hand(pid)            # reds spelled '0x'
+        if pid == table.dealer:
+            hand.remove("0" + table.last_drawn[pid][-1] if table.last_drawn_red[pid]
+                        else table.last_drawn[pid])
+        tehais[pid] = [engine_to_mjai(t) for t in hand]
     emit({"type": "start_kyoku", "bakaze": _BAKAZE[table.round_wind_idx],
           "dora_marker": engine_to_mjai(table.dora_indicators[0]),
           "honba": 0, "kyoku": table.dealer + 1, "kyotaku": table.kyotaku // 1000,

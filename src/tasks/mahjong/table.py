@@ -632,10 +632,16 @@ class PyMahjongTable(MahjongEngineAPI):
     # ------------------------------------------------------------------
     # Kan legality (RCR 3.4 / 3.5 / 3.6 / 3.7.2 / 3.12 / 3.14)
     # ------------------------------------------------------------------
-    def _kan_allowed(self, player_id: int) -> bool:
-        """Shared preconditions for any kan."""
+    def _kan_allowed(self, player_id: int, new_meld: bool = True) -> bool:
+        """Shared preconditions for any kan.
+
+        `new_meld=False` for shouminkan: it upgrades an existing pon in
+        place, so the meld-count cap does not apply (found 2026-08-26 by
+        exp45 human-log replay: a toitoi hand with 4 pons kakans its pair
+        tile — tenhou-legal, we never offered it)."""
         return (self.kan_count < self.MAX_KANS
-                and len(self.melds[player_id]) < self.MAX_MELDS
+                and (not new_meld
+                     or len(self.melds[player_id]) < self.MAX_MELDS)
                 # RCR 3.14: the haitei drawer may not kan (and there would
                 # be no live tile left to move into the dead wall).
                 and len(self.wall) > 0)
@@ -681,7 +687,7 @@ class PyMahjongTable(MahjongEngineAPI):
                 and self._shanten(tiles + [str_from_34(i)], n_melds) == -1}
 
     def _can_shouminkan(self, player_id: int, tile: str) -> bool:
-        if not self._kan_allowed(player_id):
+        if not self._kan_allowed(player_id, new_meld=False):
             return False
         # RCR 3.12: a riichi hand may only ankan.
         if self.riichi[player_id] or self.last_drawn[player_id] is None:
@@ -748,8 +754,12 @@ class PyMahjongTable(MahjongEngineAPI):
         if (self._is_closed(player_id) and self.points[player_id] >= 1000
                 and drawn and len(self.wall) >= self.RIICHI_MIN_WALL):
             # 14-tile shanten is the best post-discard shanten: if it is
-            # not 0, no discard reaches tenpai -> skip the per-tile scan
-            if self._shanten(hand, n_melds) == 0:
+            # worse than 0, no discard reaches tenpai -> skip the scan.
+            # -1 (completed hand) must pass too: declining the win and
+            # declaring riichi is legal (RCR 3.12 only requires tenpai
+            # after the discard) — 凤凰卓 players do it for ura/ippatsu;
+            # found 2026-08-26 by exp45 human-log replay (5/974k decisions).
+            if self._shanten(hand, n_melds) <= 0:
                 for t in uniq:
                     rest = list(hand)
                     rest.remove(norm_tile(t))
