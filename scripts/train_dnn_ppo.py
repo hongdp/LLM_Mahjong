@@ -541,6 +541,9 @@ def main():
             ent_after = float(-(lp1.exp() * s1).sum(1).mean())
             ev = float(1 - (rets[idx_keep] - vals[idx_keep]).var()
                        / (rets[idx_keep].var() + 1e-9))
+            ret_std = float(rets[idx_keep].std())
+            v_mean = float(vals[idx_keep].mean())
+            v_std = float(vals[idx_keep].std())
         if args.entropy_auto and args.entropy_floor_schedule:
             knots = sorted((int(g), float(v)) for g, v in
                            (p.split(":") for p in args.entropy_floor_schedule.split(",")))
@@ -583,6 +586,11 @@ def main():
                "entropy_before": ent_before, "entropy": ent_after,
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
                "explained_var": ev, "win_rate": win,
+               # value-scale context (user 2026-08-30): value_loss is MSE in
+               # squared normalized-reward units — read it against ret_std;
+               # v_std/ret_std is the critic's conservatism ratio
+               "value/ret_std": ret_std, "value/v_mean": v_mean,
+               "value/v_std": v_std,
                "bc_kl": float(np.mean(bkls)) if bkls else None,
                "entropy_coef": ent_alpha,
                "n_effective": n_eff, "n_raw": int(len(acts))}
