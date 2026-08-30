@@ -9,7 +9,7 @@
 | `scripts/` | 入口与驱动（训练/评测/云发射/数据管道）；一次性探针放 scratchpad 不入库 | ✅ |
 | `tests/` | pytest 全部在此；金样本数据 `tests/data/` | ✅ |
 | `experiments/` | 实验记录与工件（细分见下表）；整体 gitignore、记录文件白名单 | 部分 |
-| `docs/` | 长期参考（引擎已知问题、总设计书、GCP 成本、路线图、交接） | ✅ |
+| `docs/` | 长期参考（**冠军模型卡/部署手册**、引擎已知问题、总设计书、GCP 成本、路线图、交接） | ✅ |
 | `data/` | 语料与外部资产（`tenhou/raw`、SFT jsonl、`mortal_ext/`——Mortal 权重不得再分发） | ❌ |
 | `tools/` | 外围工具（majsoul_bridge、tenhou 下载器、webui） | ✅ |
 | `paper/` | 论文素材（`.git/info/exclude` 屏蔽，发布前不入库） | ❌ |
@@ -25,6 +25,7 @@
 | 实验一行总账（每个 run 一行，云上 run 也要记） | `experiments/INDEX.md` |
 | 实验结果综合台账 | `experiments/FINDINGS.md` |
 | 当前榜单（各刻度权威数字） | `experiments/LEADERBOARD.md`（每次纪元校准后更新） |
+| **现役最强模型怎么配置/怎么跑/要多少资源** | `docs/champion_model.md`（模型卡 + 部署手册 + 冠军版本历史；对外唯一权威） |
 | 系列级预注册 + 进度 + 判决（云 run 的本地记录本体） | `experiments/<系列>_prereg/EXPERIMENT.md` |
 | 本地训练 run 记录（EXPERIMENT.md + `config*.json` 快照，二者必须齐） | `experiments/<name>_<时间戳>/` |
 | 云 run 工件（ckpt/日志/TB） | GCS `gs://llm-mahjong-experiments/<run>/`；本地只镜像 TB 到 `experiments/_cloud_mirror/` |
@@ -44,6 +45,7 @@
 - **心跳分相报警**：发射相 15 分钟死线（GCS 无日志对象即 ALERT）、训练相 30 分钟 STALL、终止标记即时报；触发标记必须取被监控日志实际会出现的行。
 - 本地 GPU（RTX 4080 16GB）只做冒烟/debug/benchmark；小时级训练一律上云。LLM 验证仅 Qwen2.5-0.5B + QLoRA，Gemma 会 OOM。
 - 评测协议：终审一律 T=0 + 族外梯子 + 半庄 n≥300；T=1 族内曲线不得单独下结论。
+- **冠军易主 / 纪元重校 / 部署形态变更 ⇒ 同一 PR 内更新 [docs/champion_model.md](docs/champion_model.md)**（§1 速览、§2 ckpt 路径、§5 配方、§8 历史）+ LEADERBOARD + README(.en) 状态行 + 桥接 runbook 的 ckpt 行，并把新权重上传 `gs://llm-mahjong-experiments/checkpoints/<谱系>/`；加冕判据=双方 T=0 头对头显著为正，梯子分只排名不加冕（T=0 候选对 T=1 锚有系统性高估）。
 - 奖励逻辑必须模块化（registry + BaseRewardModel），不得硬编码进训练循环。
 - kill 命令必须单独成调用且不含目标字符串明文（pkill 自匹配史）；生成代码后必须**独立**跑一次 ast/语法校验。
 - 有新教训/架构决策 → 追加 SKILLS.md（带日期）；有新结果 → FINDINGS.md / 对应 EXPERIMENT.md，不进 SKILLS。

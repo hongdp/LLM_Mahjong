@@ -56,8 +56,8 @@ MC 用 mitmproxy 抓雀魂 websocket（liqi protobuf）→ 翻译成 **MJAI 协�
 |---|---|
 | 代码 | 本仓库（PR #5 之后的 master，或 `pr/majsoul-bridge` 分支） |
 | Python 环境 | `conda activate rlhf_mahjong`（torch + `mahjong` 库 + numpy）；`python -m pytest tests/test_mjai_bridge.py` 应全绿 |
-| checkpoint | 冠军 `experiments/_cloud_ckpts/dnn_exp17c_gae_20260818/games_final.pt`（23 MB，不入 git；无则 `gsutil cp gs://llm-mahjong-experiments/dnn_exp17c_gae_20260818/games_final.pt experiments/_cloud_ckpts/dnn_exp17c_gae_20260818/`） |
-| 硬件 | CPU 即可（20M cnn 单步 <10 ms，默认 `--device cpu`）；GPU 不必要 |
+| checkpoint | 现役冠军 **bc49** = `experiments/_anchors_epoch6/bc49.pt`（8 MB，不入 git；无则 `gsutil cp gs://llm-mahjong-experiments/checkpoints/human_lineage/bc_convformer_m_v3r_m46_best.pt experiments/_anchors_epoch6/bc49.pt`）。模型卡与资源需求见 [docs/champion_model.md](../../docs/champion_model.md)；换冠军时这一行必须同步 |
+| 硬件 | CPU 即可（bc49 单线程 batch-1 ≈ 4.6 ms/决策，默认 `--device cpu`）；GPU 不必要 |
 | 保真自检（可选） | `PYTHONPATH=. python scripts/verify_mjai_bridge.py --ckpt <ckpt> --games 50` 打印 `OK {...}` |
 | 实验目录 | 正式计分前按 ml-experiment-tracking 建 `experiments/exp24_majsoul_live_<ts>/`（预注册见 `experiments/exp24_majsoul_live_prereg/`）；日志与每局 JSON 都落这里 |
 | 启动服务 | 见运行步骤 3；`--temperature 0`（贪心，exp25 证明比 T=1 强 +500 点/副）；`--name` 可设 MC 里显示的模型名 |
@@ -80,7 +80,7 @@ MC 用 mitmproxy 抓雀魂 websocket（liqi protobuf）→ 翻译成 **MJAI 协�
    ```
 3. **启动 agent 服务**（模型机，本仓库根目录，rlhf_mahjong 环境；准备工作见上节「模型机准备」）
    ```bash
-   PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_cloud_ckpts/dnn_exp17c_gae_20260818/games_final.pt --temperature 0 --log experiments/exp24_majsoul_live_<ts>/mjai_session.jsonl
+   PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_anchors_epoch6/bc49.pt --temperature 0 --log experiments/exp24_majsoul_live_<ts>/mjai_session.jsonl
    ```
    `curl localhost:8765/health` 应返回 ok。
 4. **启动 MC**：`python main.py` → 设置 → 模型类型选 `LLM_Mahjong`（URL 默认 127.0.0.1:8765）→ 保存；

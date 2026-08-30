@@ -2,16 +2,20 @@
 
 English | [中文](README.md)
 
-> **EN mirror status (2026-08-30)**: the Chinese README is authoritative and freshly updated.
-> Headlines: two parallel lineages (human-prior = current main carrier, north star = a
-> simple-input-plane model surpassing Mortal; pure self-play unchanged). Deployment champion
-> = **bc49** (human BC flagship): ladder 1191.4 (T=1) / **1210.6±15 at deployment protocol
-> (T=0)**, Majsoul maka S+ twice; real Mortal reference 1218.6 (same protocol) — gap ≈ 8±20.
+> **EN mirror status (2026-08-30)**: the Chinese README is authoritative and freshly updated;
+> the sections below still carry 2026-08-23 wording. Headlines: two parallel lineages
+> (human-prior = current main carrier, north star = a simple-input-plane model surpassing Mortal;
+> pure self-play unchanged). Deployment champion = **bc49** (human BC flagship, 2.00M params /
+> 56 planes / 46 actions): **1189.0 ± 7.9 on the epoch-6 deployment scale**, Majsoul maka S+
+> twice; real Mortal 298k reference 1199.6 ± 8.0 (same protocol) — **gap ≈ 10 ± 11**.
+> **How to configure, run and resource that model: [docs/champion_model.md](docs/champion_model.md)**
+> (model card + deployment runbook + champion version history; §9 is an English quick reference).
 > exp46 C~J fixed four trainer pathologies (value-gradient trunk corruption -> --value_detach,
 > entropy diffusion -> KL anchor, advantage tail censoring -> clamp removed, T=1 in-family
-> metric distortion -> protocol switch); best RL artifact exp46-I reached 1210.0±8.4 = parity.
-> exp55-D hanchan-placement training pipeline is built (residual placement-value W credit,
-> v3rh encoder, four-seat rollout). Pending: epoch-6 opening via PR #8. See
+> metric distortion -> protocol switch); best RL artifact exp46-I ties bc49 (0.5005 head-to-head
+> at T=0 both sides). Epoch 6 is open: engine action-gap fixes merged, 13-anchor recalibration
+> done — current board in [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md). exp55-D
+> hanchan-placement training pipeline is built and ready to launch. See
 > experiments/INDEX.md and experiments/FINDINGS.md.
 
 **North star (goal a)**: inspired by **AlphaZero** — pure self-play with zero human/teacher knowledge. Starting from random initialization, the model must discover the full skill stack
@@ -117,6 +121,8 @@ tools/majsoul_bridge/   # MahjongCopilot plugin (live play = champion greedy; on
 ```bash
 conda activate rlhf_mahjong
 python -m pytest tests -q                        # ~196 tests
+# run the current champion bc49 (Majsoul live-play server, greedy) — full runbook in docs/champion_model.md
+PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_anchors_epoch6/bc49.pt --temperature 0
 # local training (RTX 4080: cnn_m_r ~100 games/s at the trainer level)
 python scripts/train_dnn_ppo.py --arch cnn_m_r --total_games 1000000 --gpu_infer \
   --games_per_worker 32 --infer_max_batch 512 --exp_dir experiments/my_run_$(date +%Y%m%d_%H%M%S)
