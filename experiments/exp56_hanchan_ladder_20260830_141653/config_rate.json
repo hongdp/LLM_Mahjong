@@ -1,0 +1,11 @@
+{
+  "stage": "hanchan_ratings",
+  "unit": "hanchan",
+  "protocol": "candidate T=0 vs anchors T=1 (exact epoch-6 convention, unit swapped)",
+  "matches_per_anchor": 200,
+  "anchors": 13,
+  "seed0_base": 48500000,
+  "seed0_step_per_candidate": 100000,
+  "parallel": 20,
+  "init_guess": 1150.0
+}

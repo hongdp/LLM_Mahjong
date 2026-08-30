@@ -73,6 +73,17 @@ experiments/*/*
 !experiments/reports/*.md
 !experiments/configs/*.json
 !experiments/elo_league/anchors.json
+# a pool file IS a scale definition (which models, which condition, which
+# fingerprints) — it must be reviewable in git even though its matches are not
+!experiments/elo_league/hanchan/
+experiments/elo_league/hanchan/*
+!experiments/elo_league/hanchan/anchors*.json
+# rating system v2: the registry is the identity map (entity -> checkpoint
+# content hash); the match ledger itself stays out of git (it grows without
+# bound and is pure data)
+!experiments/rating/
+experiments/rating/*
+!experiments/rating/registry.json
 
 # IDE agent caches
 .antigravitycli/

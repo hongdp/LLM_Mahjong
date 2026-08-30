@@ -53,27 +53,49 @@ tools/webui/            # 检视台：训练曲线 + 自对弈看板（逐步概
 tools/majsoul_bridge/   # MahjongCopilot 插件（实战 = 冠军贪心；maka/顺位/放铳三把尺之一）
 ```
 
-## 评估体系（三把尺）
+## 评估体系
 
-1. **Elo 锚点池**（`experiments/elo_league/`）：9 锚点 sign-MLE，bc_cnn 钉 1000；纪元 5 现役。
-   **纪元规则**：引擎变更 ⇒ 历史作废、整池重校（引擎指纹守卫）。**评测协议（2026-08-30 定）**：
-   终审一律候选 T=0 + 族外梯子 + 半庄 n≥300；T=1 族内曲线禁止单独下结论（快路径 `play_pair` 同空间 ~23×）。
-2. **半庄刻度**（`src/tasks/mahjong/hanchan.py` + `run_hanchan_arena`）：连庄/本场/流满/uma 全套，
-   1.8× 单局放大；这是裁决刻度。训练侧 = exp55-D 四席桌 + 排位价值 W 逐局归因。
+> **重设计进行中（2026-08-30）**：评分体系 v2 见
+> [experiments/designs/design_rating_system_v2.md](experiments/designs/design_rating_system_v2.md)。
+> 实体 =（checkpoint, 条件）、只追加对局账本、四实体同桌、信息驱动排程、pt 主榜。
+> 入口 `scripts/rating.py`（register / import / schedule / play / fit / board）。
+> **纪元 6 已作废，纪元 7 = v2 首个刻度**。下列为 v1 现役体系（v2 上线前仍是权威数字来源）。
+
+### v1（现役，三把尺）
+
+1. **Elo 锚点池**（`experiments/elo_league/`）：**13 锚点** sign-MLE，bc_cnn 钉 1000；**纪元 6 现役**
+   （2026-08-30 重标，含 bc49/bc51/exp46Cb/exp46I 四个现代 46 槽里程碑，现代评分自此是内插而非外推）。
+   **纪元规则**：引擎变更 ⇒ 历史作废、整池重校（引擎指纹守卫）。
+   **池的标定条件写在池文件里**（`temperature` 字段），`rate` 从池读锚温度——锚必须在自己被标定的
+   条件下应战，否则评分尺子失效（exp56 起结构性保证）。
+   **评测协议（2026-08-30 定）**：终审一律候选 T=0 + 族外梯子 + 半庄 n≥300；T=1 族内曲线禁止单独下结论。
+2. **半庄刻度**（`src/tasks/mahjong/hanchan.py`）：连庄/本场/流满/uma 全套，**这是裁决刻度**。
+   自己的锚池在 `experiments/elo_league/hanchan/`，自己的规则指纹（`hanchan_fingerprint`）——
+   半庄规则住在 `hanchan.py`，引擎指纹管不着它（exp56 教训）。
+   评测走向量化 GPU（`run_elo_league --hanchan`，967 半庄/分，对 batch-1 的 27/分 = 36×）；
+   `run_hanchan_arena` 保留为 batch-1 参照与 Mortal 桥路径，Mortal 评分用
+   `rate_mortal_hanchan.py`（分片并行 + 只打有信息量的锚）。
+   放大系数：like-for-like（同为复式对计分）单局→半庄 **≈2.5×**；exp53 的"1.8×"是跨计分口径的
+   比较产物，已作废。训练侧 = exp55-D 四席桌 + 排位价值 W 逐局归因。
 3. **探针族**：defense_iq、风格剖面（对人类精确参照：agari .212/houjuu .125/riichi .182/call .338）。
 4. **人类刻度**：雀魂实战（贪心）——maka 档位：纯血冠军 C+ → **人类 BC 旗舰 bc49 两轮 S+**。
 
 ## 当前状态（2026-08-30）
 
-- **部署冠军 = bc49**（人类先验谱系，conv×v3r×46 全量 BC）：T=1 梯子 1191.4 / **T=0 部署刻度 1210.6±15**；
-  雀魂 maka 两轮 S+。真 Mortal 参照 1218.6（同协议）——**部署刻度差距 ≈ 8±20**。
+- **部署冠军 = bc49**（人类先验谱系，conv×v3r×46 全量 BC）：纪元 6 单局刻度 **T=0 1189.0±7.9**；
+  雀魂 maka 两轮 S+。真 Mortal 参照 **1199.6±8.0**（同协议）。
+  （重锚前的 1210.6 / 1218.6 是 12 锚外推刻度，已作废。）
 - **纯血谱系冠军 = exp27-A**（不变，1052 池内）。
 - **exp46 C~J 收官**：定位并修复训练器四病因（价值梯度扰乱 trunk→`--value_detach`、熵扩散→KL 锚、
   优势尾部审查→去 clamp、T=1 族内度量失真→换协议）；最强 RL 产物 **exp46-I**（锚×detach）
-  T=0 族外 **1210.0±8.4 = 与冠军统计持平**（首个不毁本金的 RL）。详见
+  纪元 6 单局 T=0 **1198.0±8.0**，对 bc49 双 T=0 头对头 n=1000 = **0.5005±0.0158（完全打平）**。详见
   [experiments/exp46_rl_on_prior_prereg/EXPERIMENT.md](experiments/exp46_rl_on_prior_prereg/EXPERIMENT.md)。
-- **exp55-D 就绪**：半庄排位训练管线全冒烟（残差 W 信用 + v3rh 编码器 + 四席 rollout），待纪元 6 开闸后发射。
-- **待决**：纪元 6（PR #8 = 开闸载体：引擎修复 + 协议切换 + 全体重锚）；exp54 离线 RL 立项待发。
+- **半庄裁决刻度已就位**（exp56，2026-08-30）：向量化 GPU 半庄 **967 场/分**（batch-1 的 36×），
+  全 T=0 部署形态锚池建成。**RL vs BC 终审：exp46I 对 bc49 双 T=0 4000 场 = 0.5141±0.0079，
+  pt +0.85±0.47/人/半庄——打平，非增益。** 权威数字见
+  [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md)。
+- **exp55-D 就绪**：半庄排位训练管线全冒烟（残差 W 信用 + v3rh 编码器 + 四席 rollout），待发射。
+- **待决**：纪元 7（评分体系 v2 首个刻度）；exp54 离线 RL 立项待发。
 
 ## 快速开始
 

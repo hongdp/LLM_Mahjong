@@ -101,6 +101,7 @@
 | 2026-08-30 | exp46I（GCS:exp46I_recipe） | 配方合体(锚+detach+熵0) | **T0族外1210.0±8.4=冠军持平**；熵/KL双稳 | 首个不毁本金RL产物；终审进行中 |
 | 2026-08-30 | exp46J（GCS:exp46J_noanchor） | I的锚消融 | 熵0.445→0.712，终点-15 | 锚=必需件（唯一熵控制器）；从零需EMA锚替身 |
 | 2026-08-29 | exp53（experiments/exp53_hanchan_20260829） | 半庄评测层 | 1.8×放大；Mortal+44=纯聚合 | 半庄刻度就位 |
+| 2026-08-30 | exp56（experiments/exp56_hanchan_ladder_prereg + _20260830_141653） | 半庄刻度向量化 + 纪元 6 榜单重打 + 评分体系 v2 | 向量化半庄 967 场/分（36×，与 batch-1 逐场 uma 完全一致）；I vs bc49 双 T=0 n=4000 **0.5141±0.0079 打平**；全 T=0 半庄池建成；采样税随强度变号（−109…+191）；复式聚合被证明只吹大 Elo 不增信息 | 纪元 6 作废，纪元 7 走 v2（pt 主榜、四实体同桌、信息驱动排程、只追加账本） |
 | 2026-08-30 | exp55-D（experiments/exp55_hanchan_prereg） | 半庄排位训练管线 | W残差分盘位过检；全管线冒烟通过 | 待云driver+发射 |
 | 2026-08-27 | exp48（experiments/exp48_hrf_20260827_084402 + prereg） | HRF 宣告阈值手术 | 立直宣告率 0.426→0.73 修复，Elo 纹丝不动 | 缺点≠瓶颈；HRF 退出旗舰候选 |
 | 2026-08-29 | exp52（experiments/exp52_P3_hrfC_bc + prereg，云） | 三先验并行 RL 对比（P1 bc49/P2 v3r2/P3 hrfC） | P3 hrfC-full BC 完成 acc 0.7961；RL 段被 exp46 判决闸门搁置 | 待 exp46 配方结论后复活或撤销 |

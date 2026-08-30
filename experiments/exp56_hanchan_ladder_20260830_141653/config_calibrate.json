@@ -1,0 +1,15 @@
+{
+  "stage": "hanchan_calibration",
+  "unit": "hanchan",
+  "anchors": 13,
+  "matches_per_pair": 200,
+  "seed0": 48000000,
+  "parallel": 20,
+  "temp_a": 1.0,
+  "temp_b": 1.0,
+  "device": "cuda",
+  "engine_fingerprint": "3c6989db58d91b92",
+  "hanchan_fingerprint": "2417079cb771a525",
+  "git": "e36161a + exp56 worktree patch",
+  "note": "mirrors the epoch-6 single-deal protocol exactly (200 units/pair, all anchors T=1, bc_cnn pinned 1000); only the match unit differs"
+}

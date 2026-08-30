@@ -99,3 +99,54 @@ def test_credit_telescopes_to_uma():
         # in-deal engine step rewards are zero except the settle we replaced,
         # so the sum must telescope exactly (float tolerance only)
         assert abs(total - expect) < 1e-3, (p, total, expect)
+
+
+def test_gen_matches_the_batch1_driver():
+    """exp56: the vectorized-rollout generator and the batch-1 eval driver
+    must produce identical matches. Both seed per deal off the match seed
+    and share MatchState, so a deterministic policy has to yield the same
+    uma — this invariant is what lets the hanchan ladder run on the fast
+    path while Mortal plays the same scale through the mjai driver.
+
+    The policy picks by a content hash of the offered actions, so it is a
+    pure function of the position: any divergence in the walls (or in what
+    either loop offers) changes the choices and the uma. A constant
+    "always actions[0]" policy would NOT work — every deal then ends in an
+    all-noten draw, points never move, and the uma is seed-independent."""
+    import zlib
+
+    from src.tasks.mahjong.hanchan import play_hanchan
+
+    def pick(pid, actions):
+        key = ("%d|" % pid + "|".join(repr(a) for a in actions)).encode()
+        return actions[zlib.crc32(key) % len(actions)]
+
+    def drive_hashed(seed):
+        gen = play_hanchan_gen(seed)
+        tup = next(gen)
+        while True:
+            table, reqs = tup
+            replies = []
+            for pid, actions in reqs:
+                step = DnnStep(planes=torch.zeros(1), scalars=torch.zeros(1),
+                               mask=torch.zeros(1, dtype=torch.bool),
+                               action_idx=0, logprob=0.0)
+                replies.append((step, pick(pid, actions)))
+            try:
+                tup = gen.send(replies)
+            except StopIteration as e:
+                return e.value
+
+    moved = False
+    for seed in (5150, 900001, 20260830):
+        m = drive_hashed(seed)
+        res = play_hanchan({p: (lambda t, pid, actions: pick(pid, actions))
+                            for p in range(4)}, seed)
+        assert m.hanchan["uma_points"] == res.uma_points, seed
+        assert m.hanchan["placements"] == res.placements, seed
+        assert m.hanchan["n_deals"] == len(res.deals), seed
+        moved |= any(u not in (15000, 5000, -5000, -15000)
+                     for u in res.uma_points)
+    # guard against the vacuous case: at least one match must move points,
+    # otherwise the assertions above hold for any wall whatsoever
+    assert moved
