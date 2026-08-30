@@ -100,6 +100,11 @@ def sh(cmd, **kw):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp_dir", required=True)
+    ap.add_argument("--mode", default="",
+                    help="'fixed_bc' = exp46-F environment ablation: all 3 "
+                         "opponent seats are frozen greedy bc49 forever "
+                         "(stationary MDP, no anchor) — can PPO at least "
+                         "learn to exploit a fixed policy?")
     a = ap.parse_args()
     exp = a.exp_dir
     pool = os.path.join(exp, "pool")
@@ -115,7 +120,8 @@ def main():
     league_file = os.path.join(pool, "league.json")
     ratings = {}
     for k in range(1, N_CHUNKS + 1):
-        entries = build_league(pool, init, best, k, ratings)
+        entries = ([{"name": "init", "path": init}] if a.mode == "fixed_bc"
+                   else build_league(pool, init, best, k, ratings))
         json.dump(entries, open(league_file, "w"))
         print(f"chunk {k} pool: {[e['name'] for e in entries]} "
               f"ratings={ratings}", flush=True)
@@ -139,7 +145,8 @@ def main():
                # C'b: KL leash to the BC prior (exp46-B's proven protective
                # dose) — the bias guard the clean T=0 gradients need; the
                # 2x2 cell (T0 x anchor) is exp46-D's operating regime
-               "--bc_anchor", init, "--bc_kl_coef", "0.3",
+               *([] if a.mode == "fixed_bc"
+                  else ["--bc_anchor", init, "--bc_kl_coef", "0.3"]),
                "--games_per_iter", "8192",
                "--league", league_file, "--league_frac", "1.0",
                "--milestones", ",".join(str(i * CHUNK) for i in range(1, N_CHUNKS)),
