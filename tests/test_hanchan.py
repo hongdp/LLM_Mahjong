@@ -66,3 +66,54 @@ def test_nondealer_win_resets_honba_and_rotates():
                "流局 | 听牌: []" + PTS])
     assert dealers(res) == [0, 0, 1]
     assert res.deals[2]["honba"] == 0
+
+
+def run_with_rivers(results, rivers, max_deals=None):
+    orig = H.play_game_mjai
+    seq = list(results)
+    riv = list(rivers)
+
+    def fake(table, policies, observer=None, sink=None):
+        table.result_summary = seq.pop(0)
+        rv = riv.pop(0)
+        if rv:
+            for p, tiles in rv.items():
+                table.river_events[p] = [[t, False, False, False, i]
+                                         for i, t in enumerate(tiles)]
+        return None
+    H.play_game_mjai = fake
+    try:
+        return H.play_hanchan({}, seed=1, max_deals=max_deals or len(results))
+    finally:
+        H.play_game_mjai = orig
+
+
+def test_nagashi_mangan_replaces_tenpai_payment():
+    # seat 2 (non-dealer) nagashi; engine already paid the [玩家2] tenpai
+    # split -- driver must undo it and settle a non-dealer mangan tsumo
+    res = run_with_rivers(
+        ["流局 | 听牌: [玩家2]" + PTS, "流局 | 听牌: []" + PTS],
+        [{2: ["1z", "9m", "1p", "7z"]}, None])
+    pts = res.deals[0]["points_after"]
+    assert pts == [22000, 24000, 30000, 24000]
+    assert sum(pts) == 100000
+
+
+def test_claimed_discard_breaks_nagashi():
+    res = run_with_rivers(
+        ["流局 | 听牌: []" + PTS, "流局 | 听牌: []" + PTS],
+        [{2: ["1z", "9m"]}, None])
+    # mark the discard claimed via a second scripted run
+    orig = H.play_game_mjai
+
+    def fake(table, policies, observer=None, sink=None):
+        table.result_summary = "流局 | 听牌: []" + PTS
+        table.river_events[2] = [["1z", False, False, True, 0]]
+        return None
+    H.play_game_mjai = fake
+    try:
+        res2 = H.play_hanchan({}, seed=1, max_deals=1)
+    finally:
+        H.play_game_mjai = orig
+    assert res.deals[0]["points_after"] != [25000] * 4      # nagashi applied
+    assert res2.deals[0]["points_after"] == [25000] * 4     # claimed -> no nagashi

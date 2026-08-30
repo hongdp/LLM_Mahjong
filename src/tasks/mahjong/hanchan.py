@@ -35,6 +35,19 @@ Policy = Callable[[PyMahjongTable, int, List[str]], str]
 
 UMA = [15000, 5000, -5000, -15000]
 
+YAOCHUU = ({f"{n}{s}" for s in "mps" for n in "19"}
+           | {f"{n}z" for n in "1234567"})
+
+
+def nagashi_players(table) -> List[int]:
+    """流し満貫 candidates at an exhaustive draw: every discard is a
+    terminal/honor ("0x" red fives are fives, so they break it) and none
+    was claimed (river_events[i] = [tile, tsumogiri, riichi, claimed, n])."""
+    return [p for p in range(4)
+            if table.river_events[p]
+            and all(e[0] in YAOCHUU and not e[3]
+                    for e in table.river_events[p])]
+
 
 class HanchanTable(PyMahjongTable):
     """PyMahjongTable that starts from an injected match context."""
@@ -132,11 +145,32 @@ def play_hanchan(policies: Dict[int, Policy], seed: int,
         # 听牌 list, so it must not fall through to the rotate branch
         is_abort = "途中流局" in r
         dealer_tenpai_at_draw = is_abort
+        tenpai_seats: List[int] = []
         if is_draw and not is_abort:
             m = re.search(r"流局 \| 听牌: \[([^\]]*)\]", r)
             if m:
-                dealer_tenpai_at_draw = str(dealer) in [
-                    x.strip().replace("玩家", "") for x in m.group(1).split(",")]
+                tenpai_seats = [int(x.strip().replace("玩家", ""))
+                                for x in m.group(1).split(",") if x.strip()]
+                dealer_tenpai_at_draw = dealer in tenpai_seats
+            # 流し満貫 (driver-side, Tenhou rules): replaces the engine's
+            # tenpai payments with a mangan tsumo; renchan/honba/kyotaku
+            # keep the normal draw semantics.
+            nagashi = nagashi_players(table)
+            if nagashi:
+                nt = len(tenpai_seats)
+                if 0 < nt < 4:                      # undo engine tenpai split
+                    for p in range(4):
+                        if p in tenpai_seats:
+                            points[p] -= 3000 // nt
+                        else:
+                            points[p] += 3000 // (4 - nt)
+                for w in nagashi:
+                    for p in range(4):
+                        if p == w:
+                            continue
+                        pay = 4000 if (w == dealer or p == dealer) else 2000
+                        points[p] -= pay
+                        points[w] += pay
         res.deals.append({"deal": n, "wind": rw, "dealer": dealer,
                           "honba": honba, "result": r,
                           "points_after": list(points)})
