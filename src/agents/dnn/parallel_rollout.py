@@ -201,11 +201,14 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
         for L in game.get("learner_seats") or []:
             for seat, j in opp.items():
                 name = pool_names[j] if j < len(pool_names) else str(j)
-                w, n = lg.get(name, (0.0, 0))
+                w, n, d = lg.get(name, (0.0, 0, 0.0))
                 s = 1.0 if pts[L] > pts[seat] else 0.0 if pts[L] < pts[seat] else 0.5
-                lg[name] = (w + s, n + 1)
+                lg[name] = (w + s, n + 1, d + (pts[L] - pts[seat]))
+    # share is sign-based (deal-luck robust); mean_diff keeps the magnitude
+    # view so big-hand styles aren't underrated (user 2026-08-29)
     collect_parallel.last_league = {
-        k: {"learner_share": round(w / n, 4), "n": n} for k, (w, n) in lg.items()}
+        k: {"learner_share": round(w / n, 4), "n": n,
+            "mean_diff": round(d / n, 1)} for k, (w, n, d) in lg.items()}
     return episodes, results
 
 
