@@ -153,16 +153,9 @@ def play_pair(name_a, path_a, name_b, path_b, deals, seed0, parallel, device,
     temp_a: the candidate's sampling temperature (anchors always play at
     T=1, their calibration condition); 0 = greedy rating (exp28)."""
     t0 = time.time()
-    def _space(path):
-        import torch as _t
-        from src.agents.dnn.action_space import space_of_arch
-        return space_of_arch(_t.load(path, map_location="cpu").get("arch") or "")
-    fast_ok = (not legacy and str(device).startswith("cuda")
-               and _space(path_a) == _space(path_b))
-    # the batched server hosts one logits tensor per batch, so mixed action
-    # spaces (46-slot candidate vs 374-slot legacy anchors) must fall back
-    if not legacy and not fast_ok:
-        pass  # falls through to the legacy arena path below
+    # mixed action spaces are hosted natively since 2026-08-30 (server pads
+    # the batch to the pool's max width), so the fast path is universal
+    fast_ok = not legacy and str(device).startswith("cuda")
     if fast_ok:
         scores, diffs = play_pair_vector(path_a, path_b, deals, seed0,
                                          parallel, device, temp_a)

@@ -45,6 +45,18 @@ def _load_policy_ckpt(path):
     return net.eval()
 
 
+def _pad_stack(items):
+    """Stack rows whose leading dim may differ (mixed encoder variants /
+    action spaces since 2026-08-30): zero-pad every row up to the batch
+    max. Masks pad with False, so padded slots are never legal."""
+    mx = max(x.shape[0] for x in items)
+    out = torch.zeros((len(items), mx) + tuple(items[0].shape[1:]),
+                      dtype=items[0].dtype)
+    for k, x in enumerate(items):
+        out[k, :x.shape[0]] = x
+    return out
+
+
 def league_plan(seed, cfg):
     """Deterministic per-deal composition (exp22): all dup replicas of a deal
     share the SAME seat assignment so the (seed, seat) group-baseline key
@@ -147,7 +159,9 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
             for entry in cfg["league"]:
                 blob = torch.load(entry["path"], map_location="cpu")
                 var = blob.get("encoder_variant") or variant_of_arch(blob.get("arch") or "")
-                tagged.append(dict(entry, encoder_variant=var))
+                from src.agents.dnn.action_space import space_of_arch
+                tagged.append(dict(entry, encoder_variant=var,
+                                   action_space=space_of_arch(blob.get("arch") or "")))
             cfg["league"] = tagged
         n_pl, n_sc = variant_shape(variant)
         K = int(cfg.get("games_per_worker", 1) or 1)
@@ -331,6 +345,12 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
     _space = REGISTRY.get(cfg.get("action_space") or "native", REGISTRY["native"])
     variant = cfg.get("encoder_variant", "v1")
     pool_variant = {j + 1: e.get("encoder_variant", "v1") for j, e in enumerate(cfg.get("league") or [])}
+    # mixed action spaces (2026-08-30): masks, index lookups and follow-up
+    # protocols are per MODEL, not per run — a 374-slot anchor seated against
+    # a 46-slot learner must be masked in its own space
+    pool_space = {j + 1: REGISTRY.get(e.get("action_space") or "native",
+                                      REGISTRY["native"])
+                  for j, e in enumerate(cfg.get("league") or [])}
     temps_list = cfg.get("rollout_temps")
     payload = []
     queue = list(range(n_games))
@@ -439,21 +459,16 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             else:
                 pl, sc = encode_state(st["table"], pid, variant=var)
             sparse_logs.append(sp_log)
-            mask, lookup = _space.mask(actions)
+            mask, lookup = pool_space.get(model_id, _space).mask(actions)
             if os.environ.get("INFER_DEBUG") and not bool(mask.any()):
                 with open("/tmp/vec_debug.txt", "a") as _f:
                     _f.write(f"EMPTY vec mask pid={pid} actions={actions!r}\n")
             planes.append(pl); scalars.append(sc); masks.append(mask); lookups.append(lookup)
             temps.append(float(st["temps"][pid])); mids.append(model_id)
-        maxp = max(p.shape[0] for p in planes)
-        P = torch.zeros(len(rows), maxp, planes[0].shape[1])
-        for k, pl in enumerate(planes):
-            P[k, :pl.shape[0]] = pl
-        maxs = max(sc.shape[0] for sc in scalars)
-        S = torch.zeros(len(rows), maxs)
-        for k, sc in enumerate(scalars):
-            S[k, :sc.shape[0]] = sc
-        M = torch.stack(masks)
+        P = _pad_stack(planes)
+        maxp = P.shape[1]
+        S = _pad_stack(scalars)
+        M = _pad_stack(masks)
         _t0 = time.perf_counter()
         idx, lp = net.act_batch(P, S, M, torch.tensor(temps), torch.tensor(mids, dtype=torch.int32))
         _DIAG["rpc"] += time.perf_counter() - _t0; _DIAG["rounds"] += 1; _DIAG["rows"] += len(rows)
@@ -473,24 +488,24 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         ]
         pending = []
         for k, (gi, ri, pid, actions, model_id, var) in enumerate(rows):
-            mode = _space.follow_up(int(idx[k]), actions)
+            mode = pool_space.get(rows[k][4], _space).follow_up(int(idx[k]), actions)
             if mode is not None:
                 pending.append((k, mode))
         follow = {}
         if pending:
             f_masks, f_lookups = [], []
             for k, mode in pending:
-                m2, lk2 = _space.mask(rows[k][3], mode=mode)
+                m2, lk2 = pool_space.get(rows[k][4], _space).mask(rows[k][3], mode=mode)
                 if os.environ.get("INFER_DEBUG") and not bool(m2.any()):
                     with open("/tmp/vec_debug.txt", "a") as _f:
                         _f.write(f"EMPTY vec FOLLOWUP mode={mode} actions={rows[k][3]!r}\n")
                 f_masks.append(m2); f_lookups.append(lk2)
-            P2 = torch.stack([planes[k] for k, _ in pending])
-            S2 = torch.stack([scalars[k] for k, _ in pending])
+            P2 = _pad_stack([planes[k] for k, _ in pending])
+            S2 = _pad_stack([scalars[k] for k, _ in pending])
             if P2.shape[1] < maxp:
                 P2 = torch.nn.functional.pad(P2, (0, 0, 0, maxp - P2.shape[1]))
             idx2, lp2 = net.act_batch(
-                P2, S2, torch.stack(f_masks),
+                P2, S2, _pad_stack(f_masks),
                 torch.tensor([temps[k] for k, _ in pending]),
                 torch.tensor([mids[k] for k, _ in pending], dtype=torch.int32))
             for j, (k, _mode) in enumerate(pending):
