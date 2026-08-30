@@ -58,10 +58,17 @@ logs/
 # artifacts — checkpoints, tensorboard event files, rollout transcripts.
 experiments/*
 !experiments/INDEX.md
+!experiments/FINDINGS.md
+!experiments/designs/
+!experiments/reports/
+!experiments/configs/
 !experiments/*/
 experiments/*/*
 !experiments/*/EXPERIMENT.md
 !experiments/*/config*.json
+!experiments/designs/*.md
+!experiments/reports/*.md
+!experiments/configs/*.json
 
 # IDE agent caches
 .antigravitycli/

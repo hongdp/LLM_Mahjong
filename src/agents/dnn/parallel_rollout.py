@@ -186,6 +186,7 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
                  game.get("n_discards"), seats=game.get("learner_seats") or range(4),
                  points=game.get("points"), start_points=game.get("start_points"))
     collect_parallel.last_style = agg
+    collect_parallel.last_games = collected
     # rollout ratings (exp46-C rev3): the learner is every pool member's
     # common opponent, so pairwise point-share vs the learner IS an
     # Elo-consistent strength order over the pool — for free, no ladder.
@@ -250,6 +251,14 @@ def apply_group_baseline(episodes, gamma: float) -> None:
 
 
 def _package_game(g, learner_seats, seed, cfg, cmode, league):
+    if cfg.get("no_episodes"):
+        return {"episodes": [], "result": g.result or "", "league": league,
+                "hanchan": getattr(g, "hanchan", None),
+                "riichi": list(g.riichi or []), "n_melds": list(g.n_melds or []),
+                "n_discards": g.n_discards,
+                "learner_seats": sorted(learner_seats),
+                "points": list(g.points or []),
+                "start_points": list(g.start_points or []), "seed": seed}
     """Compact numpy episodes for one finished game (both worker paths).
     `league` is the {seat: pool_idx} opponent map ({} for mirror games) —
     shipped so the trainer can score learner-vs-pool outcomes for free
@@ -352,10 +361,23 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                  "top": top_seat, "top_idx": top_idx}
         return [learner], opp, temps, roles
 
+    def arena_plan(seed):
+        """Duplicate-match eval (perf 2026-08-30): orientation lives in the
+        seed's low bit (wall seed = seed >> 1). A occupies (0,2) or (1,3);
+        B (league entry 0) fills the rest at T=1, A at cfg arena_temp_a."""
+        orient = seed & 1
+        a_seats = [0, 2] if orient == 0 else [1, 3]
+        opp = {p: 0 for p in range(4) if p not in a_seats}
+        temps = {p: (float(cfg.get("arena_temp_a", 1.0)) if p in a_seats
+                     else 1.0) for p in range(4)}
+        return a_seats, opp, temps, None
+
     def start(i):
         seed = seeds[i] if seeds else None
         roles = None
-        if cfg.get("hanchan"):
+        if cfg.get("arena"):
+            learner_seats, opp, temps, roles = arena_plan(seed)
+        elif cfg.get("hanchan"):
             learner_seats, opp, temps, roles = hanchan_plan(seed)
         else:
             learner_seats, opp = league_plan(seed, cfg)
@@ -376,7 +398,8 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             gen = play_hanchan_gen(seed, shaping=cfg["shaping"],
                                    credit=hanchan_credit)
         else:
-            gen = play_game_gen(deal_seed=seed, shaping=cfg["shaping"])
+            wall_seed = (seed >> 1) if cfg.get("arena") else seed
+            gen = play_game_gen(deal_seed=wall_seed, shaping=cfg["shaping"])
         try:
             table, reqs = next(gen)
         except StopIteration as e:
