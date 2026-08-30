@@ -66,3 +66,36 @@ def test_full_rotation_structure():
     assert m.hanchan["n_deals"] == 8
     assert m.points == [25000, 25000, 25000, 25000]
     assert not m.hanchan["busted"]
+
+
+def test_credit_telescopes_to_uma():
+    import os
+    import pytest
+    w_path = "experiments/placement_value/w_resid.pt"
+    if not os.path.exists(w_path):
+        pytest.skip("W artifact not present")
+    from src.tasks.mahjong.hanchan import PlacementCredit, play_hanchan_gen
+    from src.tasks.mahjong.table import PyMahjongTable
+    credit = PlacementCredit(w_path)
+    rng = random.Random(555)
+    gen = play_hanchan_gen(555, credit=credit)
+    tup = next(gen)
+    while True:
+        table, reqs = tup
+        replies = [(DnnStep(planes=torch.zeros(1), scalars=torch.zeros(1),
+                            mask=torch.zeros(1, dtype=torch.bool),
+                            action_idx=0, logprob=0.0), rng.choice(a))
+                   for _, a in reqs]
+        try:
+            tup = gen.send(replies)
+        except StopIteration as e:
+            m = e.value
+            break
+    scale = PyMahjongTable.REWARD_SCALE
+    for p in range(4):
+        total = sum(s.reward for s in m.trajectories[p])
+        w0 = credit.w(p, [25000] * 4, 0, 0, 0, 0, 8)
+        expect = (m.hanchan["uma_points"][p] - w0) * scale
+        # in-deal engine step rewards are zero except the settle we replaced,
+        # so the sum must telescope exactly (float tolerance only)
+        assert abs(total - expect) < 1e-3, (p, total, expect)

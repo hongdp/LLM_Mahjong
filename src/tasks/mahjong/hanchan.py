@@ -242,7 +242,7 @@ class TrainHanchanTable(HanchanTable):
 
 
 def play_hanchan_gen(match_seed: int, shaping: bool = False,
-                     max_deals: int = 24):
+                     max_deals: int = 24, credit=None):
     """Vectorized-rollout hanchan (exp46-D): chains per-deal
     play_game_gen through the shared MatchState via `yield from`, so the
     worker-side protocol is IDENTICAL to a single deal — just longer.
@@ -264,6 +264,9 @@ def play_hanchan_gen(match_seed: int, shaping: bool = False,
         random.seed(match_seed * 1000003 + ms.n)
         table = TrainHanchanTable(dealer, rw, points, kyotaku)
         table.text_obs = False
+        if credit is not None:
+            w_before = [credit.w(p, points, dealer, rw, ms.honba, kyotaku,
+                                 max(1, 9 - ms.n)) for p in range(4)]
         g = yield from play_game_gen(shaping=shaping, table=table)
         ms.settle(table)
         last_deal = ms.done
@@ -272,6 +275,24 @@ def play_hanchan_gen(match_seed: int, shaping: bool = False,
             if not last_deal:
                 for st in steps:
                     st.is_terminal = False
+            if credit is not None and steps:
+                # exp55-D per-deal credit: replace the engine's raw point
+                # reward on the deal's last step with the placement-weighted
+                # increment W(after)-W(before); the FINAL deal instead pays
+                # true_uma - W(before) so credits telescope exactly to uma
+                from src.tasks.mahjong.table import PyMahjongTable as _T
+                steps[-1].reward -= (table.final_rewards[p]
+                                     if table.final_rewards else 0.0)
+                if not last_deal:
+                    w_after = credit.w(p, ms.points, ms.dealer, ms.rw,
+                                       ms.honba, ms.kyotaku,
+                                       max(1, 9 - ms.n - 1))
+                    steps[-1].reward += ((w_after - w_before[p])
+                                         * _T.REWARD_SCALE)
+                else:
+                    match._pending_final_credit = getattr(
+                        match, "_pending_final_credit", {})
+                    match._pending_final_credit[p] = w_before[p]
             match.trajectories[p].extend(steps)
         deal_facts.append({
             "result": g.result or "", "riichi": list(g.riichi or []),
@@ -280,10 +301,14 @@ def play_hanchan_gen(match_seed: int, shaping: bool = False,
             "start_points": list(g.start_points or [])})
     res = ms.result()
     scale = PyMahjongTable.REWARD_SCALE
+    pend = getattr(match, "_pending_final_credit", None)
     for p in range(4):
         if match.trajectories[p]:
             last = match.trajectories[p][-1]
-            last.reward += res.uma_points[p] * scale
+            if pend is not None and p in pend:
+                last.reward += (res.uma_points[p] - pend[p]) * scale
+            else:
+                last.reward += res.uma_points[p] * scale
             last.is_terminal = True
     final = deal_facts[-1] if deal_facts else {}
     match.result = final.get("result", "")
@@ -297,3 +322,48 @@ def play_hanchan_gen(match_seed: int, shaping: bool = False,
                      "uma_points": res.uma_points, "busted": res.busted,
                      "n_deals": len(res.deals)}
     return match
+
+
+class PlacementCredit:
+    """W(state) = rank-uma analytic + MLP residual (exp55-D). Feature
+    layout MUST match extract_placement_states.py. Lazy per-process."""
+
+    def __init__(self, w_path: str):
+        self.w_path = w_path
+        self._net = None
+
+    def _load(self):
+        import torch
+        from scripts.train_placement_value import PlacementValue
+        blob = torch.load(self.w_path, map_location="cpu")
+        net = PlacementValue(d_in=blob["d_in"])
+        net.load_state_dict(blob["state_dict"])
+        net.eval()
+        self._net = net
+
+    def w(self, me: int, points, dealer: int, rw: int, honba: int,
+          kyotaku: int, deals_left: float) -> float:
+        import torch
+        if self._net is None:
+            self._load()
+        rel = [points[(me + k) % 4] for k in range(4)]
+        drel = (dealer - me) % 4
+        round_idx = rw * 4 + (dealer % 4)   # approximation; extractor used
+        # tenhou seed round which equals rw*4 + dealer-rotation count
+        x = ([v / 1e5 for v in rel]
+             + [round_idx / 8.0, honba / 8.0, kyotaku / 4000.0]
+             + [1.0 if drel == k else 0.0 for k in range(4)]
+             + [deals_left / 8.0])
+        import numpy as np
+        xa = np.array([x], dtype=np.float32)
+        base = float(_rank_uma_single(rel))
+        with torch.no_grad():
+            _, u = self._net(torch.from_numpy(xa))
+        return base + float(u[0]) * 1000.0
+
+
+def _rank_uma_single(rel_points) -> float:
+    """rank_uma_baseline for one row: UMA by current order (ties favour
+    self) + own delta from 25k."""
+    self_rank = sum(1 for v in rel_points[1:] if v > rel_points[0])
+    return UMA[self_rank] + (rel_points[0] - 25000.0)
