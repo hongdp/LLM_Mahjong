@@ -103,10 +103,12 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
     net = hosted                    # list of (runner, n_planes, n_scalars, n_act)
     widths = {h[3] for h in hosted}
     if len(widths) > 1:
-        raise ValueError(
-            f"hosted models disagree on action width {sorted(widths)}; a league "
-            "pool must share one action space (the batched logits tensor is "
-            "allocated once per batch)")
+        # mixed action spaces (2026-08-30): the batch tensor is allocated at
+        # the pool's MAX width and every model writes only its own columns;
+        # the rest stay -inf so sampling can never select a slot outside the
+        # acting model's space (indices are interpreted per seat by that
+        # model's own adapter, so no cross-space translation is needed).
+        print(f"🔀 mixed action spaces hosted: {sorted(widths)}", flush=True)
     gen = torch.Generator(device=device)
     gen.manual_seed(int(cfg.get("seed", 0)) * 31337 + 7)
     ready.set()
@@ -168,19 +170,21 @@ def _serve(shared, req_q, events, net, device, max_batch, wait_s, gen, cfg=None)
             mids = shared.model_id[idx]
             t = shared.temp[idx].to(device)
             t3 = time.perf_counter()
-            # every hosted model must agree on action width here: a batch mixes
-            # rows from different model_ids into one logits tensor. League pools
-            # of mixed action spaces are rejected at startup (see below).
-            act_dim = net[0][3]
-            logits = torch.empty(len(ids_np), act_dim, device=device)
+            # rows from different model_ids share one logits tensor sized at
+            # the pool's max action width; a narrower model fills its own
+            # columns and leaves the tail at -inf (never sampled)
+            act_dim = max(h[3] for h in net)
+            logits = torch.full((len(ids_np), act_dim), float("-inf"),
+                                device=device)
             for mid in torch.unique(mids).tolist():
                 sel = torch.nonzero(mids == mid, as_tuple=True)[0]
-                runner, n_pl, n_sc, _ = net[mid]
+                runner, n_pl, n_sc, n_act = net[mid]
                 sub = idx[sel]
                 p = shared.planes[sub, :n_pl].to(device, non_blocking=True)
                 s = shared.scalars[sub, :n_sc].to(device, non_blocking=True)
-                m = shared.mask[sub, :act_dim].to(device, non_blocking=True)
-                logits[sel] = runner(p, s, m)
+                m = shared.mask[sub, :n_act].to(device, non_blocking=True)
+                logits[sel.unsqueeze(1), torch.arange(n_act, device=device)] = \
+                    runner(p, s, m)
             greedy = t <= 0
             logb = torch.log_softmax(logits / t.clamp(min=1e-6)[:, None], dim=1)
             probs = torch.nan_to_num(logb.exp(), nan=0.0)

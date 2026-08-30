@@ -24,6 +24,7 @@
 | 任务队列快照 | `TASKS.md`（指针页，详情在 INDEX/preregs） |
 | 实验一行总账（每个 run 一行，云上 run 也要记） | `experiments/INDEX.md` |
 | 实验结果综合台账 | `experiments/FINDINGS.md` |
+| 当前榜单（各刻度权威数字） | `experiments/LEADERBOARD.md`（每次纪元校准后更新） |
 | 系列级预注册 + 进度 + 判决（云 run 的本地记录本体） | `experiments/<系列>_prereg/EXPERIMENT.md` |
 | 本地训练 run 记录（EXPERIMENT.md + `config*.json` 快照，二者必须齐） | `experiments/<name>_<时间戳>/` |
 | 云 run 工件（ckpt/日志/TB） | GCS `gs://llm-mahjong-experiments/<run>/`；本地只镜像 TB 到 `experiments/_cloud_mirror/` |

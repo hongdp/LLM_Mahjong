@@ -3,8 +3,8 @@ set -uo pipefail
 cd /home/hongdp/Workspace/LLM_Mahjong
 DIR=experiments/exp51_20260828_203354
 CACHE=data/tenhou/cache_v3r2_m46
-echo "=== MATERIALIZE start $(date) ==="
-conda run --no-capture-output -n rlhf_mahjong python scripts/materialize_bc.py \
+skip() { :; }; echo "=== SKIP-MATERIALIZE-done start $(date) ==="
+true skip-materialize \
   --variant v3r2 --action_space mortal46 --out $CACHE --workers 14 \
   || { echo "!!! MATERIALIZE FAILED"; exit 1; }
 echo "=== v3r2 BC full (cached) start $(date) ==="

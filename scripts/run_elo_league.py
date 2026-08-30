@@ -39,6 +39,15 @@ ANCHOR_POOL = {
     "bcrl14_600":  "experiments/_cloud_ckpts/dnn_exp14_bcvit_rl_20260816/games_final.pt",
     # epoch-4 promotion (2026-08-23): batch-1 champion, first epoch-3-native anchor
     "exp27A_1M":   "experiments/_cloud_ckpts/dnn_exp27_A_cnn_m_r_20260823/games_final.pt",
+    # epoch-6 promotions (2026-08-30): the human-prior lineage's frozen
+    # milestones. Mixed action spaces are hosted natively now, so 46-slot
+    # models can anchor alongside the legacy 374-slot pool — this turns
+    # every modern rating from an extrapolation above the old top anchor
+    # (1111) into an interpolation inside the pool.
+    "bc49":        "experiments/_anchors_epoch6/bc49.pt",
+    "bc51_v3r2":   "experiments/_anchors_epoch6/bc51_v3r2.pt",
+    "exp46Cb":     "experiments/_anchors_epoch6/exp46Cb_gen10.pt",
+    "exp46I":      "experiments/_anchors_epoch6/exp46I_gen10.pt",
 }
 PINNED = ("bc_cnn", 1000.0)   # scale origin, fixed forever
 
@@ -104,7 +113,7 @@ def expected(ra, rb):
 
 
 def play_pair_vector(path_a, path_b, deals, seed0, parallel, device,
-                     temp_a: float = 1.0):
+                     temp_a: float = 1.0, temp_b: float = 1.0):
     """Vectorized duplicate match (perf 2026-08-30): reuses the trainer's
     batched-GPU rollout (collect_parallel arena mode) instead of the
     batch-1 per-move arena path — measured ~50x on the rating workload.
@@ -121,6 +130,7 @@ def play_pair_vector(path_a, path_b, deals, seed0, parallel, device,
                critic_feats="none", gpu_infer=True, gpu_infer_opponents=True,
                infer_max_batch=128, infer_wait_ms=0.0, infer_device=device,
                bf16_infer=False, arena=True, arena_temp_a=temp_a,
+               arena_temp_b=temp_b,
                no_episodes=True, league_frac=1.0,
                league=[{"name": "B", "path": path_b}],
                encoder_variant=getattr(net, "encoder_variant", "v1"),
@@ -153,16 +163,9 @@ def play_pair(name_a, path_a, name_b, path_b, deals, seed0, parallel, device,
     temp_a: the candidate's sampling temperature (anchors always play at
     T=1, their calibration condition); 0 = greedy rating (exp28)."""
     t0 = time.time()
-    def _space(path):
-        import torch as _t
-        from src.agents.dnn.action_space import space_of_arch
-        return space_of_arch(_t.load(path, map_location="cpu").get("arch") or "")
-    fast_ok = (not legacy and str(device).startswith("cuda")
-               and _space(path_a) == _space(path_b))
-    # the batched server hosts one logits tensor per batch, so mixed action
-    # spaces (46-slot candidate vs 374-slot legacy anchors) must fall back
-    if not legacy and not fast_ok:
-        pass  # falls through to the legacy arena path below
+    # mixed action spaces are hosted natively since 2026-08-30 (server pads
+    # the batch to the pool's max width), so the fast path is universal
+    fast_ok = not legacy and str(device).startswith("cuda")
     if fast_ok:
         scores, diffs = play_pair_vector(path_a, path_b, deals, seed0,
                                          parallel, device, temp_a)
@@ -252,7 +255,8 @@ def cmd_calibrate(args):
              for n in names}
     os.makedirs(LEAGUE_DIR, exist_ok=True)
     json.dump({"pinned": PINNED, "deals_per_pair": args.deals,
-               "seed0": args.seed0, "date": args.date,
+               "seed0": args.seed0,
+               "date": args.date or time.strftime("%Y-%m-%d %H:%M:%S"),
                "engine": engine_stamp(), "anchors": table},
               open(f"{LEAGUE_DIR}/anchors.json", "w"), indent=1)
     for n in sorted(names, key=lambda x: -ratings[x]):
@@ -318,6 +322,8 @@ def main():
     ca.add_argument("--deals", type=int, default=200)
     ca.add_argument("--seed0", type=int, default=20260816)
     ca.add_argument("--parallel", type=int, default=20)
+    ca.add_argument("--date", default=None,
+                    help="label written into anchors.json (default: now)")
     ca.set_defaults(fn=cmd_calibrate)
     ra = sub.add_parser("rate")
     ra.add_argument("--ckpt", required=True)
