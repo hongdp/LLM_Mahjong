@@ -32,7 +32,8 @@
 | 历史发射配置（无代码引用的 run config） | `experiments/configs/` |
 | 评测产物（梯子历史/对局存档） | `experiments/elo_league/`（history.jsonl + matches/） |
 | 新脚本的运行时配置 | 命令行 flags + run 目录 config 快照；**不新建顶层 configs/** |
-| 临时文件/一次性探针 | 会话 scratchpad（/tmp/claude-*），不入库 |
+| 一次性探针/评测输出（json/log 工件） | `experiments/probes/`（gitignored） |
+| 临时文件/脚本草稿 | 会话 scratchpad（/tmp/claude-*），不入库 |
 
 ## 关键规则
 - 允许在逻辑里程碑处自动 `git commit`（单一主题、信息清晰）；`git push` 与历史改写须用户确认（已白名单的分支除外）。
