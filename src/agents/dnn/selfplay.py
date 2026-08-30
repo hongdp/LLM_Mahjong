@@ -285,17 +285,22 @@ def returns_to_go(steps: List[DnnStep], gamma: float) -> List[float]:
 # into a single inference RPC. Game logic is identical to play_game.
 # ----------------------------------------------------------------------
 def play_game_gen(deal_seed: Optional[int] = None, randomize_round: bool = True,
-                  shaping: bool = False, seat_model: Optional[dict] = None):
+                  shaping: bool = False, seat_model: Optional[dict] = None,
+                  table: Optional[PyMahjongTable] = None):
     """Yields (table, [(pid, actions), ...]); `.send()` the list of
     (DnnStep, action_str) back in the same order. Returns the DnnGame.
     seat_model: {pid: model_id} (league); the caller routes each request.
+    table: pre-built table (hanchan rollout injects a HanchanTable that
+    carries match context); when given, deal_seed/randomize_round are
+    ignored — the caller owns the RNG and the table.
     Note: random.seed(deal_seed) must be applied by the caller right before
     the table is built (done here) — K interleaved games share the global
     RNG, so the engine's forced-discard fallback is the only later use."""
-    if deal_seed is not None:
-        random.seed(deal_seed)
-    table = PyMahjongTable(randomize_round=randomize_round)
-    table.text_obs = False
+    if table is None:
+        if deal_seed is not None:
+            random.seed(deal_seed)
+        table = PyMahjongTable(randomize_round=randomize_round)
+        table.text_obs = False
     game = DnnGame()
     guard = 0
     while not table.finished and guard < 600:

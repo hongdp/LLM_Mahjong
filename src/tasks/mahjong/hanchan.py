@@ -104,25 +104,33 @@ class HanchanResult:
         self.busted = False
 
 
-def play_hanchan(policies: Dict[int, Policy], seed: int,
-                 max_deals: int = 24) -> HanchanResult:
-    random.seed(seed)
-    res = HanchanResult()
-    points = [25000, 25000, 25000, 25000]
-    dealer, rw, honba, kyotaku = 0, 0, 0, 0
-    start_dealer = 0
-    n = 0
-    while n < max_deals:
-        n += 1
-        # deterministic per-deal wall, distinct across deals
-        random.seed(seed * 1000003 + n)
-        table = HanchanTable(dealer, rw, points, kyotaku)
-        table.text_obs = False
-        play_game_mjai(table, policies, observer=None, sink=lambda ev: None)
+class MatchState:
+    """Between-deal match bookkeeping — ONE implementation shared by the
+    eval driver (play_hanchan) and the training rollout generator, so
+    renchan/honba/kyotaku/nagashi/bust rules can never diverge."""
 
-        r = table.result_summary or ""
+    def __init__(self, max_deals: int = 24):
+        self.points = [25000, 25000, 25000, 25000]
+        self.dealer, self.rw, self.honba, self.kyotaku = 0, 0, 0, 0
+        self.start_dealer = 0
+        self.n = 0
+        self.max_deals = max_deals
+        self.done = False
+        self.busted = False
+        self.deals: List[dict] = []
+
+    def begin_deal(self):
+        """Returns the HanchanTable context for the next deal."""
+        self.n += 1
+        return self.dealer, self.rw, self.points, self.kyotaku
+
+    def settle(self, table) -> None:
+        """Consume a finished deal's table and advance the match."""
         import re
-        winners = [int(m) for m in re.findall(r"玩家(\d)\s*(?:自摸|荣和|抢杠)", r)]
+        r = table.result_summary or ""
+        dealer, honba = self.dealer, self.honba
+        winners = [int(m) for m in
+                   re.findall(r"玩家(\d)\s*(?:自摸|荣和|抢杠)", r)]
         dealt_in = re.search(r"放铳:玩家(\d)", r)
         points = list(table.points)
         # driver-side honba payments (engine has no honba)
@@ -137,7 +145,7 @@ def play_hanchan(policies: Dict[int, Policy], seed: int,
                         if p != w:
                             points[w] += 100 * honba
                             points[p] -= 100 * honba
-        kyotaku = table.kyotaku if not winners else 0   # engine pays winner
+        self.kyotaku = table.kyotaku if not winners else 0
         dealer_won = any(w == dealer for w in winners)
         is_draw = not winners
         # 途中流局 (four winds / four riichi / four kans): dealer always
@@ -171,31 +179,121 @@ def play_hanchan(policies: Dict[int, Policy], seed: int,
                         pay = 4000 if (w == dealer or p == dealer) else 2000
                         points[p] -= pay
                         points[w] += pay
-        res.deals.append({"deal": n, "wind": rw, "dealer": dealer,
-                          "honba": honba, "result": r,
-                          "points_after": list(points)})
+        self.points = points
+        self.deals.append({"deal": self.n, "wind": self.rw, "dealer": dealer,
+                           "honba": honba, "result": r,
+                           "points_after": list(points)})
         if min(points) < 0:                             # bust ends the match
-            res.busted = True
-            break
+            self.busted = True
+            self.done = True
+            return
         if dealer_won or (is_draw and dealer_tenpai_at_draw):
-            honba += 1                                  # renchan
+            self.honba += 1                             # renchan
         else:
-            honba = honba + 1 if is_draw else 0
-            dealer = (dealer + 1) % 4
-            if dealer == start_dealer:
-                if rw >= 1:                             # completed South 4
-                    break
-                rw += 1
-        if rw >= 2:                                     # safety (no 西入 in v1)
-            break
-    if kyotaku:                                          # leftovers to 1st
-        top = rank_order(points, start_dealer)[0]
-        points[top] += kyotaku
-    res.final_points = points
-    order = rank_order(points, start_dealer)
-    res.placements = [0] * 4
-    for rank, seat in enumerate(order):
-        res.placements[seat] = rank + 1
-    res.uma_points = [points[s] - 25000 + UMA[res.placements[s] - 1]
-                      for s in range(4)]
-    return res
+            self.honba = self.honba + 1 if is_draw else 0
+            self.dealer = (self.dealer + 1) % 4
+            if self.dealer == self.start_dealer:
+                if self.rw >= 1:                        # completed South 4
+                    self.done = True
+                    return
+                self.rw += 1
+        if self.rw >= 2 or self.n >= self.max_deals:    # safety (no 西入)
+            self.done = True
+
+    def result(self) -> HanchanResult:
+        res = HanchanResult()
+        res.deals = self.deals
+        res.busted = self.busted
+        points = list(self.points)
+        if self.kyotaku:                                # leftovers to 1st
+            top = rank_order(points, self.start_dealer)[0]
+            points[top] += self.kyotaku
+        res.final_points = points
+        order = rank_order(points, self.start_dealer)
+        res.placements = [0] * 4
+        for rank, seat in enumerate(order):
+            res.placements[seat] = rank + 1
+        res.uma_points = [points[s] - 25000 + UMA[res.placements[s] - 1]
+                          for s in range(4)]
+        return res
+
+
+def play_hanchan(policies: Dict[int, Policy], seed: int,
+                 max_deals: int = 24) -> HanchanResult:
+    random.seed(seed)
+    ms = MatchState(max_deals)
+    while not ms.done:
+        dealer, rw, points, kyotaku = ms.begin_deal()
+        # deterministic per-deal wall, distinct across deals
+        random.seed(seed * 1000003 + ms.n)
+        table = HanchanTable(dealer, rw, points, kyotaku)
+        table.text_obs = False
+        play_game_mjai(table, policies, observer=None, sink=lambda ev: None)
+        ms.settle(table)
+    return ms.result()
+
+
+class TrainHanchanTable(HanchanTable):
+    """HanchanTable for TRAINING rollouts: the per-deal RANK_BONUS is
+    zeroed — placement pressure arrives once, as the real uma at match
+    end — so the reward is pure point delta inside deals. Subclass attr
+    only; the engine file stays byte-identical."""
+    RANK_BONUS = [0.0, 0.0, 0.0, 0.0]
+
+
+def play_hanchan_gen(match_seed: int, shaping: bool = False,
+                     max_deals: int = 24):
+    """Vectorized-rollout hanchan (exp46-D): chains per-deal
+    play_game_gen through the shared MatchState via `yield from`, so the
+    worker-side protocol is IDENTICAL to a single deal — just longer.
+
+    Trajectories accumulate across deals into one DnnGame per match;
+    intermediate deal ends are NOT terminal (credit flows across the
+    match, gamma applies over the whole trajectory) and each seat's last
+    step gets the real uma (+-15k/+-5k * REWARD_SCALE) as the terminal
+    placement signal. `game.deals` carries per-deal facts for style
+    aggregation at per-deal semantics."""
+    from src.agents.dnn.selfplay import play_game_gen, DnnGame
+    from src.tasks.mahjong.table import PyMahjongTable
+
+    ms = MatchState(max_deals)
+    match = DnnGame()
+    deal_facts = []
+    while not ms.done:
+        dealer, rw, points, kyotaku = ms.begin_deal()
+        random.seed(match_seed * 1000003 + ms.n)
+        table = TrainHanchanTable(dealer, rw, points, kyotaku)
+        table.text_obs = False
+        g = yield from play_game_gen(shaping=shaping, table=table)
+        ms.settle(table)
+        last_deal = ms.done
+        for p in range(4):
+            steps = g.trajectories[p]
+            if not last_deal:
+                for st in steps:
+                    st.is_terminal = False
+            match.trajectories[p].extend(steps)
+        deal_facts.append({
+            "result": g.result or "", "riichi": list(g.riichi or []),
+            "n_melds": list(g.n_melds or []), "n_discards": g.n_discards,
+            "points": list(g.points or []),
+            "start_points": list(g.start_points or [])})
+    res = ms.result()
+    scale = PyMahjongTable.REWARD_SCALE
+    for p in range(4):
+        if match.trajectories[p]:
+            last = match.trajectories[p][-1]
+            last.reward += res.uma_points[p] * scale
+            last.is_terminal = True
+    final = deal_facts[-1] if deal_facts else {}
+    match.result = final.get("result", "")
+    match.points = res.final_points
+    match.riichi = final.get("riichi", [False] * 4)
+    match.n_melds = final.get("n_melds", [0] * 4)
+    match.n_discards = final.get("n_discards", 0)
+    match.start_points = [25000] * 4
+    match.deals = deal_facts
+    match.hanchan = {"placements": res.placements,
+                     "uma_points": res.uma_points, "busted": res.busted,
+                     "n_deals": len(res.deals)}
+    return match
