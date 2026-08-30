@@ -59,6 +59,7 @@ logs/
 experiments/*
 !experiments/INDEX.md
 !experiments/FINDINGS.md
+!experiments/LEADERBOARD.md
 !experiments/elo_league/
 !experiments/elo_league/anchors.json
 !experiments/designs/
