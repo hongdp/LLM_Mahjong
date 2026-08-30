@@ -10,6 +10,8 @@
 
 **必读**：[CLAUDE.md](CLAUDE.md)（规则+项目地图）· [SKILLS.md](SKILLS.md)（教训/硬件）·
 [experiments/INDEX.md](experiments/INDEX.md)（总账）· [experiments/FINDINGS.md](experiments/FINDINGS.md)（结果台账）
+**要跑最强模型**：[docs/champion_model.md](docs/champion_model.md)（冠军模型卡：配置 / 四种跑法 / 资源需求 / 版本历史）·
+[experiments/LEADERBOARD.md](experiments/LEADERBOARD.md)（现行榜单）
 
 ## 两个阶段
 
@@ -43,7 +45,7 @@ src/agents/dnn/
 scripts/
 ├── train_dnn_ppo.py    # PPO 训练器（GAE λ=0.95、dup_k=8 复式牌 leave-one-out 基线、熵时间表/
 │                       #   目标熵对偶控制、混合温度行为策略 logprob、--gpu_infer、style/* TB 指标）
-├── run_elo_league.py   # Elo 锚点池（纪元 4 = 9 员，含引擎指纹守卫、--temperature 贪心评分）
+├── run_elo_league.py   # Elo 锚点池（纪元 6 = 13 员，混动作空间同池，含引擎指纹守卫、--temperature 贪心评分）
 ├── elo_ladder_watcher.py / watch_run.sh   # 训练中阶梯评分 + 心跳（每个长跑任务必挂）
 ├── probe_defense.py / probe_decomposition.py / probe_conditional_entropy.py / eval_style_profile.py
 │                       # 探针族：防守 IQ / 牌效拆分 / 条件熵曲线 / 风格（--vs_anchors 生态无关读数）
@@ -55,7 +57,7 @@ tools/majsoul_bridge/   # MahjongCopilot 插件（实战 = 冠军贪心；maka/�
 
 ## 评估体系（三把尺）
 
-1. **Elo 锚点池**（`experiments/elo_league/`）：9 锚点 sign-MLE，bc_cnn 钉 1000；纪元 5 现役。
+1. **Elo 锚点池**（`experiments/elo_league/`）：13 锚点 sign-MLE，bc_cnn 钉 1000；纪元 6 现役。
    **纪元规则**：引擎变更 ⇒ 历史作废、整池重校（引擎指纹守卫）。**评测协议（2026-08-30 定）**：
    终审一律候选 T=0 + 族外梯子 + 半庄 n≥300；T=1 族内曲线禁止单独下结论（快路径 `play_pair` 同空间 ~23×）。
 2. **半庄刻度**（`src/tasks/mahjong/hanchan.py` + `run_hanchan_arena`）：连庄/本场/流满/uma 全套，
@@ -65,21 +67,26 @@ tools/majsoul_bridge/   # MahjongCopilot 插件（实战 = 冠军贪心；maka/�
 
 ## 当前状态（2026-08-30）
 
-- **部署冠军 = bc49**（人类先验谱系，conv×v3r×46 全量 BC）：T=1 梯子 1191.4 / **T=0 部署刻度 1210.6±15**；
-  雀魂 maka 两轮 S+。真 Mortal 参照 1218.6（同协议）——**部署刻度差距 ≈ 8±20**。
-- **纯血谱系冠军 = exp27-A**（不变，1052 池内）。
+- **部署冠军 = bc49**（人类先验谱系，conv×v3r×46 全量 BC，2.00M 参数 / 56 平面 / 46 动作）：
+  纪元 6 部署刻度 **1189.0 ± 7.9**，雀魂 maka 两轮 S+；真 Mortal 298k 参照 1199.6 ± 8.0（同协议）
+  ——**北极星差距 ≈ 10 ± 11**。怎么配置、怎么跑、要多少机器 → [docs/champion_model.md](docs/champion_model.md)。
+- **纯血谱系冠军 = exp27-A**（不变，纪元 6 池内 1064.5）。
 - **exp46 C~J 收官**：定位并修复训练器四病因（价值梯度扰乱 trunk→`--value_detach`、熵扩散→KL 锚、
   优势尾部审查→去 clamp、T=1 族内度量失真→换协议）；最强 RL 产物 **exp46-I**（锚×detach）
   T=0 族外 **1210.0±8.4 = 与冠军统计持平**（首个不毁本金的 RL）。详见
   [experiments/exp46_rl_on_prior_prereg/EXPERIMENT.md](experiments/exp46_rl_on_prior_prereg/EXPERIMENT.md)。
-- **exp55-D 就绪**：半庄排位训练管线全冒烟（残差 W 信用 + v3rh 编码器 + 四席 rollout），待纪元 6 开闸后发射。
-- **待决**：纪元 6（PR #8 = 开闸载体：引擎修复 + 协议切换 + 全体重锚）；exp54 离线 RL 立项待发。
+- **纪元 6 已开闸并完成重校**（引擎动作缺口修复合并 + T=0 协议 + 13 锚全体重锚 + 混动作空间原生托管）：
+  完整榜单见 [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md)。
+- **exp55-D 就绪**：半庄排位训练管线全冒烟（残差 W 信用 + v3rh 编码器 + 四席 rollout），待发射。
+- **待决**：exp54 离线 RL 立项；数据扩容（10 万局级，当前最高期望值杠杆）。
 
 ## 快速开始
 
 ```bash
 conda activate rlhf_mahjong
 python -m pytest tests -q                        # ~196 项
+# 跑现役冠军 bc49（雀魂实战服务，T=0 贪心）——完整手册见 docs/champion_model.md
+PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_anchors_epoch6/bc49.pt --temperature 0
 # 本地训练（4080 实测 cnn_m_r ~100 局/s 训练口径）
 python scripts/train_dnn_ppo.py --arch cnn_m_r --total_games 1000000 --gpu_infer \
   --games_per_worker 32 --infer_max_batch 512 --exp_dir experiments/my_run_$(date +%Y%m%d_%H%M%S)
