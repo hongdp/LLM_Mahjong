@@ -133,7 +133,7 @@ def main():
                "--gpu_infer", "--gpu_infer_opponents",
                "--games_per_worker", "32", "--infer_max_batch", "128",
                "--lr", "6e-5", "--warmup_updates", "150",
-               "--entropy_coef", "0.003", "--gae_lambda", "0.95",
+               "--entropy_coef", "0", "--gae_lambda", "0.95",
                # learner fixed at 1 seat (user 2026-08-29): 3 opponent seats
                # per game, zero learner-learner correlation; 1 trajectory per
                # game means 8192 games/iter restores mirror's 8192 episodes
