@@ -64,8 +64,10 @@ python -m pytest tests -q            # ~196 项，全绿再上牌桌
 ```bash
 PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_anchors_epoch6/bc49.pt --temperature 0 --log experiments/majsoul_sessions/bc49_$(date +%Y%m%d_%H%M%S)/mjai_session.jsonl
 ```
-HTTP 服务默认 `127.0.0.1:8765`（**无鉴权，不要暴露到公网**）；MahjongCopilot 插件安装、Windows 打牌机、
-留底与计分脚本见 [tools/majsoul_bridge/README.md](../tools/majsoul_bridge/README.md)。
+HTTP 服务默认 `127.0.0.1:8765`（**无鉴权，不要暴露到公网**）。完整接入流程见
+[tools/majsoul_bridge/README.md](../tools/majsoul_bridge/README.md)（MahjongCopilot 插件、两种模式、留底与计分），
+**Windows 打牌机**（三处补丁 + 排障速查）见 [tools/majsoul_bridge/WINDOWS.md](../tools/majsoul_bridge/WINDOWS.md)，
+六步速览在 [README.md 的「雀魂实战测试」](../README.md#雀魂实战测试windows-打牌机)。
 使用第三方自动化工具违反雀魂 ToS，有封号风险。
 
 ### 4.2 头对头竞技场（复式牌，单局刻度）

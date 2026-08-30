@@ -96,5 +96,49 @@ bash scripts/phase2_dnn/launch_g4_git.sh my-vm us-central1-b my_run $(git rev-pa
 conda run -n rlhf_mahjong python tools/webui/server.py --port 8642   # 检视台
 ```
 
+## 雀魂实战测试（Windows 打牌机）
+
+人类刻度（maka 档位 / 顺位 / 放铳）只能在真实对局上读出来。标准拓扑是**两台机**——模型机跑本仓库与
+checkpoint，打牌机（Windows）跑 [MahjongCopilot](https://github.com/latorc/MahjongCopilot)（MC）+ Chrome，
+两者用 SSH 隧道连起来；单机部署（两者同一台）也完全可行。
+
+```
+打牌机 Windows 11: MC + 插件 ── mitmproxy:10999 ──► Chrome(雀魂)
+                       └─ bot_llmmahjong ──► 127.0.0.1:8765 ──ssh -L 隧道──► 模型机: serve_mjai_bot.py
+```
+
+1. **模型机**（Linux，本仓库根目录）启动 agent 服务，冠军 + 贪心：
+   ```bash
+   PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_anchors_epoch6/bc49.pt \
+     --temperature 0 --log experiments/exp24_majsoul_live_$(date +%Y%m%d_%H%M%S)/mjai_session.jsonl
+   ```
+   `curl localhost:8765/health` 返回 ok 即就绪。服务**无鉴权、只监听 127.0.0.1**，不要暴露到公网。
+2. **打牌机装 MC**（PowerShell；机器上的老 conda 不要用）：
+   ```powershell
+   winget install Python.Python.3.12 --scope user
+   git clone https://github.com/latorc/MahjongCopilot $env:USERPROFILE\MahjongCopilot
+   cd $env:USERPROFILE\MahjongCopilot; python -m venv venv; .\venv\Scripts\pip install -r requirements.txt; .\venv\Scripts\playwright install chromium
+   ```
+3. **打三处 Windows 补丁 + 装我们的 bot 插件**（补丁基于 MC `31be3de` 验证过）：
+   ```powershell
+   git apply <本仓库>\tools\majsoul_bridge\mahjongcopilot_windows.patch
+   python <本仓库>\tools\majsoul_bridge\install.py $env:USERPROFILE\MahjongCopilot
+   ```
+   三处补丁分别解决 Windows 上必踩的三个坑：Playwright 自带 Chromium 的 SxS 报错（改用系统 Chrome）、
+   雀魂 46 MB wasm 被 mitmproxy 缓冲导致黑屏（大响应流式透传）、mitm 根证书要管理员（改装当前用户存储）。
+4. **开隧道**（打牌机，常驻）：`ssh -N -L 8765:127.0.0.1:8765 <模型机>`；MC 侧 URL 保持 `http://127.0.0.1:8765`。
+5. **配置并启动 MC**：`settings.json` 里 `"model_type": "LLM_Mahjong"`、`"llmmahjong_url": "http://127.0.0.1:8765"`、
+   `"ai_randomize_choice": 0`；`enable_automation` = `false` 辅助模式（自己点，面板看概率/V）、`true` 自动打牌（正式计分）。
+   启动：`cd $env:USERPROFILE\MahjongCopilot; .\venv\Scripts\python.exe main.py` → 启动浏览器 → 登录雀魂。
+6. **验收 + 计分**：先在友人房跑一局，确认 MC 日志里每个 `Bot in: tsumo` 都有 `Bot out: dahai`、`no op list` 为 0；
+   打完在模型机上 `python scripts/analyze_majsoul_session.py <session>.jsonl` 出顺位/和牌/放铳/立直/副露。
+
+**详细 runbook**：[tools/majsoul_bridge/README.md](tools/majsoul_bridge/README.md)（通用流程、两种模式、牌局留底格式、协议坑）
+· [tools/majsoul_bridge/WINDOWS.md](tools/majsoul_bridge/WINDOWS.md)（Windows 实录：三处补丁的现象与根因、
+新版 Unity 客户端兼容、`spawn UNKNOWN` / 黑屏 / 证书 / 「主进程发生错误!」排障速查表）
+· [docs/champion_model.md](docs/champion_model.md)（用哪个 ckpt、要多少资源）。
+
+> **风险**：使用第三方自动化工具违反雀魂服务条款，**存在封号风险**，只用可承受损失的账号。
+
 **纪律**（CLAUDE.md 强制）：任何 run 先写 `EXPERIMENT.md`（目的/方法/成功标准）再发射；发射后核对吞吐符合预期；
 每个长跑任务挂心跳；VM 用完即删；奖励逻辑走 registry；新教训追加 SKILLS.md。

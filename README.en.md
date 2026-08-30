@@ -132,6 +132,61 @@ bash scripts/phase2_dnn/launch_g4_git.sh my-vm us-central1-b my_run $(git rev-pa
 conda run -n rlhf_mahjong python tools/webui/server.py --port 8642   # inspection console
 ```
 
+## Live Majsoul testing (Windows play machine)
+
+The human-scale yardstick (in-game "maka" grade, placement, deal-in rate) can only be read from real
+games. Standard topology is **two machines**: the model machine runs this repo plus the checkpoint, the
+play machine (Windows) runs [MahjongCopilot](https://github.com/latorc/MahjongCopilot) (MC) + Chrome, and
+an SSH tunnel connects them. A single-machine setup (both on the same box) works just as well.
+
+```
+Windows play machine: MC + plugin ── mitmproxy:10999 ──> Chrome (Majsoul)
+                          └─ bot_llmmahjong ──> 127.0.0.1:8765 ──ssh -L tunnel──> model machine: serve_mjai_bot.py
+```
+
+1. **Model machine** (Linux, repo root) — champion, greedy:
+   ```bash
+   PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_anchors_epoch6/bc49.pt \
+     --temperature 0 --log experiments/exp24_majsoul_live_$(date +%Y%m%d_%H%M%S)/mjai_session.jsonl
+   ```
+   `curl localhost:8765/health` returning ok means it is ready. The server has **no auth and binds
+   127.0.0.1 only** — never expose it to the internet.
+2. **Install MC on the play machine** (PowerShell; do not reuse an old conda):
+   ```powershell
+   winget install Python.Python.3.12 --scope user
+   git clone https://github.com/latorc/MahjongCopilot $env:USERPROFILE\MahjongCopilot
+   cd $env:USERPROFILE\MahjongCopilot; python -m venv venv; .\venv\Scripts\pip install -r requirements.txt; .\venv\Scripts\playwright install chromium
+   ```
+3. **Apply the three Windows patches + install our bot plugin** (patch verified against MC `31be3de`):
+   ```powershell
+   git apply <repo>\tools\majsoul_bridge\mahjongcopilot_windows.patch
+   python <repo>\tools\majsoul_bridge\install.py $env:USERPROFILE\MahjongCopilot
+   ```
+   The three patches fix the three Windows blockers you *will* hit: Playwright's bundled Chromium failing
+   with a side-by-side error (use the system Chrome instead), Majsoul's 46 MB wasm being buffered by
+   mitmproxy into a black screen (stream large bodies), and the mitm root cert needing admin rights
+   (install into the current-user store).
+4. **Open the tunnel** (play machine, keep it running): `ssh -N -L 8765:127.0.0.1:8765 <model-machine>`;
+   MC's URL stays `http://127.0.0.1:8765`.
+5. **Configure and start MC**: in `settings.json` set `"model_type": "LLM_Mahjong"`,
+   `"llmmahjong_url": "http://127.0.0.1:8765"`, `"ai_randomize_choice": 0`; `enable_automation` = `false`
+   for assist mode (you click, the panel shows the policy distribution and V) or `true` for auto-play
+   (used for scored runs). Start with
+   `cd $env:USERPROFILE\MahjongCopilot; .\venv\Scripts\python.exe main.py`, then launch the browser and log in.
+6. **Acceptance + scoring**: play one friend-room game first and check that every `Bot in: tsumo` in MC's
+   log has a matching `Bot out: dahai` and that `no op list` count is 0; afterwards run
+   `python scripts/analyze_majsoul_session.py <session>.jsonl` on the model machine for placement /
+   win / deal-in / riichi / call rates.
+
+**Detailed runbooks**: [tools/majsoul_bridge/README.md](tools/majsoul_bridge/README.md) (general flow, the
+two modes, per-decision record format, protocol pitfalls) ·
+[tools/majsoul_bridge/WINDOWS.md](tools/majsoul_bridge/WINDOWS.md) (Windows field notes: symptoms and root
+cause of each patch, new Unity client compatibility, troubleshooting table for `spawn UNKNOWN` / black
+screen / certificates) · [docs/champion_model.md](docs/champion_model.md) (which checkpoint, what resources).
+
+> **Risk**: using third-party automation violates Majsoul's terms of service and **can get the account
+> banned** — only use an account you can afford to lose.
+
 **Discipline** (enforced by CLAUDE.md): write `EXPERIMENT.md` (purpose / method / success criteria)
 BEFORE launching any run; verify throughput matches expectations right after launch; every long-running
 task gets a heartbeat; delete VMs when done; reward logic goes through the registry; append new lessons
