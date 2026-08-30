@@ -209,6 +209,19 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
     collect_parallel.last_league = {
         k: {"learner_share": round(w / n, 4), "n": n,
             "mean_diff": round(d / n, 1)} for k, (w, n, d) in lg.items()}
+    # exp55-D: per-role hanchan uma (the greedy twin's mean uma is the live
+    # deployment-form rating; learner uma shows the exploration tax)
+    hz = {}
+    for game in collected:
+        h, roles = game.get("hanchan"), game.get("roles")
+        if not h or not roles:
+            continue
+        for role in ("learner", "twin", "bc", "top"):
+            seat = roles[role]
+            u, n = hz.get(role, (0.0, 0))
+            hz[role] = (u + h["uma_points"][seat], n + 1)
+    collect_parallel.last_hanchan = {
+        k: {"mean_uma": round(u / n, 1), "n": n} for k, (u, n) in hz.items()}
     return episodes, results
 
 
@@ -292,6 +305,7 @@ def _package_game(g, learner_seats, seed, cfg, cmode, league):
             ep["hlabels"] = np.array(labels[pid], dtype=np.float32)
         eps.append(ep)
     return {"episodes": eps, "result": g.result or "", "league": league,
+            "hanchan": getattr(g, "hanchan", None),
             "riichi": list(g.riichi or []), "n_melds": list(g.n_melds or []),
             "n_discards": g.n_discards, "learner_seats": sorted(learner_seats),
             "points": list(g.points or []), "start_points": list(g.start_points or [])}
@@ -314,29 +328,65 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
     active = {}            # game idx -> dict(gen, pending, seed, learner, opp, temps)
     _DIAG = {"rpc": 0.0, "rounds": 0, "rows": 0, "t0": time.perf_counter()}
 
+    hanchan_credit = None
+    if cfg.get("hanchan"):
+        from src.tasks.mahjong.hanchan import PlacementCredit
+        hanchan_credit = PlacementCredit(cfg["hanchan_w_path"])
+
+    def hanchan_plan(seed):
+        """exp55-D four-seat table (user spec): learner T=1, greedy twin of
+        the CURRENT weights T=0 (live deployment-form measurement), bc
+        anchor T=0, one sampled top pool member T=0. Seat roles rotate
+        with the match seed; dup replicas share it, so the group-baseline
+        key still compares like with like."""
+        rng = random.Random(int(seed) * 6011 + 3)
+        order = rng.sample(range(4), 4)
+        learner, twin, bc_seat, top_seat = order
+        pool = cfg.get("league") or []
+        # entry 0 is the bc anchor by driver convention; top sampled from rest
+        top_idx = 0 if len(pool) <= 1 else 1 + rng.randrange(len(pool) - 1)
+        opp = {bc_seat: 0, top_seat: top_idx}
+        temps = {learner: cfg["temperature"], twin: 0.0,
+                 bc_seat: 0.0, top_seat: 0.0}
+        roles = {"learner": learner, "twin": twin, "bc": bc_seat,
+                 "top": top_seat, "top_idx": top_idx}
+        return [learner], opp, temps, roles
+
     def start(i):
         seed = seeds[i] if seeds else None
-        learner_seats, opp = league_plan(seed, cfg)
-        if temps_list:
-            rng = random.Random((seed or 0) * 7919 + i)
-            temps = {p: rng.choice(temps_list) for p in range(4)}
+        roles = None
+        if cfg.get("hanchan"):
+            learner_seats, opp, temps, roles = hanchan_plan(seed)
         else:
-            temps = {p: cfg["temperature"] for p in range(4)}
-        if opp and cfg.get("league_opp_temp") is not None:
-            # deterministic opponents (exp46-C'a): with frozen pool seats at
-            # T~0, same-wall replicas diverge only through the learner's own
-            # sampling — the dominant line-luck source (75.9% of return
-            # variance measured 2026-08-29) drops out of the advantages
-            for pid in opp:
-                temps[pid] = cfg["league_opp_temp"]
-        gen = play_game_gen(deal_seed=seed, shaping=cfg["shaping"])
+            learner_seats, opp = league_plan(seed, cfg)
+            if temps_list:
+                rng = random.Random((seed or 0) * 7919 + i)
+                temps = {p: rng.choice(temps_list) for p in range(4)}
+            else:
+                temps = {p: cfg["temperature"] for p in range(4)}
+            if opp and cfg.get("league_opp_temp") is not None:
+                # deterministic opponents (exp46-C'a): with frozen pool seats
+                # at T~0, same-wall replicas diverge only through the
+                # learner's own sampling — the dominant line-luck source
+                # (75.9% of return variance measured 2026-08-29) drops out
+                for pid in opp:
+                    temps[pid] = cfg["league_opp_temp"]
+        if cfg.get("hanchan"):
+            from src.tasks.mahjong.hanchan import play_hanchan_gen
+            gen = play_hanchan_gen(seed, shaping=cfg["shaping"],
+                                   credit=hanchan_credit)
+        else:
+            gen = play_game_gen(deal_seed=seed, shaping=cfg["shaping"])
         try:
             table, reqs = next(gen)
         except StopIteration as e:
-            payload.append(_package_game(e.value, learner_seats, seed, cfg, cmode, opp))
+            pkg = _package_game(e.value, learner_seats, seed, cfg, cmode, opp)
+            pkg["roles"] = roles
+            payload.append(pkg)
             return
         active[i] = {"gen": gen, "table": table, "reqs": reqs, "seed": seed,
-                     "learner": learner_seats, "opp": opp, "temps": temps}
+                     "learner": learner_seats, "opp": opp, "temps": temps,
+                     "roles": roles}
 
     while queue and len(active) < K:
         start(queue.pop(0))
@@ -446,7 +496,9 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             try:
                 st["table"], st["reqs"] = st["gen"].send(replies[gi])
             except StopIteration as e:
-                payload.append(_package_game(e.value, st["learner"], st["seed"], cfg, cmode, st["opp"]))
+                pkg = _package_game(e.value, st["learner"], st["seed"], cfg, cmode, st["opp"])
+                pkg["roles"] = st.get("roles")
+                payload.append(pkg)
                 del active[gi]
                 if queue:
                     start(queue.pop(0))

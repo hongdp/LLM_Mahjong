@@ -264,6 +264,7 @@ def play_hanchan_gen(match_seed: int, shaping: bool = False,
         random.seed(match_seed * 1000003 + ms.n)
         table = TrainHanchanTable(dealer, rw, points, kyotaku)
         table.text_obs = False
+        table.honba = ms.honba          # v3rh scalar; engine has no honba
         if credit is not None:
             w_before = [credit.w(p, points, dealer, rw, ms.honba, kyotaku,
                                  max(1, 9 - ms.n)) for p in range(4)]

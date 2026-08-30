@@ -78,6 +78,14 @@ def main():
     ap.add_argument("--league_learner_seats", type=int, default=0,
                     help="fixed learner seat count in league games "
                          "(0 = legacy random 1-2)")
+    ap.add_argument("--hanchan", action="store_true",
+                    help="exp55-D: rollout full hanchan with the four-seat "
+                         "table {learner T1, greedy twin T0, bc anchor T0, "
+                         "sampled top T0}; per-deal credit = placement-value "
+                         "increments (see --hanchan_w_path). games_per_iter "
+                         "then counts MATCHES (~10 deals each).")
+    ap.add_argument("--hanchan_w_path",
+                    default="experiments/placement_value/w_resid.pt")
     ap.add_argument("--league_opp_temp", type=float, default=None,
                     help="sampling temperature for frozen pool seats "
                          "(None = global temperature; 0 = greedy opponents)")
@@ -358,6 +366,8 @@ def main():
         cfg["league_frac"] = args.league_frac
         cfg["league_learner_seats"] = args.league_learner_seats
         cfg["league_opp_temp"] = args.league_opp_temp
+        cfg["hanchan"] = bool(args.hanchan)
+        cfg["hanchan_w_path"] = args.hanchan_w_path
         print(f"🏟 league: {len(cfg['league'])} frozen opponents, frac {args.league_frac}, "
               f"learner seats {args.league_learner_seats or 'rand 1-2'}, "
               f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
@@ -572,6 +582,13 @@ def main():
         # comes from the arena, where different policies actually meet.
         update_s = time.time() - t_upd0
         win = sum(1 for r in results if "荣和" in r or "自摸" in r) / max(len(results), 1)
+        hz = getattr(collect_parallel, "last_hanchan", None)
+        if hz:
+            with open(f"{exp_dir}/hanchan_stats.jsonl", "a") as f:
+                f.write(json.dumps({"iter": it, "games": games, "roles": hz})
+                        + "\n")
+            for role, v in hz.items():
+                writer.add_scalar(f"hanchan/uma_{role}", v["mean_uma"], games)
         lg = getattr(collect_parallel, "last_league", None)
         if lg:
             # rollout ratings (exp46-C rev3): learner-vs-pool point-share per
