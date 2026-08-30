@@ -1,6 +1,6 @@
 # exp24f_majsoul_live — 雀魂实战（exp49 B：人类 BC 旗舰 conv×v3r×46）
 
-- **Date**: 2026-08-29 12:47  **Status**: running（服务已起，端口 8766，等打牌机接入）
+- **Date**: 2026-08-29 12:47  **Status**: done（约 9.9 小时，1659 决策，已切换到 exp24g）
 - **Git**: beffea5
 - **模型**: `experiments/exp49_20260827_205132/B/bc_convformer_m_v3r_m46_best.pt`
   = 人类牌谱行为克隆旗舰 **conv×v3r×46**（ConvFormer-m，编码器 v3r，**46 槽 Mortal 式动作空间**，2.0M 参数，
@@ -29,3 +29,11 @@
 
 ## Progress
 - [12:47] 服务启动（8766），保真校验通过；MJAI 动作空间桥接改造完成并测试通过。
+- [12:52] 用户确认切换：停掉 8765 上正在真实对局中的 exp17-C（另一 worktree
+  `mahjong-agent-integration-69f9e5` 的 exp24_majsoul_live_20260829_124150 会话，停时 18 次决策），
+  把 exp49-B 从 8766 迁到 **8765**（打牌机零配置改动，继续用原 URL）。原 8766 已释放。
+  **风险已告知并确认**：若 8765 那局尚未结束，会中途切模型继续打完，风格突变、数据不纯净——
+  用户明确同意接受。
+- [22:46] 用户要求换用 exp46I_recipe 最新 checkpoint，会话在此结束（服务停，接 exp24g）。
+  总计运行 ~9.9 小时，1659 次决策，全程 0 新增错误（45 条历史 error 全部来自切换那次的
+  已知 3 分钟窗口，此后再无）。详见 analysis_final.txt。
