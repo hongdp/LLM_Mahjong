@@ -139,6 +139,9 @@ def main():
                # game means 8192 games/iter restores mirror's 8192 episodes
                # per update cycle exactly
                "--league_learner_seats", "1",
+               # exp46-H: the --init value head is factory-random; train the
+               # critic alone for the first 500 updates of a fresh run
+               "--value_warmup", "500",
                # C'a: greedy frozen opponents — same-wall replicas diverge
                # only through the learner (kills the 76% line-luck component)
                "--league_opp_temp", "0",
