@@ -127,8 +127,12 @@ def play_hanchan(policies: Dict[int, Policy], seed: int,
         kyotaku = table.kyotaku if not winners else 0   # engine pays winner
         dealer_won = any(w == dealer for w in winners)
         is_draw = not winners
-        dealer_tenpai_at_draw = False
-        if is_draw:
+        # 途中流局 (four winds / four riichi / four kans): dealer always
+        # repeats regardless of tenpai — the engine's abort summary has no
+        # 听牌 list, so it must not fall through to the rotate branch
+        is_abort = "途中流局" in r
+        dealer_tenpai_at_draw = is_abort
+        if is_draw and not is_abort:
             m = re.search(r"流局 \| 听牌: \[([^\]]*)\]", r)
             if m:
                 dealer_tenpai_at_draw = str(dealer) in [
