@@ -389,7 +389,8 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         a_seats = [0, 2] if orient == 0 else [1, 3]
         opp = {p: 0 for p in range(4) if p not in a_seats}
         temps = {p: (float(cfg.get("arena_temp_a", 1.0)) if p in a_seats
-                     else 1.0) for p in range(4)}
+                     else float(cfg.get("arena_temp_b", 1.0)))
+                 for p in range(4)}
         return a_seats, opp, temps, None
 
     def start(i):

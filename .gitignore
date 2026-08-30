@@ -59,6 +59,8 @@ logs/
 experiments/*
 !experiments/INDEX.md
 !experiments/FINDINGS.md
+!experiments/elo_league/
+!experiments/elo_league/anchors.json
 !experiments/designs/
 !experiments/reports/
 !experiments/configs/
@@ -69,6 +71,7 @@ experiments/*/*
 !experiments/designs/*.md
 !experiments/reports/*.md
 !experiments/configs/*.json
+!experiments/elo_league/anchors.json
 
 # IDE agent caches
 .antigravitycli/
