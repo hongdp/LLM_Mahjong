@@ -122,6 +122,7 @@ def main():
     for k in range(1, N_CHUNKS + 1):
         entries = ([{"name": "init", "path": init}] if a.mode == "fixed_bc"
                    else build_league(pool, init, best, k, ratings))
+        # mode "noanchor" (exp46-J): full league ecology, anchor stripped
         json.dump(entries, open(league_file, "w"))
         print(f"chunk {k} pool: {[e['name'] for e in entries]} "
               f"ratings={ratings}", flush=True)
@@ -148,7 +149,7 @@ def main():
                # C'b: KL leash to the BC prior (exp46-B's proven protective
                # dose) — the bias guard the clean T=0 gradients need; the
                # 2x2 cell (T0 x anchor) is exp46-D's operating regime
-               *([] if a.mode == "fixed_bc"
+               *([] if a.mode in ("fixed_bc", "noanchor")
                   else ["--bc_anchor", init, "--bc_kl_coef", "0.3"]),
                "--games_per_iter", "8192",
                "--league", league_file, "--league_frac", "1.0",
