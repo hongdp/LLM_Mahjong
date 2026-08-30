@@ -309,10 +309,17 @@ def main():
                 log = []
         print(f"⏩ resume from {args.resume}: {start_games} games, "
               f"{len(log)} log rows kept", flush=True)
-        for r in log:                       # replay history into TensorBoard
-            for k, v in r.items():
-                if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
-                    writer.add_scalar(TB_TAG.get(k, k), float(v), int(r["games"]))
+        # replay history into TensorBoard — but only into a FRESH tb dir.
+        # Chunked drivers resume into the same dir every chunk; replaying
+        # there duplicates the whole curve per event file and TB renders a
+        # sawtooth that "resets to 0 steps" at every chunk boundary.
+        import glob as _glob
+        prior_events = _glob.glob(os.path.join(exp_dir, "tensorboard", "events.*"))
+        if len(prior_events) <= 1:          # just the writer's own new file
+            for r in log:
+                for k, v in r.items():
+                    if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
+                        writer.add_scalar(TB_TAG.get(k, k), float(v), int(r["games"]))
     else:
         save("games_0", 0)
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
