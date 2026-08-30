@@ -112,6 +112,13 @@ def main():
                          "fp32). Local bench 2026-08-24, HRF, B=512: 258.9ms->"
                          "171.3ms (1.51x) and 9.3GB->5.4GB peak activation mem "
                          "(matters most for wide attention archs at real batch)")
+    ap.add_argument("--value_warmup", type=int, default=0,
+                    help="first N optimizer updates of a FRESH run train the "
+                         "critic only (policy/entropy losses zeroed). The "
+                         "--init value head is factory-random and GAE(lambda"
+                         "<1) bootstraps its noise into biased advantages "
+                         "exactly when KL steps are largest (measured: iter-1 "
+                         "KL 0.016 at EV 0.00). No-op on --resume chunks.")
     ap.add_argument("--warmup_updates", type=int, default=0,
                     help="linear LR warmup over N optimizer updates "
                          "(0 = off; transformers in RL want ~1000)")
@@ -354,6 +361,7 @@ def main():
               f"(max_batch {args.infer_max_batch}, wait {args.infer_wait_ms} ms)", flush=True)
 
     games, it, t0, next_ms = start_games, start_iter, time.time(), 0
+    upd_total = 0
     while next_ms < len(milestones) and milestones[next_ms] <= start_games:
         next_ms += 1
     while games < args.total_games:
@@ -467,8 +475,11 @@ def main():
                 safe = torch.where(torch.isfinite(logp), logp, torch.zeros_like(logp))
                 ent = -(logp.exp() * safe).sum(1).mean()
                 vl = torch.nn.functional.mse_loss(v, rets[sel])
-                loss = pg + args.value_coef * vl - ent_alpha * ent
-                if anchor is not None and args.bc_kl_coef > 0:
+                in_vwarm = (args.value_warmup and start_games == 0
+                            and upd_total < args.value_warmup)
+                loss = (args.value_coef * vl if in_vwarm else
+                        pg + args.value_coef * vl - ent_alpha * ent)
+                if not in_vwarm and anchor is not None and args.bc_kl_coef > 0:
                     with torch.no_grad():
                         alogits, _ = anchor.forward_with_value(
                             planes[sel], scal[sel], mask[sel],
@@ -490,6 +501,7 @@ def main():
                     loss = loss + args.hazard_coef * hz
                     hloss.append(hz.item())
                 opt.zero_grad(); loss.backward()
+                upd_total += 1
                 torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
                 if args.warmup_updates:
                     n_upd += 1
