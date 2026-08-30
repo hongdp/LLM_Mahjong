@@ -501,6 +501,14 @@ def main():
                     loss = loss + args.hazard_coef * hz
                     hloss.append(hz.item())
                 opt.zero_grad(); loss.backward()
+                if in_vwarm:
+                    # value-only means value-HEAD-only: the head shares the
+                    # trunk, and pure value gradients remodel it against the
+                    # policy with nothing pushing back (measured: warmup v1
+                    # gave iter-1 KL 0.0456, WORSE than no warmup)
+                    for pname, prm in net.named_parameters():
+                        if "value" not in pname and prm.grad is not None:
+                            prm.grad = None
                 upd_total += 1
                 torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
                 if args.warmup_updates:
