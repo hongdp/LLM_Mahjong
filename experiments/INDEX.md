@@ -102,3 +102,6 @@
 | 2026-08-30 | exp46J（GCS:exp46J_noanchor） | I的锚消融 | 熵0.445→0.712，终点-15 | 锚=必需件（唯一熵控制器）；从零需EMA锚替身 |
 | 2026-08-29 | exp53（experiments/exp53_hanchan_20260829） | 半庄评测层 | 1.8×放大；Mortal+44=纯聚合 | 半庄刻度就位 |
 | 2026-08-30 | exp55-D（experiments/exp55_hanchan_prereg） | 半庄排位训练管线 | W残差分盘位过检；全管线冒烟通过 | 待云driver+发射 |
+| 2026-08-27 | exp48（experiments/exp48_hrf_20260827_084402 + prereg） | HRF 宣告阈值手术 | 立直宣告率 0.426→0.73 修复，Elo 纹丝不动 | 缺点≠瓶颈；HRF 退出旗舰候选 |
+| 2026-08-29 | exp52（experiments/exp52_P3_hrfC_bc + prereg，云） | 三先验并行 RL 对比（P1 bc49/P2 v3r2/P3 hrfC） | P3 hrfC-full BC 完成 acc 0.7961；RL 段被 exp46 判决闸门搁置 | 待 exp46 配方结论后复活或撤销 |
+| — | exp43/exp44 | 编号预留（exp43=RL 探索节奏假设，见 exp45 prereg 引用；exp44 未分配） | 未执行 | 编号跳过，非丢失记录 |
