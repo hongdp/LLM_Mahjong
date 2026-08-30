@@ -19,3 +19,4 @@
 
 ## Progress
 - [08-30 深夜] W 训练集抽取中；W 训练器就绪；MatchState/play_hanchan_gen 地基已合入（3672ba8）。
+- [08-30] **W v1 定稿（残差参数化）**：`W = rank_uma解析式 + MLP残差`。纯 MLP 版在 S4 比解析基线差 1043 点（光滑网络拟合不了排名不连续）→ 残差版八盘位全部 ≥ 基线（E1 +1936，S4 -32≈平），整体 15140 vs 15480。工件：experiments/placement_value/{states.npz, w_resid.pt}（87 万行人类局间状态）。教训入档：信用函数必须分盘位验收，全局 MAE 会骗人。

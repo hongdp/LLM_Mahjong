@@ -53,10 +53,18 @@ def main():
     ap.add_argument("--batch", type=int, default=8192)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--residual", action="store_true",
+                    help="fit y - rank_uma(x): late game is a near-exact "
+                         "piecewise formula rank-uma already encodes; the "
+                         "net only learns the early/mid-game contextual "
+                         "correction (stage diag 2026-08-30: plain MLP was "
+                         "-1043 pts WORSE than rank-uma at S4)")
     args = ap.parse_args()
 
     d = np.load(args.data)
     X, y, g = d["X"], d["y"], d["g"]
+    if args.residual:
+        y = y - rank_uma_baseline(X).astype(np.float32)
     hold = (g % 100) < 10
     Xtr, ytr = X[~hold], y[~hold]
     Xho, yho = X[hold], y[hold]
@@ -84,6 +92,7 @@ def main():
         with torch.no_grad():
             _, uh = net(Xh)
             mae = float((uh - yh).abs().mean()) * 1000
+        # in residual mode this MAE is already "W = base + net" vs true uma
         print(f"ep{ep}: train_huber={tot/len(yt):.4f} holdout_MAE={mae:.0f} pts",
               flush=True)
 
