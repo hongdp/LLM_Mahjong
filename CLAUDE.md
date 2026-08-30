@@ -13,6 +13,7 @@
 | 本地训练 run（EXPERIMENT.md + config 快照 + 工件） | `experiments/<name>_<时间戳>/` |
 | 云 run 工件（ckpt/日志/TB） | GCS `gs://llm-mahjong-experiments/<run>/`；本地只镜像 TB 到 `experiments/_cloud_mirror/` |
 | 实验设计文档 | `experiments/designs/` |
+| 历史发射配置（无代码引用的 run config） | `experiments/configs/` |
 | 实验报告（成文版） | `experiments/reports/` |
 | 长期参考（引擎已知问题、总设计书、GCP 成本、路线图） | `docs/` |
 | 论文素材（不入库） | `paper/`（.git/info/exclude 屏蔽） |
