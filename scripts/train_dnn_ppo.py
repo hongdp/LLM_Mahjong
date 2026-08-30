@@ -115,15 +115,16 @@ def main():
     ap.add_argument("--warmup_updates", type=int, default=0,
                     help="linear LR warmup over N optimizer updates "
                          "(0 = off; transformers in RL want ~1000)")
-    ap.add_argument("--adv_clamp_neg", type=float, default=None,
-                    help="separate clamp for the negative tail (exp46-G: "
-                         "disasters carry the fold lesson — censoring them "
-                         "underprices risk; entropy collapse comes from the "
-                         "POSITIVE tail, so -15/+5 keeps both properties)")
-    ap.add_argument("--adv_clamp", type=float, default=5.0,
-                    help="normalized-advantage winsorize bound (sigma); a "
-                         "yakuman event sits near 8 sigma, so the 5.0 "
-                         "default caps big-hand policy gradients")
+    ap.add_argument("--adv_clamp", type=float, default=None,
+                    help="optional normalized-advantage winsorize bound "
+                         "(sigma). Default OFF (user decision 2026-08-30): "
+                         "mahjong's negative fat tail IS the fold lesson — a "
+                         "ron mirrors the win as one player's equal-size "
+                         "loss, so censoring it removes exactly the deal-in "
+                         "disasters defense must learn from. Remaining rails: "
+                         "batch-mean over 4096 samples, PPO ratio clip, "
+                         "target_kl early stop. Pass a value only to "
+                         "reproduce historical runs (old default: 5.0).")
     ap.add_argument("--drop_zero_return", action="store_true")
     ap.add_argument("--gae_lambda", type=float, default=None,
                     help="Use GAE(lambda) advantages instead of Monte-Carlo "
@@ -435,8 +436,9 @@ def main():
         else:
             adv_raw = rets - vals
         adv = ((adv_raw - adv_raw[idx_keep].mean())
-               / (adv_raw[idx_keep].std() + 1e-8)).clamp(
-                   -(args.adv_clamp_neg or args.adv_clamp), args.adv_clamp)
+               / (adv_raw[idx_keep].std() + 1e-8))
+        if args.adv_clamp:
+            adv = adv.clamp(-args.adv_clamp, args.adv_clamp)
 
         net.train()
         t_upd0 = time.time()
