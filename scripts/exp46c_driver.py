@@ -136,6 +136,10 @@ def main():
                # C'a: greedy frozen opponents — same-wall replicas diverge
                # only through the learner (kills the 76% line-luck component)
                "--league_opp_temp", "0",
+               # C'b: KL leash to the BC prior (exp46-B's proven protective
+               # dose) — the bias guard the clean T=0 gradients need; the
+               # 2x2 cell (T0 x anchor) is exp46-D's operating regime
+               "--bc_anchor", init, "--bc_kl_coef", "0.3",
                "--games_per_iter", "8192",
                "--league", league_file, "--league_frac", "1.0",
                "--milestones", ",".join(str(i * CHUNK) for i in range(1, N_CHUNKS)),
