@@ -1,6 +1,18 @@
-# LLM Mahjong — Pure Self-Play Riichi Mahjong RL
+# LLM Mahjong — Riichi RL (two lineages) — Pure Self-Play Riichi Mahjong RL
 
 English | [中文](README.md)
+
+> **EN mirror status (2026-08-30)**: the Chinese README is authoritative and freshly updated.
+> Headlines: two parallel lineages (human-prior = current main carrier, north star = a
+> simple-input-plane model surpassing Mortal; pure self-play unchanged). Deployment champion
+> = **bc49** (human BC flagship): ladder 1191.4 (T=1) / **1210.6±15 at deployment protocol
+> (T=0)**, Majsoul maka S+ twice; real Mortal reference 1218.6 (same protocol) — gap ≈ 8±20.
+> exp46 C~J fixed four trainer pathologies (value-gradient trunk corruption -> --value_detach,
+> entropy diffusion -> KL anchor, advantage tail censoring -> clamp removed, T=1 in-family
+> metric distortion -> protocol switch); best RL artifact exp46-I reached 1210.0±8.4 = parity.
+> exp55-D hanchan-placement training pipeline is built (residual placement-value W credit,
+> v3rh encoder, four-seat rollout). Pending: epoch-6 opening via PR #8. See
+> experiments/INDEX.md and experiments/FINDINGS.md.
 
 **North star (goal a)**: inspired by **AlphaZero** — pure self-play with zero human/teacher knowledge. Starting from random initialization, the model must discover the full skill stack
 on its own (tile efficiency → riichi/closed-hand play → hand value → defense) and climb toward human expert
