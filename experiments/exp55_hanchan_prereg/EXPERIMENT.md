@@ -45,4 +45,12 @@
   首迭代 9.5 场/s（passes=4 完整口径），KL 0.0043 正常 → 预计 5.8h ≈ $1.58。
   心跳（STALL 20min/DONE/crash）+ TB 两段式镜像（exp55D_t1_LIVE 已挂 6006）+
   每 30min ckpt 回拉（损失上界 30min）全部就位。
+- [08-31 00:20] **首发射 20 分钟后死于已知棘轮**：训练主进程显存逐迭代膨胀（iter1 后 19.7GB →
+  iter5 后 22GB/23.5GB），推理服务器先丢 CUDA graph 落 eager、最终 2MiB 都拿不到 → 全线崩。
+  指纹 = SKILLS 2026-08-29「CUDA 分配器尺寸类碎片棘轮」（注意力架构易触发，convformer 正中；
+  hanchan 模式 33 万行/迭代的变长 cat 张量放大触发面）。**修法就是 08-22 既有用户规则的那行
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`——发射时漏设，纯执行失误**。
+  已清场重发（脚本化发射 + /proc/PID/environ 验证环境变量确实生效），25 分钟显存趋势窗观察中。
+  **教训**：RunPod 发射脚本模板必须内置该 env（不是"记得设"，是写进脚本）；
+  另外 ssh 复合命令 nohup 尾无回显 ≠ 已执行，重发后必须独立验证进程与 environ。
 - [08-30] **W v1 定稿（残差参数化）**：`W = rank_uma解析式 + MLP残差`。纯 MLP 版在 S4 比解析基线差 1043 点（光滑网络拟合不了排名不连续）→ 残差版八盘位全部 ≥ 基线（E1 +1936，S4 -32≈平），整体 15140 vs 15480。工件：experiments/placement_value/{states.npz, w_resid.pt}（87 万行人类局间状态）。教训入档：信用函数必须分盘位验收，全局 MAE 会骗人。
