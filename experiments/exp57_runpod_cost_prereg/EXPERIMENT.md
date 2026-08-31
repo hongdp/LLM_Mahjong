@@ -1,6 +1,6 @@
 # exp57 — RunPod 性价比裁决（扩展曲线 + 实查目录 + 在 pod 实测每核速率）
 
-- **Date**: 2026-08-30 17:45  **Status**: running
+- **Date**: 2026-08-30 17:45  **Status**: done（19:15 收官，探针 pod 已 terminate）
 - **Git**: 3964de8（工作树干净；scaling_bench.py 在会话 scratchpad，正文已抄录本目录 `scaling_bench.py`）
 - **Env**: 本机 RTX 4080 16GB + 24 核桌面 CPU；rlhf_mahjong conda env；RunPod 目录 = 2026-08-30 实查
 
@@ -59,6 +59,21 @@
   （bc49↔exp46I r≈+0.2~0.3）读数正相关，池拟合 SE 偏乐观、三角闭合残差不可当独立证据；
   **以后每锚用不重叠种子段**。回放件：determinism_replay.json（已拷本目录）。
 
+- [18:55 事故] **rl-vs-bc worktree 在探针发射窗口被移除**（非本会话操作；`git worktree list`
+  已无该项）。分支与全部记录 commit（d3ae85b/a859dda）在共享对象库中**完好**，已 ff 合并到
+  `claude/runpod-training-cost-optimization-626ab2` 继续。**丢失的 gitignored 工件**：
+  半庄 T=0 锚池文件 + history.jsonl + `mortal_shards/` 逐场原始数据 + exp56 运行目录日志。
+  **可完全再生**：T=0 对局是种子的确定函数（今日回放已证逐字节一致），种子段已写进记录
+  （探针批 51000000×400、链批 49900000×200/锚）。锚 ckpt 本体在主检出 `_anchors_epoch6/` 无恙；
+  探针 stdout 日志已从旧会话 scratchpad 抢救进 `experiments/probes/*.log`；
+  v2 曲线 JSON 已从日志重建。教训follow-up：worktree 内的 durable 工件不 durable——
+  评测原始数据应落主检出或 GCS。
+- [19:05] **H3 探针在跑**：pod `g1v1470djni9rd`（3090 Ti community，$0.27/h，EPYC 7663 宿主，
+  cgroup 保证 23 核 + burst）。坑重踩：Ubuntu24.04 pip 要 `--break-system-packages`（文档坑 3）；
+  ZOO 键名是 `handset_xl_cnn_m_r` 不是 `handset_xl`。
+  **头条已出：cnn_m_r K=32 @23 workers = 214.5 局/s；@46 workers = 232.9 局/s**
+  （对照 g4-48 = 279、本机 24 核 = 204、L4 g2-32 = 104）。
+
 ## Results
 
 **H1 扩展曲线（v2 边际吞吐法，bc49，deal 模式，本机 24 核 + 4080，2026-08-30 18:40）**：
@@ -96,8 +111,42 @@ v1 给出「每核 7」，v2 差分后同点位实际 23-29。**任何 <30s 的�
 
 （估值假设 community 核 ≈ 本机桌面核；就算慢 2× 也全线 ≥3× 于 g4。**该假设正是 H3 探针要验证的**。）
 
+**H3 探针实测（3090 Ti community，$0.27/h，EPYC 7663 宿主，cgroup 23 核保证，
+2026-08-30 19:10，pod g1v1470djni9rd，总花费 ~$0.12）**：
+
+| 项目 | 3090Ti com 23核 | g4-48 flex | 本机24核+4080 | g2-32 L4 |
+|---|---|---|---|---|
+| cnn_m_r K=32（局/s） | **214.5**（46w 超订: 232.9） | 279 | 204 | 104 |
+| handset_xl（局/s） | **62.4** | 160 | 97 | 36 |
+| $/h | **0.27** | 2.25 | 0 | 2.6 |
+| cnn 局/s 每 $ | **794**（超订 862） | 124 | ∞ | 40 |
+| handset 局/s 每 $ | **231** | 71 | ∞ | 14 |
+
+- 每核速率 9.3 局/s/核（cnn_m_r 口径）= **g4 服务器核的 1.6×**——community EPYC 核不慢反快。
+- worker 曲线（W×48 局的小样本点，含启动偏置）：2w 22.6 / 4w 44.4 / 8w 85.5 / 16w 138.9 /
+  23w 178.8——到 23 核仍在爬，46w 超订阅再 +8.6%，与本机曲线同形状。
+- 大模型（handset_xl 20M）也 3.3× 于 g4 每美元；每核 2.7 vs g4 3.3——GPU 未封顶（3090Ti ~1TB/s）。
+
 ## Conclusion
-（待 H3 探针；H1/H2 已判——见上）
+
+**三个假设全部裁决，预注册判据（≥1.5× g4 每美元）以 6.4× 大幅达成：**
+
+1. **H1 否**：吞吐非线性，24 核处每核效率剩 42%，单 run 平台 ~300 局/s（GPU 39% 未饱和，
+   往返结构瓶颈）。「48 核整机」为用不上的核付钱；单 run 核甜点 ≈16-24。
+2. **H2 表已重算**：旧表两处关键错误（3090 com 实为 8 核/卡；线性外推高估大核数机型）。
+3. **H3 过**：3090 Ti community 实测 **cnn_m_r 794 局/s/$（g4 的 6.4×）**，每核速率反超 g4 核 1.6×。
+
+**裁决：RunPod 上存在明确优于 g4-standard-48 flex 的训练选项。**
+推荐形态：**单卡 3090 Ti community（23-28 核，$0.27/h）为默认训练机**——
+单 run 墙钟 = g4 的 77%（214 vs 279），单位钱吞吐 6.4×；1M 局 rollout 口径 ~$0.50 vs g4 ~$3。
+多臂实验开多个 pod（吞吐随 $ 线性堆，不受单 run 平台限制）。
+备选：A4000 com（$0.17，16 核）做小实验、3090 secure（$0.50，32 核，EU-CZ-1）做长跑可靠性要求高的 run。
+
+**未验证残留（迁移前必须补）**：①community 长跑可靠性（26h 不断）与 `--resume` 演练；
+②训练全链路（PPO 更新步 + ckpt→GCS）在 3090Ti 上的实测占比；③库存波动（3090Ti 仅 Low）。
+这些属迁移立项（exp58?），不改变本裁决。
+
+- **Status 更新**: done（2026-08-30 19:15；探针已 terminate，账户实花 ~$0.12）
 
 ## Next Steps
 - **H3 探针（等用户批准，≤$0.60）**：3090 Ti community（$0.27/h）跑 `pod_bench.sh`
@@ -110,5 +159,11 @@ v1 给出「每核 7」，v2 差分后同点位实际 23-29。**任何 <30s 的�
 ## Artifacts
 | Path | Size | Description |
 |---|---|---|
-| experiments/probes/exp57_rollout_scaling.json | 待 | 本地 1→24 worker 吞吐曲线 |
-| experiments/exp57_runpod_cost_prereg/catalog_snapshot/ | 待 | 2026-08-30 RunPod 目录快照 |
+| experiments/probes/exp57_rollout_scaling.json | 2KB | 本地 v2 曲线（边际吞吐法，从日志重建） |
+| exp57_runpod_cost_prereg/scaling_bench2.{py,log} | 9KB | v2 基准脚本与原始日志 |
+| exp57_runpod_cost_prereg/scaling_bench_v1_failed.log | 5KB | v1 作废曲线（启动摊销教材） |
+| exp57_runpod_cost_prereg/pod_bench_3090ti.log | 2KB | H3 探针原始输出（3090Ti community） |
+| exp57_runpod_cost_prereg/pod_bench.sh | 2KB | pod 侧基准脚本（含自停保险） |
+| exp57_runpod_cost_prereg/catalog_snapshot/ | 34KB | 2026-08-30 GraphQL 目录快照（单卡+多卡 vCPU） |
+| exp57_runpod_cost_prereg/determinism_replay.json | 5KB | §3.2 确定性回放件 |
+| experiments/probes/exp56_{I_specialization,baseline_h2h_T0}.log | 8KB | 从旧会话 scratchpad 抢救的探针日志 |
