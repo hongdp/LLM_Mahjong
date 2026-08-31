@@ -381,9 +381,11 @@ KL(π‖π_BC) 写成 `where(finite, p*(logp−alogp), 0)` 时前向有限但反
 web_canvas 项目充值并实测了 RunPod 后不再使用，余额留给本项目。**判决（补查 vCPU 后）：
 按保证值打不过 g4-48**——RunPod 每 GPU 只配 9（A40）～16（PRO 6000/A100）个保证核，
 而本负载瓶颈是 rollout CPU；同卡每美元 44 vs g4 的 124 局/s，A40 community 每美元 +20%
-但单 run 5.4× 慢。唯一翻盘变数是 cgroup burst（实测 nproc=128、-j128 编译 3.5 分钟），
-验证 = $0.35/h 开台 A40 跑 rollout 基准对 279 局/s。余额更适合短平快活（评测/探针/
-临时大显存），按秒计费占优。运维三条铁律：**用完删 pod 别停**（container disk 停机费率翻倍，
+但单 run 5.4× 慢。**例外是 RTX 3090 community：16 核/$0.22，
+叠 3 张 = 48 核 $0.66/h——g4 同核数 29% 价，估算局/s 每 $ 3.4×**（前提：每核速率、
+community 长跑可靠性、标称核数落实，~$0.25 探针即可全部验证）。burst 是普适变数
+（实测 nproc=128 但非合同）。3090 探针不达标则余额只适合短平快活（评测/探针），
+按秒计费占优。运维三条铁律：**用完删 pod 别停**（container disk 停机费率翻倍，
 400GB≈$80/月）；SSH 走**直连**入口（`sshPublicKey` 注入的 key 只有直连认，proxy 入口
 永远 Permission denied）；pod 是容器，自停靠 `kill 1` 不靠 shutdown。价格表、
 create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_and_ops.md)。
