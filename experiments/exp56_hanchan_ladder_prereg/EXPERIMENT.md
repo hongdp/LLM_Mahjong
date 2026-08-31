@@ -1,6 +1,6 @@
 # exp56：半庄刻度梯子（向量化 GPU）+ 纪元 6 榜单重打
 
-- **Date**: 2026-08-30  **Status**: running
+- **Date**: 2026-08-30  **Status**: done（2026-08-30 18:25 收官；三件在飞任务全部落地）
 - **Git**: 分支 `claude/rl-vs-bc-model-comparison-7386d0`（worktree），基线 e36161a；引擎字节不变（半庄层纯驱动侧）
 - **Env**: 本地 RTX 4080（评测，允许）；锚点 ckpt 经 symlink 指向主检出工件
 
@@ -157,13 +157,42 @@ Mortal vs bc49 = +44±20 半庄 Elo 作挂靠值，在榜上标注来源与 n。
   **连带发现**：五锚 Mortal 评分共用 seed0=49900000 同段牌山 ⇒ 相似锚读数正相关，
   池拟合 SE 偏乐观、锚间残差（三角闭合）不可当独立证据；**规则：以后每锚用不重叠种子段**。
   回放件：`exp57_runpod_cost_prereg/determinism_replay.json`。
+- [2026-08-30 18:20 新会话] **Mortal 五锚 T=0 池收官**：池评分 **1465.3±11.9**（残差全 <2σ：
+  bc49 +0.033 / bc51 −0.051 / I +0.062 / Cb −0.029 / 27A −0.016），残差不复现旧「反 bc49 系」
+  模式 → 三角不闭合结案为牌山段运气。但五锚共用 49900000 同段牌山（见上条），池值偏乐观；
+  **权威读数 = 合并两段种子的逐场头对头（n=1200/对）**：vs bc49 0.4771±0.0144（pt −0.36±0.42）、
+  vs exp46I 0.5083±0.0144（pt +0.50±0.42）→ **Mortal 与两旗舰在部署刻度统计打平**；
+  vs bc51 0.5025（n=400）、vs Cb 0.6038、vs 27A 0.8175。早期「Mortal 略胜 bc49 +2.40 pt
+  （n=300）」被 n=1200 推翻。LEADERBOARD 已更新。
 
 ## Results
-（待填）
+
+| 判据 | 预注册目标 | 实测 | 判定 |
+|---|---|---|---|
+| 1. 对拍验收 | 8 场 uma 逐场一致 | 一致（Progress 8-30 下午） | ✅ |
+| 2. 刻度自洽 | bc49−27A 半庄差 ≈224±σ | 复式聚合口径吻合（阶段 3）；后经度量学审计改逐场口径 | ✅（口径升级） |
+| 3. 主判据 I vs bc49 | ≥0.50 不劣于；≥0.53 优势 | **0.5141±0.0079（n=4000）**，pt +0.85±0.47 | **不劣于 ✅，优势 ✗** |
+| 4. 台账一致 | 三处同步 | LEADERBOARD/INDEX/FINDINGS 已同步 | ✅ |
+| 附加：克制性 | trained−control z>2 | +0.0166±0.0112，z=1.49 | 无可测克制性 |
+| 附加：Mortal 位置 | —（挂靠改实测） | 头对头 n=1200：与 bc49/I 均打平 | 北极星已追平 |
 
 ## Conclusion
-（待填）
+
+1. **RL 相对 BC 在裁决刻度打平**（主判据）：exp46I 不劣于 bc49（0.5141±0.0079），无显著优势；
+   克制性探针判无（z=1.49），打平结论对未见过的对手同样成立。
+2. **Mortal 在部署形态被两个旗舰追平**（n=1200 逐场，pt 差 |0.5| 内）——北极星「简单输入超
+   Mortal」的「平」已达成，「超」未达成。
+3. 度量学三条（复式聚合虚胖 / pt 优于符号 / 1&4 拆分携带真信号）+ 种子段规则
+   （每锚不重叠）+ 二项 SE 确定性回放验证法，全部入 SKILLS。
+4. 半庄向量化梯子（967 场/分）使裁决刻度常规化，纪元 7（评分体系 v2）的排程/拟合直接复用。
 
 ## Artifacts
 | Path | Size | Description |
 |---|---|---|
+| experiments/elo_league/hanchan/anchors_T0.json | 6KB | T=0 半庄锚池（13 员） |
+| experiments/elo_league/hanchan/history.jsonl | — | 评分账本（含 Mortal H6T0_mortal298k 1465.3） |
+| experiments/elo_league/hanchan/mortal_shards/*.json | ~0.5MB | Mortal 头对头逐场原始记录（两段种子） |
+| experiments/probes/exp56_I_specialization.json | 5KB | 克制性探针三对 + 判决 |
+| experiments/probes/exp56_baseline_h2h_T0.json | — | 三人类先验两两 n=4000 |
+| exp57_runpod_cost_prereg/determinism_replay.json | 5KB | §3.2 确定性回放件 |
+| experiments/exp56_hanchan_ladder_20260830_141653/ | — | 运行目录（logs/config） |
