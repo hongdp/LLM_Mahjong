@@ -4,6 +4,7 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
+| 2026-08-31 | exp55-D tranche-1（exp55_hanchan_prereg + pod:/workspace/exp55D_t1）（running） | 半庄排位训练首个正式 run：I 配方 + W 残差信用 + v3rh + league={bc49,exp46I}，200k 场 | 首迭代 9.5 场/s、KL 0.0043 正常；预计 5.8h ≈ $1.58；TB=exp55D_t1_LIVE | ⏳ RunPod 首个正式训练（exp58 链后） |
 | 2026-08-30 | `exp58_runpod_migration_prereg`（done） | RunPod 迁移验证：3090Ti 训练全链路 + resume 演练 + exp55-D 形态冒烟 | 训练口径 **190 局/s（10 核宿主）≈12× g4 每美元**；resume 无缝（81920 局 kill→续到 200704）；exp55-D 形态 15.4 场/s；ckpt sha256 逃逸一致；实花 $0.36 | **红线解除：正式训练可上 RunPod**；runbook 增补（核数 re-roll/清场/依赖）；GCS 直推是 gap |
 | 2026-08-30 | `exp57_runpod_cost_prereg`（done） | RunPod 性价比裁决：扩展曲线定瓶颈 + 实查目录重算成本表 + 在 pod 实测每核速率 | 曲线非线性（24核每核效率剩42%，单 run 平台~300局/s，GPU 39%）；**3090Ti community 实测 cnn_m_r 214.5 局/s @ $0.27/h = 794 局/s/$ = g4 的 6.4×**（判据 1.5×）；每核速率反超 g4 核 1.6×；探针实花 $0.12 | **换机裁决：默认训练机改单卡 3090Ti community，多臂开多 pod**；迁移前补 resume 演练/长跑可靠性 |
 | 2026-08-29 | `exp24g_majsoul_exp46I_recipe_20260829_224617`（running） | 雀魂实战换模型：exp46I_recipe 最新 ckpt（云端训练中，母系列 exp46 A/B 已判 RL 净毁值，本配方最近3代未过晋级门）| 保真 20 局 287 决策逐位一致；用户明确要求部署，非强度判定 | ⏳ 探索性快照，行为对照 exp24f（同起点 exp49-B）|
