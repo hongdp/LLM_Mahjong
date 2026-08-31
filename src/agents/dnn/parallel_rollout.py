@@ -229,8 +229,8 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
     hz = {}
     for game in collected:
         h, roles = game.get("hanchan"), game.get("roles")
-        if not h or not roles:
-            continue
+        if not h or not roles or "learner" not in roles:
+            continue          # v2 table rows carry rotation roles, not seats
         for role in ("learner", "twin", "bc", "top"):
             seat = roles[role]
             u, n = hz.get(role, (0.0, 0))
@@ -358,7 +358,8 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
     _DIAG = {"rpc": 0.0, "rounds": 0, "rows": 0, "t0": time.perf_counter()}
 
     hanchan_credit = None
-    if cfg.get("hanchan"):
+    if cfg.get("hanchan") and cfg.get("hanchan_w_path"):
+        # eval-mode hanchan (exp56 arena) carries no W and needs no reward
         from src.tasks.mahjong.hanchan import PlacementCredit
         hanchan_credit = PlacementCredit(cfg["hanchan_w_path"])
 
@@ -381,6 +382,31 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                  "top": top_seat, "top_idx": top_idx}
         return [learner], opp, temps, roles
 
+    def table_plan(seed):
+        """Rating-system v2 (design D5): FOUR distinct entities at one
+        table. A 2v2 duplicate yields one pairwise comparison per match;
+        a four-entity table yields a full ranking (six pairwise contrasts)
+        for the same wall. The seed's low two bits carry the rotation, so
+        the same wall is played four times with entity i sitting at seat
+        (i + rot) % 4 — every entity occupies every seat exactly once and
+        the seat/dealer luck cancels the way duplicate pairing cancels
+        wall luck. Entity 0 is the worker's own net; 1..3 are pool
+        entries, each at its own temperature (an entity IS a checkpoint
+        plus a condition)."""
+        rot = seed & 3
+        temps_by_entity = cfg["table_temps"]
+        learner_seats, opp, temps = [], {}, {}
+        for st in range(4):
+            e = (st - rot) % 4
+            if e == 0:
+                learner_seats.append(st)
+            else:
+                opp[st] = e - 1
+            temps[st] = float(temps_by_entity[e])
+        return learner_seats, opp, temps, {"rot": rot,
+                                           "entity_of_seat": [(st - rot) % 4
+                                                              for st in range(4)]}
+
     def arena_plan(seed):
         """Duplicate-match eval (perf 2026-08-30): orientation lives in the
         seed's low bit (wall seed = seed >> 1). A occupies (0,2) or (1,3);
@@ -396,7 +422,9 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
     def start(i):
         seed = seeds[i] if seeds else None
         roles = None
-        if cfg.get("arena"):
+        if cfg.get("table"):
+            learner_seats, opp, temps, roles = table_plan(seed)
+        elif cfg.get("arena"):
             learner_seats, opp, temps, roles = arena_plan(seed)
         elif cfg.get("hanchan"):
             learner_seats, opp, temps, roles = hanchan_plan(seed)
@@ -414,12 +442,19 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                 # (75.9% of return variance measured 2026-08-29) drops out
                 for pid in opp:
                     temps[pid] = cfg["league_opp_temp"]
+        # arena hides the duplicate orientation in the seed's low bit, so
+        # BOTH generators must take seed >> 1 as the wall/match seed — else
+        # the two orientations play different walls and the duplicate
+        # pairing silently degrades into two independent samples (exp56)
+        # rotation rides the low bits: 2 bits for a four-entity table,
+        # 1 for a duplicate pair, none for training rollouts
+        wall_seed = ((seed >> 2) if cfg.get("table")
+                     else (seed >> 1) if cfg.get("arena") else seed)
         if cfg.get("hanchan"):
             from src.tasks.mahjong.hanchan import play_hanchan_gen
-            gen = play_hanchan_gen(seed, shaping=cfg["shaping"],
+            gen = play_hanchan_gen(wall_seed, shaping=cfg["shaping"],
                                    credit=hanchan_credit)
         else:
-            wall_seed = (seed >> 1) if cfg.get("arena") else seed
             gen = play_game_gen(deal_seed=wall_seed, shaping=cfg["shaping"])
         try:
             table, reqs = next(gen)

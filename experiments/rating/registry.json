@@ -1,0 +1,102 @@
+{
+ "models": {
+  "3a75c1e2af2b": {
+   "id": "3a75c1e2af2b",
+   "name": "bc49",
+   "kind": "dnn",
+   "path": "experiments/_registry/3a75c1e2af2b.pt",
+   "lineage": "human-prior",
+   "registered": "2026-08-30 15:21:42",
+   "provenance": {
+    "src_path": "experiments/_anchors_epoch6/bc49.pt",
+    "git": "e36161a"
+   },
+   "arch": "convformer_m_v3r_m46",
+   "action_space": "mortal46",
+   "encoder_variant": "v3r",
+   "params": 2004239,
+   "channels": null,
+   "blocks": null
+  },
+  "99ffeda091a3": {
+   "id": "99ffeda091a3",
+   "name": "bc51_v3r2",
+   "kind": "dnn",
+   "path": "experiments/_registry/99ffeda091a3.pt",
+   "lineage": "human-prior",
+   "registered": "2026-08-30 15:21:42",
+   "provenance": {
+    "src_path": "experiments/_anchors_epoch6/bc51_v3r2.pt",
+    "git": "e36161a"
+   },
+   "arch": "convformer_m_v3r2_m46",
+   "action_space": "mortal46",
+   "encoder_variant": "v3r2",
+   "params": 2011919,
+   "channels": null,
+   "blocks": null
+  },
+  "e466d5ad37a4": {
+   "id": "e466d5ad37a4",
+   "name": "exp46I",
+   "kind": "dnn",
+   "path": "experiments/_registry/e466d5ad37a4.pt",
+   "lineage": "human-prior+RL",
+   "registered": "2026-08-30 15:21:42",
+   "provenance": {
+    "src_path": "experiments/_anchors_epoch6/exp46I_gen10.pt",
+    "git": "e36161a"
+   },
+   "arch": "convformer_m_v3r_m46",
+   "action_space": "mortal46",
+   "encoder_variant": "v3r",
+   "params": 2004239,
+   "channels": 64,
+   "blocks": 3
+  },
+  "5067454dc53e": {
+   "id": "5067454dc53e",
+   "name": "exp27A",
+   "kind": "dnn",
+   "path": "experiments/_registry/5067454dc53e.pt",
+   "lineage": "pure-selfplay",
+   "registered": "2026-08-30 15:21:42",
+   "provenance": {
+    "src_path": "experiments/_cloud_ckpts/dnn_exp27_A_cnn_m_r_20260823/games_final.pt",
+    "git": "e36161a"
+   },
+   "arch": "cnn_m_r",
+   "action_space": "native",
+   "encoder_variant": "v1r",
+   "params": 1994301,
+   "channels": 64,
+   "blocks": 3
+  }
+ },
+ "entities": {
+  "3a75c1e2af2b.t000": {
+   "id": "3a75c1e2af2b.t000",
+   "model": "3a75c1e2af2b",
+   "temperature": 0.0,
+   "label": "bc49@T0"
+  },
+  "99ffeda091a3.t000": {
+   "id": "99ffeda091a3.t000",
+   "model": "99ffeda091a3",
+   "temperature": 0.0,
+   "label": "bc51_v3r2@T0"
+  },
+  "e466d5ad37a4.t000": {
+   "id": "e466d5ad37a4.t000",
+   "model": "e466d5ad37a4",
+   "temperature": 0.0,
+   "label": "exp46I@T0"
+  },
+  "5067454dc53e.t000": {
+   "id": "5067454dc53e.t000",
+   "model": "5067454dc53e",
+   "temperature": 0.0,
+   "label": "exp27A@T0"
+  }
+ }
+}
