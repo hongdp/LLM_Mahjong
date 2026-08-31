@@ -2,16 +2,20 @@
 
 English | [中文](README.md)
 
-> **EN mirror status (2026-08-30)**: the Chinese README is authoritative and freshly updated.
-> Headlines: two parallel lineages (human-prior = current main carrier, north star = a
-> simple-input-plane model surpassing Mortal; pure self-play unchanged). Deployment champion
-> = **bc49** (human BC flagship): ladder 1191.4 (T=1) / **1210.6±15 at deployment protocol
-> (T=0)**, Majsoul maka S+ twice; real Mortal reference 1218.6 (same protocol) — gap ≈ 8±20.
+> **EN mirror status (2026-08-30)**: the Chinese README is authoritative and freshly updated;
+> the sections below still carry 2026-08-23 wording. Headlines: two parallel lineages
+> (human-prior = current main carrier, north star = a simple-input-plane model surpassing Mortal;
+> pure self-play unchanged). Deployment champion = **bc49** (human BC flagship, 2.00M params /
+> 56 planes / 46 actions): **1189.0 ± 7.9 on the epoch-6 deployment scale**, Majsoul maka S+
+> twice; real Mortal 298k reference 1199.6 ± 8.0 (same protocol) — **gap ≈ 10 ± 11**.
+> **How to configure, run and resource that model: [docs/champion_model.md](docs/champion_model.md)**
+> (model card + deployment runbook + champion version history; §9 is an English quick reference).
 > exp46 C~J fixed four trainer pathologies (value-gradient trunk corruption -> --value_detach,
 > entropy diffusion -> KL anchor, advantage tail censoring -> clamp removed, T=1 in-family
-> metric distortion -> protocol switch); best RL artifact exp46-I reached 1210.0±8.4 = parity.
-> exp55-D hanchan-placement training pipeline is built (residual placement-value W credit,
-> v3rh encoder, four-seat rollout). Pending: epoch-6 opening via PR #8. See
+> metric distortion -> protocol switch); best RL artifact exp46-I ties bc49 (0.5005 head-to-head
+> at T=0 both sides). Epoch 6 is open: engine action-gap fixes merged, 13-anchor recalibration
+> done — current board in [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md). exp55-D
+> hanchan-placement training pipeline is built and ready to launch. See
 > experiments/INDEX.md and experiments/FINDINGS.md.
 
 **North star (goal a)**: inspired by **AlphaZero** — pure self-play with zero human/teacher knowledge. Starting from random initialization, the model must discover the full skill stack
@@ -117,6 +121,8 @@ tools/majsoul_bridge/   # MahjongCopilot plugin (live play = champion greedy; on
 ```bash
 conda activate rlhf_mahjong
 python -m pytest tests -q                        # ~196 tests
+# run the current champion bc49 (Majsoul live-play server, greedy) — full runbook in docs/champion_model.md
+PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_anchors_epoch6/bc49.pt --temperature 0
 # local training (RTX 4080: cnn_m_r ~100 games/s at the trainer level)
 python scripts/train_dnn_ppo.py --arch cnn_m_r --total_games 1000000 --gpu_infer \
   --games_per_worker 32 --infer_max_batch 512 --exp_dir experiments/my_run_$(date +%Y%m%d_%H%M%S)
@@ -125,6 +131,61 @@ bash scripts/phase2_dnn/launch_g4_git.sh my-vm us-central1-b my_run $(git rev-pa
   scripts/train_dnn_ppo.py --arch cnn_m_r ... --exp_dir experiments/my_run
 conda run -n rlhf_mahjong python tools/webui/server.py --port 8642   # inspection console
 ```
+
+## Live Majsoul testing (Windows play machine)
+
+The human-scale yardstick (in-game "maka" grade, placement, deal-in rate) can only be read from real
+games. Standard topology is **two machines**: the model machine runs this repo plus the checkpoint, the
+play machine (Windows) runs [MahjongCopilot](https://github.com/latorc/MahjongCopilot) (MC) + Chrome, and
+an SSH tunnel connects them. A single-machine setup (both on the same box) works just as well.
+
+```
+Windows play machine: MC + plugin ── mitmproxy:10999 ──> Chrome (Majsoul)
+                          └─ bot_llmmahjong ──> 127.0.0.1:8765 ──ssh -L tunnel──> model machine: serve_mjai_bot.py
+```
+
+1. **Model machine** (Linux, repo root) — champion, greedy:
+   ```bash
+   PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_anchors_epoch6/bc49.pt \
+     --temperature 0 --log experiments/exp24_majsoul_live_$(date +%Y%m%d_%H%M%S)/mjai_session.jsonl
+   ```
+   `curl localhost:8765/health` returning ok means it is ready. The server has **no auth and binds
+   127.0.0.1 only** — never expose it to the internet.
+2. **Install MC on the play machine** (PowerShell; do not reuse an old conda):
+   ```powershell
+   winget install Python.Python.3.12 --scope user
+   git clone https://github.com/latorc/MahjongCopilot $env:USERPROFILE\MahjongCopilot
+   cd $env:USERPROFILE\MahjongCopilot; python -m venv venv; .\venv\Scripts\pip install -r requirements.txt; .\venv\Scripts\playwright install chromium
+   ```
+3. **Apply the three Windows patches + install our bot plugin** (patch verified against MC `31be3de`):
+   ```powershell
+   git apply <repo>\tools\majsoul_bridge\mahjongcopilot_windows.patch
+   python <repo>\tools\majsoul_bridge\install.py $env:USERPROFILE\MahjongCopilot
+   ```
+   The three patches fix the three Windows blockers you *will* hit: Playwright's bundled Chromium failing
+   with a side-by-side error (use the system Chrome instead), Majsoul's 46 MB wasm being buffered by
+   mitmproxy into a black screen (stream large bodies), and the mitm root cert needing admin rights
+   (install into the current-user store).
+4. **Open the tunnel** (play machine, keep it running): `ssh -N -L 8765:127.0.0.1:8765 <model-machine>`;
+   MC's URL stays `http://127.0.0.1:8765`.
+5. **Configure and start MC**: in `settings.json` set `"model_type": "LLM_Mahjong"`,
+   `"llmmahjong_url": "http://127.0.0.1:8765"`, `"ai_randomize_choice": 0`; `enable_automation` = `false`
+   for assist mode (you click, the panel shows the policy distribution and V) or `true` for auto-play
+   (used for scored runs). Start with
+   `cd $env:USERPROFILE\MahjongCopilot; .\venv\Scripts\python.exe main.py`, then launch the browser and log in.
+6. **Acceptance + scoring**: play one friend-room game first and check that every `Bot in: tsumo` in MC's
+   log has a matching `Bot out: dahai` and that `no op list` count is 0; afterwards run
+   `python scripts/analyze_majsoul_session.py <session>.jsonl` on the model machine for placement /
+   win / deal-in / riichi / call rates.
+
+**Detailed runbooks**: [tools/majsoul_bridge/README.md](tools/majsoul_bridge/README.md) (general flow, the
+two modes, per-decision record format, protocol pitfalls) ·
+[tools/majsoul_bridge/WINDOWS.md](tools/majsoul_bridge/WINDOWS.md) (Windows field notes: symptoms and root
+cause of each patch, new Unity client compatibility, troubleshooting table for `spawn UNKNOWN` / black
+screen / certificates) · [docs/champion_model.md](docs/champion_model.md) (which checkpoint, what resources).
+
+> **Risk**: using third-party automation violates Majsoul's terms of service and **can get the account
+> banned** — only use an account you can afford to lose.
 
 **Discipline** (enforced by CLAUDE.md): write `EXPERIMENT.md` (purpose / method / success criteria)
 BEFORE launching any run; verify throughput matches expectations right after launch; every long-running
