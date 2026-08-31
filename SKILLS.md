@@ -376,3 +376,11 @@ KL(π‖π_BC) 写成 `where(finite, p*(logp−alogp), 0)` 时前向有限但反
 
 ## 实验结果总结的存放地（2026-08-30 起）
 结果类总结一律进 [experiments/FINDINGS.md](experiments/FINDINGS.md)（结果台账）与各 `experiments/*_prereg/EXPERIMENT.md`；本文件只保留教训 / 方法论 / 运维与硬件约束。
+
+## RunPod 成为算力选项，账户已充值（2026-08-30）
+web_canvas 项目充值并实测了 RunPod 后不再使用，余额留给本项目。要点：A100 **80GB**
+secure $1.59/h，比 GCE DWS 的 40GB $2.02/h 便宜 21% 且无配额、按秒计费、无 168h 上限；
+26h 一臂 ~$41 vs $52.5。运维三条铁律：**用完删 pod 别停**（container disk 停机费率翻倍，
+400GB≈$80/月）；SSH 走**直连**入口（`sshPublicKey` 注入的 key 只有直连认，proxy 入口
+永远 Permission denied）；pod 是容器，自停靠 `kill 1` 不靠 shutdown。价格表、
+create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_and_ops.md)。
