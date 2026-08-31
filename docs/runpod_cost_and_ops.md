@@ -6,36 +6,43 @@
 > 余额只能在 [console](https://www.runpod.io/console) 看——API 不暴露；计费 API
 > (`get-billing`) 有约小时级延迟，当日实花 ~$5 时它只报 $0.55，别拿它做实时核对。
 
-## 1. 结论先行：同一张卡（RTX PRO 6000），RunPod 比 g4 flex 便宜 7–25%，但 vCPU 配额待验证
+## 1. 结论先行：按保证 vCPU 算，RunPod 打不过 g4-standard-48（2026-08-30 补查后反转）
 
-本项目现行主力是 **g4-standard-48 flex-start = RTX PRO 6000 96GB + 48 vCPU，$2.25/h**
-（gcp 文档 §8，2026-08-23 实测：cnn_m_r 279 局/s，瓶颈在 rollout 的 CPU worker）。
-RunPod 有**完全相同的卡**：
+> 初版此节以为同卡便宜 7–25% 即赢，补查定价页的 per-GPU vCPU 配额后反转：
+> **RunPod 的 pod 是 GPU 富裕、CPU 贫穷型,而本负载（rollout CPU 瓶颈）恰恰相反。**
+> g4-standard-48 的 48 保证核在市面上是罕见配置，正好长在负载的点上。
 
-| | g4-standard-48 flex（现行默认） | RunPod secure | RunPod community |
-|---|---|---|---|
-| 卡 | RTX PRO 6000 Blackwell 96GB | 同一张卡（Server Edition, sm_120） | 同 |
-| **vCPU** | **48（保证值）** | **未查——见下，决定性问题** | 同 |
-| 单价 | $2.25/h（按需 $4.50 不可用） | **$2.09/h（−7%）** | **$1.69/h（−25%）** |
-| 局/s 每 $（cnn_m_r 279 局/s 折算） | 124 | ≥133（若 CPU 不缩水） | ≥165（同上） |
-| 拿容量 | flex 排队，us-central1-b 秒拿（8/23） | HIGH 库存，即开 | HIGH |
-| 时长上限 | 168h；`--max-run-duration=12h` 现行 | 无 | 无 |
-| 中断 | 7 天内不抢占 | on-demand 不抢占 | 不抢占，但主机是散户机器 |
-| 停机后重启 | flex 终止动作是 DELETE，没有"重启" | stop/start 随意（但见 §2 磁盘费率） | 同 |
+每 GPU 保证配额（定价页，2026-08-30）：A40 = **9 vCPU**/50GB；L40S、A100 SXM、
+RTX PRO 6000 = **16 vCPU**；H100 = 20。按 g4 实测折算（279 局/s ÷ 48 核 ≈ 5.8 局/s/核）：
 
-**决定性的未知数是 vCPU。** g4-48 的 48 核是买断的保证值；RunPod 每种 GPU 配多少
-vCPU/RAM 在 console 部署页显示，这次没记录。实测旁证（web_canvas 的两台 RTX PRO 6000
-pod）：`nproc` = 128、可见 RAM 1.5TB（宿主机视角），`cmake -j128` 编译 llama.cpp CUDA
-全套约 3.5 分钟——16 核干不出这个速度，有效核数看起来 ≥48，但 cgroup 保证值没有验证。
-**花 $2 探针的第一件事就是跑 `bench_workers` / rollout 基准对着 279 局/s 比**——
-局/s 达标则每美元直接 +7%（secure）到 +33%（community），不达标则整个选项作废。
+| | vCPU/$ | 估算局/s | 局/s 每 $ | 单 run 墙钟 |
+|---|---|---|---|---|
+| **g4-48 flex（现行默认）** | **21.3** | 279（实测） | **124** | 26h |
+| A40 secure $0.44 | 20.5 | ~52 | 119 | ~140h |
+| A40 community $0.35 | 25.7 | ~52 | 149 | ~140h |
+| L40S secure $0.99 | 16.2 | ~93 | 94 | ~78h |
+| RTX PRO 6000 secure $2.09 | 7.7 | ~93 | 44 | ~78h |
 
-其它卡（secure 价 / 库存，实查 2026-08-30），仅当负载性质变化时参考：
+- **A40（"是不是更划算"）**：不。便宜的是 GPU，要买的是 CPU。community 价每美元 +20%，
+  但单 run 5.4× 慢——本项目已有先例（flex vs spot，$7 换不抢占）说明迭代速度值钱。
+- **同卡（RTX PRO 6000）**：保证核只有 g4 的 1/3，每美元 44 vs 124，判负。
+- **burst 是唯一翻盘变数**：实测 pod 内 `nproc`=128、`-j128` 编译 llama.cpp 全套 3.5 分钟，
+  cgroup 显然放行宿主机闲置核——实际吞吐可能远超保证值，但 burst 不是合同，26h run
+  中途被邻居抢核就没了。要验证就花 $2：A40 community（$0.35/h）开一台跑 rollout 基准
+  对 279 局/s，达标与否半小时见分晓。
+- 余额更合适的花法可能不是训练主力，而是**短平快、按秒计费占优的活**：elo 梯子评测、
+  一次性基准、临时需要一张大显存卡的探针。
+
+### 1.1 原始价格表（负载性质变化时参考）
+
+基线：g4-standard-48 flex = RTX PRO 6000 96GB + **48 保证 vCPU**，$2.25/h，按需 $4.50
+不可用（gcp 文档 §8）。RunPod 同卡 $2.09 secure / $1.69 community、HIGH 库存、无 168h
+上限、stop/start 随意（磁盘费率见 §2）——单价确实低，但 vCPU 见上表。
 
 | 卡 | 显存 | $/h secure | 库存 | 备注 |
 |---|---|---|---|---|
-| A100 SXM | 80GB | $1.59 | HIGH | 显存型负载才有意义；本项目 A100 已被 §8 实测判负（12 vCPU 饿死 worker，~40 局/s）——RunPod 的 A100 配几核同样未查 |
-| A40 | 48GB | $0.44 | HIGH | 极低价 48GB；vCPU 配额同样是先决问题 |
+| A100 SXM | 80GB | $1.59 | HIGH | 16 vCPU；显存型负载才有意义（§8 已判负 12 核的 GCE A100） |
+| A40 | 48GB | $0.44 | HIGH | 9 vCPU——见 §1 的判决 |
 | L40S | 48GB | $0.99 | HIGH | |
 | H100 SXM | 80GB | $3.29 | MEDIUM | |
 | H200 SXM | 141GB | $4.59 | HIGH | |
