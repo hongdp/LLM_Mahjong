@@ -42,6 +42,19 @@ def parse_args():
     ap.add_argument("--games_per_worker", type=int, default=32)
     ap.add_argument("--temperature", type=float, default=1.0,
                     help="Boltzmann exploration over Q")
+    ap.add_argument("--margin_coef", type=float, default=0.0,
+                    help="DQfD large-margin loss vs the behavior policy's "
+                         "greedy action: keeps the prior's action ORDERING "
+                         "while TD fits magnitudes (v1.1 showed raw Q "
+                         "regression erodes the supervised ordering faster "
+                         "than 50k games of TD can rebuild it)")
+    ap.add_argument("--margin", type=float, default=0.05,
+                    help="margin in scaled-return units")
+    ap.add_argument("--behavior_ckpt", default=None,
+                    help="freeze the ACTING policy to this ckpt (e.g. bc49) "
+                         "while Q trains off-policy on its data — the v1 "
+                         "smoke showed self-acting Boltzmann(Q) collapses to "
+                         "near-uniform once TD rescales Q to return units")
     ap.add_argument("--gamma", type=float, default=0.995)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--batch", type=int, default=512)
@@ -148,6 +161,15 @@ def main():
     target.eval()
     for p in target.parameters():
         p.requires_grad_(False)
+    beh_net = net
+    if args.behavior_ckpt:
+        beh_net = ZOO[args.arch][0]().to(dev)
+        load_compatible(beh_net, torch.load(args.behavior_ckpt,
+                                            map_location="cpu")["state_dict"])
+        beh_net.eval()
+        for p in beh_net.parameters():
+            p.requires_grad_(False)
+        print(f"🎭 frozen behavior: {args.behavior_ckpt}", flush=True)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 
     cfg = dict(channels=blob.get("channels", 64), blocks=blob.get("blocks", 3),
@@ -184,7 +206,7 @@ def main():
         seeds = [args.seed + it * 100003 + d for d in range(args.games_per_iter)]
         net.eval()
         t_r = time.time()
-        episodes, results = collect_parallel(net, len(seeds), cfg,
+        episodes, results = collect_parallel(beh_net, len(seeds), cfg,
                                              args.workers, seeds)
         rollout_s = time.time() - t_r
         games += len(results)
@@ -227,7 +249,8 @@ def main():
             S = torch.from_numpy(replay.scal[idx]).to(dev)
             M = torch.from_numpy(replay.mask[idx]).to(dev)      # bool
             A = torch.from_numpy(replay.act[idx]).to(dev)
-            q = net(P, S, M).gather(1, A[:, None]).squeeze(1)
+            q_all = net(P, S, M)
+            q = q_all.gather(1, A[:, None]).squeeze(1)
             if games <= args.mc_until:
                 y = torch.from_numpy(replay.mcret[idx]).to(dev)
             else:
@@ -246,6 +269,16 @@ def main():
                     disc = torch.from_numpy(replay.ndisc[idx][live]).to(dev)
                     y[torch.from_numpy(live).to(dev)] += disc * qt
             loss = F.smooth_l1_loss(q, y)
+            if args.margin_coef > 0:
+                # J_E(Q) = max_a[Q + m*1(a != a_E)] - Q(s, a_E), a_E = the
+                # frozen prior's greedy action on this state (DQfD eq. 2)
+                with torch.no_grad():
+                    a_e = beh_net(P, S, M).argmax(1)
+                pad = torch.full_like(q_all, args.margin)
+                pad.scatter_(1, a_e[:, None], 0.0)
+                aug = (q_all + pad).masked_fill(~M, float("-inf")).max(1).values
+                q_e = q_all.gather(1, a_e[:, None]).squeeze(1)
+                loss = loss + args.margin_coef * (aug - q_e).mean()
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 10.0)
