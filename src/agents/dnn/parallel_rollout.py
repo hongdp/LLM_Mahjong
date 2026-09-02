@@ -465,7 +465,12 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             return
         active[i] = {"gen": gen, "table": table, "reqs": reqs, "seed": seed,
                      "learner": learner_seats, "opp": opp, "temps": temps,
-                     "roles": roles}
+                     "roles": roles,
+                     # single-deviation exploration (exp59 v1.4): at most one
+                     # learner decision per game is sampled at single_dev_temp,
+                     # every other one plays at the seat temperature (0 = greedy)
+                     "dev_rng": random.Random((seed or 0) * 100003 + 17),
+                     "deviated": False}
 
     while queue and len(active) < K:
         start(queue.pop(0))
@@ -500,7 +505,15 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                 with open("/tmp/vec_debug.txt", "a") as _f:
                     _f.write(f"EMPTY vec mask pid={pid} actions={actions!r}\n")
             planes.append(pl); scalars.append(sc); masks.append(mask); lookups.append(lookup)
-            temps.append(float(st["temps"][pid])); mids.append(model_id)
+            t = float(st["temps"][pid])
+            dev_p = cfg.get("single_dev_p") or 0.0
+            if (dev_p > 0 and not st["deviated"] and pid in st["learner"]
+                    and len(lookup) > 1 and st["dev_rng"].random() < dev_p):
+                # one coherent hand with exactly one plausible alternative
+                # move: the counterfactual data a one-step improvement needs
+                t = float(cfg.get("single_dev_temp", 1.0))
+                st["deviated"] = True
+            temps.append(t); mids.append(model_id)
         P = _pad_stack(planes)
         maxp = P.shape[1]
         S = _pad_stack(scalars)

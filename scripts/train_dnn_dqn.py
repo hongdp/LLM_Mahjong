@@ -61,6 +61,15 @@ def parse_args():
                          "features (v1.1 lesson). 0 = never freeze")
     ap.add_argument("--trunk_lr_mult", type=float, default=1.0,
                     help="discriminative LR: trunk lr = lr * mult after unfreeze")
+    ap.add_argument("--single_dev_p", type=float, default=0.0,
+                    help="single-deviation exploration: per multi-choice "
+                         "learner decision, probability of being THE one step "
+                         "this game that samples at --single_dev_temp instead "
+                         "of the seat temperature; at most once per game "
+                         "(~28 learner decisions/game -> p=0.04 deviates in "
+                         "~2/3 of games). Keeps hands coherent, unlike per-step "
+                         "epsilon (0.9^110 ~ 0 intact hands)")
+    ap.add_argument("--single_dev_temp", type=float, default=1.0)
     ap.add_argument("--behavior_ckpt", default=None,
                     help="freeze the ACTING policy to this ckpt (e.g. bc49) "
                          "while Q trains off-policy on its data — the v1 "
@@ -212,7 +221,8 @@ def main():
                bf16_infer=False, no_episodes=False,
                league=json.load(open(args.league)), league_frac=1.0,
                league_learner_seats=1, league_opp_temp=0.0, hanchan=False,
-               hanchan_w_path=None, action_space=space_of_arch(args.arch))
+               hanchan_w_path=None, action_space=space_of_arch(args.arch),
+               single_dev_p=args.single_dev_p, single_dev_temp=args.single_dev_temp)
     print(f"🏟 league: {len(cfg['league'])} frozen T=0 opponents, learner x1",
           flush=True)
 
