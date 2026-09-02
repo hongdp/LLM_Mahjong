@@ -50,6 +50,10 @@ def parse_args():
                          "than 50k games of TD can rebuild it)")
     ap.add_argument("--margin", type=float, default=0.05,
                     help="margin in scaled-return units")
+    ap.add_argument("--margin_schedule", default=None,
+                    help="step schedule 'games:coef,games:coef,...' overriding "
+                         "--margin_coef once games pass each threshold — "
+                         "anneal the prior anchor so TD may overrule it")
     ap.add_argument("--behavior_ckpt", default=None,
                     help="freeze the ACTING policy to this ckpt (e.g. bc49) "
                          "while Q trains off-policy on its data — the v1 "
@@ -201,8 +205,16 @@ def main():
                     "optimizer": opt.state_dict()}, f"{args.exp_dir}/{tag}.pt")
 
     save("games_0", 0, 0)
+    margin_coef = args.margin_coef
+    m_sched = []
+    if args.margin_schedule:
+        m_sched = sorted((int(g), float(c)) for g, c in
+                         (x.split(":") for x in args.margin_schedule.split(",")))
     while games < args.total_games:
         it += 1
+        for g_thr, coef in m_sched:
+            if games >= g_thr:
+                margin_coef = coef
         seeds = [args.seed + it * 100003 + d for d in range(args.games_per_iter)]
         net.eval()
         t_r = time.time()
@@ -269,7 +281,7 @@ def main():
                     disc = torch.from_numpy(replay.ndisc[idx][live]).to(dev)
                     y[torch.from_numpy(live).to(dev)] += disc * qt
             loss = F.smooth_l1_loss(q, y)
-            if args.margin_coef > 0:
+            if margin_coef > 0:
                 # J_E(Q) = max_a[Q + m*1(a != a_E)] - Q(s, a_E), a_E = the
                 # frozen prior's greedy action on this state (DQfD eq. 2)
                 with torch.no_grad():
@@ -278,7 +290,7 @@ def main():
                 pad.scatter_(1, a_e[:, None], 0.0)
                 aug = (q_all + pad).masked_fill(~M, float("-inf")).max(1).values
                 q_e = q_all.gather(1, a_e[:, None]).squeeze(1)
-                loss = loss + args.margin_coef * (aug - q_e).mean()
+                loss = loss + margin_coef * (aug - q_e).mean()
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 10.0)
@@ -299,8 +311,8 @@ def main():
                "q_mean": round(q_sum / max(nb, 1), 4),
                "target_mean": round(y_sum / max(nb, 1), 4),
                "ep_return0": round(ret0, 4), "league_pts": round(proxy, 1),
-               "replay": replay.size, "phase": ("mc" if games <= args.mc_until
-                                                else f"n{args.nstep}")}
+               "replay": replay.size, "margin_coef": margin_coef,
+               "phase": ("mc" if games <= args.mc_until else f"n{args.nstep}")}
         log_rows.append(row)
         json.dump(log_rows, open(f"{args.exp_dir}/train_log.json", "w"), indent=1)
         for k in ("td_loss", "q_mean", "target_mean", "ep_return0", "league_pts"):

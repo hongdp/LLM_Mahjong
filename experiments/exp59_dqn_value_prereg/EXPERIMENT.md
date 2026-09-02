@@ -24,6 +24,14 @@ v1 只回答机器问题（单局刻度、常规奖励）；W 信用接 Q 目标
 batch 512、lr 1e-4、target_every 2000 次更新、回放 1M、每迭代 rollout 512 局 +
 若干梯度步（更新数 : 新样本数 ≈ 1 : 8 起步）。快照见本目录 config 文件。
 
+## Config（正式 tranche-1，2026-08-31 晚，RunPod 3090Ti community）
+v1.2 配方 + **margin 退火**：`--behavior_ckpt bc49 --margin_coef 1.0
+--margin_schedule 0:1.0,80000:0.3,140000:0.1`（前 80k 局锚死排序、TD 校准量纲；
+之后两级放松，看 TD 敢不敢推翻先验的局部决策）。200k 局、workers=保证核数、K=32、
+replay_ratio 2、n-step 10、mc_until 20k、reward_scale 0.05。
+预算 **≤$1**（估 ~45 分钟 ≈ $0.25）。runbook：cgroup 核数校验、expandable_segments、
+pip 补 tensorboard、完赛后由工作站侧调 API terminate（kill 1 不停表）、心跳挂托管后台任务。
+
 ## Success Criteria（预注册）
 - **冒烟（本地，~50k 局）**：①TD loss 收敛趋势（不振荡发散）；②Q/回报均值比率 ∈ [0.5, 2]
   （>2 = 过估计警报）；③贪心行为不崩：vs bc49 快评（n=400 单局，T=0）≥ 0.45。
