@@ -457,6 +457,12 @@ v2 起对局账本一行一场、含每席 uma/顺位/局数/击飞，口径成�
   没人被叫醒，完赛后 pod 空转 ~5h。规则：长跑监视必须挂在会重新调起操作者的机制上
   （托管后台任务/cron），nohup 循环只能作为它的内层执行体，不能是唯一一层。
 
+## TB 面板用 symlink 目录 + `--logdir`，发射即 `ln -s`，不再重启（2026-09-02）
+固定 `--logdir_spec` 字串的面板三次漏挂新 run（exp59 v1.6/exp60），还曾因从进程命令行刮 spec 把
+40 个历史 run 刮丢。改法：`experiments/_tb_qlearning/<run名> -> <run>/tensorboard` 的符号链接目录，
+TB `--logdir` 指向它，reload 自动发现新子目录。**规则**：发射脚本/命令里紧跟一条 `ln -sfn`，
+TB 本体永不重启；spec 类文件只作备份（`_cloud_mirror/TB_*_SPEC.txt`）。
+
 ## RunPod 安全分层：核心权重只上 Secure Cloud（2026-09-01，用户裁定）
 Community pod 的容器隔离防的是其他租户，防不了宿主机主人（对物理机有 root，可读容器文件/
 内存/显存；消费卡无 TEE）。「宿主不看数据」只是服务条款 + 审核，非密码学保证；官方也把
