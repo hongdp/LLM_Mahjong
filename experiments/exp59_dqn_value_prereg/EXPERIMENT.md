@@ -62,6 +62,12 @@ pip 补 tensorboard、完赛后由工作站侧调 API terminate（kill 1 不停�
   机制结论：**纯 TD 在 5 万局尺度重建不了监督先验的动作排序；margin 锚保排序、TD 只调量纲
   与例外**——正式 run 需测 margin 退火（锚太紧 Q 永远超不过先验）。
 
+- [09-01 20:45] **正式 tranche-1 发射**：pod `lvo4410fz9tian`（3090Ti community，EPYC 7663，
+  cgroup 23 核），SHA 3fa5e19，v1.2 配方 + margin 退火 1.0→0.3@80k→0.1@140k，200k 局。
+  首迭代 60 局/s、TD 1.04→0.27、行为代理 −70 稳定。心跳=托管后台任务（会叫醒）、
+  TB `exp59_t1_LIVE`、每 30 分钟 ckpt 回拉。坑：家用上行 ~1Mbps，两个锚 ckpt（32MB）
+  scp 走了 12 分钟——以后锚点从 GCS 拉到 pod，不经工作站。
+
 ## Results
 
 | 冒烟判据（预注册） | 目标 | v1 | v1.1 | v1.2 | 判定 |
