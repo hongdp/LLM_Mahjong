@@ -30,6 +30,16 @@ v2 假设：**演员持续用"最新策略 + 历史/锚点轮换池"凑桌、四
 
 ## Progress
 - [09-02 00:30] 设计定稿；格式实测（21 个离散值、98.6% 0/1 → 58 B/步）；实现中。
+- [09-01 23:05] 基建落地并本地冒烟：分片往返测试过（tests/test_replay_store.py）；演员 + 学习者同机跑通，
+  首个晋级评测执行（vs bc49 0.4642±0.020 → held，机制正确）。
+- [09-01 23:10] **用户指令：演员纯 CPU、学习者独占 GPU 大 batch**。演员 20 CPU worker = 24–25 局/s
+  （GPU 共享版 36–40）；学习者 batch 2048，GPU 利用率 95%（共享时 30–40%）。
+- [09-01 23:20] 指标分权：演员记 `actor/*`（games/steps per s、learner_pts_vs_pool、gen_playing）+ `style/*`
+  （x=产出局数）；学习者记 `dqn/*`（td/q/target、samples_per_s、updates_per_s、ingest_steps_per_s、
+  replay_ratio_eff、replay_size、margin_coef；x=摄入局数）。TB 6007 改 symlink 目录自动发现。
+- [09-01 23:25] **晋级保险**（用户批准）：候选同时对固定锚 bc49 评测（`dqn/promo_share_vs_bc49`），
+  连续两次 <0.48 冻结晋级并报警；接受门槛从 0.5−1σ 收到点估计 ≥0.5——防"对上一代不劣于"链的
+  非传递性漂移（v1.6-A −6.7σ 的那种滑坡）。学习者 v3 重发（run 目录 exp60_learner_v3）。
 
 ## Results
 （待）
