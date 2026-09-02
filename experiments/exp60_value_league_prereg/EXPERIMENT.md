@@ -56,6 +56,13 @@ CPU pod 方案否决**（54 vs 180 局/s/$）；拓扑 = GPU 演员 : GPU 学习
 第 2 轮判据同 §Success Criteria 2/3（代际曲线不降；任一代 vs bc49 n=4000 ≥0.52）。收尾：全部 terminate、
 对局库/池子/日志同步 GCS。
 
+**实际拓扑（09-02 08:10 定）**：3090 secure 只拿到一台且建成即卡（8 分钟 runtime 空，terminate）；
+→ **演员 = L40S secure（$0.99/h，13 核，实测 65 局/s @26 worker），学习者 = 4090 secure（$0.74/h，5 核，
+bf16 batch 1024）**，合计 $1.73/h。**数据层 = 学习者本地盘（T2）**：演员用专用 SSH 密钥每 10 秒 rsync 推分片到
+学习者 `experiments/store/`、拉回 `experiments/pool/`；**pod 上不放任何 GCS 凭证**（安全分层规则），
+持久化由工作站侧循环从学习者拉取 store/pool 再镜像 GCS。Q5 的"数据层独立（GCS）"方案因需在 pod 放凭证而降级为备选；
+实测项改为：演员→学习者 rsync 的端到端 lag 与带宽。
+
 ## Results（第 1 轮，本地冒烟，2026-09-01 23:05 → 09-02 00:20）
 
 | 判据 | 目标 | 实测 | 判定 |
