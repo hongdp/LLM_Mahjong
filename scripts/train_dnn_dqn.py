@@ -83,6 +83,9 @@ def parse_args():
     ap.add_argument("--pool_dir", default=None,
                     help="exp60: where promoted gen_NNNN.pt land (actors read it)")
     ap.add_argument("--updates_per_iter", type=int, default=200)
+    ap.add_argument("--bf16", action="store_true",
+                    help="bf16 autocast for the update forward (Q1b: +15% at "
+                         "batch 512, +50% at 2048 on a 4080); losses in fp32")
     ap.add_argument("--history_frac", type=float, default=0.0,
                     help="store mode: per pass, also read one random OLD shard "
                          "and add this fraction of its episodes to the ring — "
@@ -430,7 +433,9 @@ def main():
             S = torch.from_numpy(replay.scal[idx]).to(dev)
             M = torch.from_numpy(replay.mask[idx]).to(dev)      # bool
             A = torch.from_numpy(replay.act[idx]).to(dev)
-            q_all = net(P, S, M)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
+                q_all = net(P, S, M)
+            q_all = q_all.float()
             q = q_all.gather(1, A[:, None]).squeeze(1)
             if mc_phase:
                 y = torch.from_numpy(replay.mcret[idx]).to(dev)
