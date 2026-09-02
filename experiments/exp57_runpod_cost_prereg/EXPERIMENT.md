@@ -68,6 +68,10 @@
   探针 stdout 日志已从旧会话 scratchpad 抢救进 `experiments/probes/*.log`；
   v2 曲线 JSON 已从日志重建。教训follow-up：worktree 内的 durable 工件不 durable——
   评测原始数据应落主检出或 GCS。
+- [08-31 01:30 补记] **worktree 蒸发的账本再生完成并闭环**：五锚链批 + 池拟合逐字节复现
+  （ELO 1465.3±11.9，五残差全同），两个探针批（bc49/exp46I × 400 对）七组聚合校验
+  **CLOSURE PASS（7/7 完全一致）**。产物已落主检出 `experiments/elo_league/hanchan/`
+  并镜像 `gs://llm-mahjong-experiments/elo_league/hanchan/`。确定性再生从验证走到投产。
 - [19:05] **H3 探针在跑**：pod `g1v1470djni9rd`（3090 Ti community，$0.27/h，EPYC 7663 宿主，
   cgroup 保证 23 核 + burst）。坑重踩：Ubuntu24.04 pip 要 `--break-system-packages`（文档坑 3）；
   ZOO 键名是 `handset_xl_cnn_m_r` 不是 `handset_xl`。
