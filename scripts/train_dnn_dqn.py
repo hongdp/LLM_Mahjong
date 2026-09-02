@@ -54,6 +54,13 @@ def parse_args():
                     help="step schedule 'games:coef,games:coef,...' overriding "
                          "--margin_coef once games pass each threshold — "
                          "anneal the prior anchor so TD may overrule it")
+    ap.add_argument("--freeze_trunk_until", type=int, default=0,
+                    help="LP-FT (Kumar et al. 2022): train ONLY the Q head with "
+                         "the trunk frozen until this many games, then unfreeze "
+                         "— a mis-scaled head must not backprop into the prior's "
+                         "features (v1.1 lesson). 0 = never freeze")
+    ap.add_argument("--trunk_lr_mult", type=float, default=1.0,
+                    help="discriminative LR: trunk lr = lr * mult after unfreeze")
     ap.add_argument("--behavior_ckpt", default=None,
                     help="freeze the ACTING policy to this ckpt (e.g. bc49) "
                          "while Q trains off-policy on its data — the v1 "
@@ -174,7 +181,25 @@ def main():
         for p in beh_net.parameters():
             p.requires_grad_(False)
         print(f"🎭 frozen behavior: {args.behavior_ckpt}", flush=True)
-    opt = torch.optim.Adam(net.parameters(), lr=args.lr)
+    # the action head: MahjongPolicyNet has one `head`; ConvFormer46 scores
+    # the 46 slots with four small layers (exp47 structured head)
+    HEAD_NAMES = ("head", "type_head", "slot_tile", "slot_red", "slot_global")
+    head_params = [p for name, m in net.named_children() if name in HEAD_NAMES
+                   for p in m.parameters()]
+    if not head_params:
+        raise SystemExit(f"no action head found among {[n for n, _ in net.named_children()]}")
+    head_ids = {id(p) for p in head_params}
+    trunk_params = [p for p in net.parameters() if id(p) not in head_ids]
+    opt = torch.optim.Adam([{"params": head_params, "lr": args.lr},
+                            {"params": trunk_params,
+                             "lr": args.lr * args.trunk_lr_mult}])
+    trunk_frozen = args.freeze_trunk_until > 0
+    if trunk_frozen:
+        for p in trunk_params:
+            p.requires_grad_(False)
+        print(f"🧊 trunk frozen ({sum(p.numel() for p in trunk_params)} params) "
+              f"until {args.freeze_trunk_until} games; head "
+              f"{sum(p.numel() for p in head_params)} params trainable", flush=True)
 
     cfg = dict(channels=blob.get("channels", 64), blocks=blob.get("blocks", 3),
                arch=args.arch, temperature=args.temperature, gamma=args.gamma,
@@ -216,6 +241,13 @@ def main():
         for g_thr, coef in m_sched:
             if games >= g_thr:
                 margin_coef = coef
+        if trunk_frozen and games >= args.freeze_trunk_until:
+            for p in trunk_params:
+                p.requires_grad_(True)
+            trunk_frozen = False
+            target.load_state_dict(net.state_dict())
+            print(f"🔥 trunk unfrozen at {games} games (trunk lr x{args.trunk_lr_mult}); "
+                  f"target net synced", flush=True)
         if mc_phase and games > args.mc_until:
             # tranche-1 TB (2026-09-01): the first hard sync landed ~15k games
             # AFTER the MC->TD switch, so bootstrapping ran off the warm-start
