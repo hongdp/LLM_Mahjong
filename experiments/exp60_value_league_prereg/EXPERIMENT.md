@@ -1,6 +1,6 @@
 # exp60 — 价值方法线 v2：演员/学习者解耦 + 历史 ckpt 联赛 + 持久对局库
 
-- **Date**: 2026-09-02  **Status**: running（基建实现 + 本地冒烟阶段）
+- **Date**: 2026-09-02  **Status**: paused（第 1 轮本地冒烟收官 09-02 00:20；基建成立、0 代晋级；下一轮见 Conclusion）
 - **Git**: 基线 0bc003a；设计 [designs/design_value_actor_learner.md](../designs/design_value_actor_learner.md)（用户提出的架构）
 - **Env**: 本地 4080（冒烟：演员 + 学习者同机）；正式 tranche 上 RunPod Secure（带冠军权重，安全分层规则）
 
@@ -41,12 +41,42 @@ v2 假设：**演员持续用"最新策略 + 历史/锚点轮换池"凑桌、四
   连续两次 <0.48 冻结晋级并报警；接受门槛从 0.5−1σ 收到点估计 ≥0.5——防"对上一代不劣于"链的
   非传递性漂移（v1.6-A −6.7σ 的那种滑坡）。学习者 v3 重发（run 目录 exp60_learner_v3）。
 
-## Results
-（待）
+- [09-01 23:30] 学习者 v4 重发（MC 期改按更新数：v3 因一次性摄入 22k 局积压跳过了 MC 期，出现一帧 y≈+1.0）。
+- [09-02 00:20] **用户指令：本轮跑完即收**。v4 跑 48 分钟 / 15,000 次更新 / 摄入 90.6k 局，四次晋级评测全部
+  held（vs bc49 0.4708 / 0.4875 / 0.4817 / 0.4667，n=600 对），**未产生 gen_0001**。停演员（STOP）与学习者，
+  对局库与池子最终同步到 GCS，镜像循环关闭。云上无本项目机器在计费。
 
-## Conclusion
-（待）
+## Results（第 1 轮，本地冒烟，2026-09-01 23:05 → 09-02 00:20）
+
+| 判据 | 目标 | 实测 | 判定 |
+|---|---|---|---|
+| 1a 分片往返 | 逐位一致 | tests/test_replay_store.py 2/2 过（含变异守卫） | ✅ |
+| 1b 演员吞吐 | ≥ 串行 90% | **CPU 20 worker 23–25 局/s**（串行 GPU 共享 71 局/s 的 35%；GPU 共享演员 36–40） | ❌ 纯 CPU 演员是产出瓶颈 |
+| 1c 学习者不被采集阻塞 | — | GPU 94–95%，5.7 更新/s × 2048 = 11.7k 样本/s，有效回放比 ~8 | ✅ |
+| 2 代际曲线 | 晋级机制跑通、不单调降 | 机制跑通；4 次评测 0.467–0.488 全 held，**0 代晋级** | ⚠️ 机制 ✅，学习 ✗ |
+| 终评 | — | 学习者最新权重（77k 局处 candidate）vs bc49 **n=4000：0.4894±0.0079，−217 分/对**；A/A 0.500 | 平（−1.3σ） |
+
+对局库：**180 分片 / 92,160 局 / 5.52M transition / 377MB（68 B/步含 mask+标量）**，
+GCS `gs://llm-mahjong-experiments/exp60_store/`；池子仅 anchors + candidate.pt（`exp60_pool/`）。
+
+## Conclusion（第 1 轮）
+
+**基建成立，学习未起步。** 演员/学习者/对局库/晋级评测/绝对刻度保险全部跑通（本机 0 元）；但 15k 次更新、
+90k 局内 Q 的贪心仍停在 bc49 水位下沿（0.467–0.489），与 exp59 全系一致——架构解决的是"能不能高效、可持续地
+学"，没有解决"目标里有没有排序信息"。这一轮暴露的资源配比问题：纯 CPU 演员产出只有 GPU 共享版的 2/3，
+学习者反而"等饭"（回放比 8）。
+
+**下一轮该做的（按优先级）**：①演员拿回 GPU 推理服务器或加演员（云上 CPU pod）；②在同一份对局库上并行开学习者
+消融：n-step {5,10,20,MC}、target_every {250,500,2000}、`--history_frac 0.2`、margin m {0.05,0.01}；
+③**配对牌山差分目标**（信噪比杠杆，v3 议题）——这是唯一直接攻击"排序信息不足"的方案；④晋级评测 n 从 600 对
+提到 2000 对（±0.011）以免噪声误晋级。
 
 ## Artifacts
 | Path | Size | Description |
 |---|---|---|
+| experiments/exp60_store/ + gs://llm-mahjong-experiments/exp60_store/ | 377MB | 180 分片对局库（四席全收、来源标签） |
+| experiments/exp60_pool/ | 8MB | anchors.json + candidate.pt（77k 局处学习者权重） |
+| experiments/exp60_learner_v{2,3,4}/, exp60_smoke_learner*/ | — | 学习者 run 目录（train_log/TB/ckpt） |
+| experiments/exp60_store/tensorboard_actor/ | — | 演员侧 TB（actor/*, style/*） |
+| experiments/probes/exp60_v4_candidate77k_vs_bc49_n4000.json | 1KB | 终评 |
+| scripts/value_actor.py, src/agents/dnn/replay_store.py, tests/test_replay_store.py | — | 基建代码 |
