@@ -4,7 +4,7 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
-| 2026-08-31 | `exp59_dqn_value_prereg`（running，冒烟毕） | 价值方法线 v1：Double DQN on bc49 先验（单局，league 冻结 T=0 环境） | 三次冒烟定配方：自驱动 Boltzmann 崩（0.142）→ 冻结 bc49 行为（0.213）→ **+DQfD 排序锚 = 0.4985±0.016 平 bc49**，三判据过；教训=纯 TD 重建不了监督排序 | ⏳ 待正式 200k tranche（测 margin 退火能否超越先验）|
+| 2026-08-31 | `exp59_dqn_value_prereg`（tranche-1 done） | 价值方法线 v1：Double DQN on bc49 先验（单局，league 冻结 T=0 环境） | 冒烟 0.142→0.213→0.4985 定配方（DQfD 排序锚）；**正式 200k（RunPod，$0.30）贪心 vs bc49 = 0.4985±0.016 不劣于、零增益**；v1.3 LP-FT（冻 trunk 头-only、无锚）0.208 ⇒ 排序流失在头本身，可训参数量非变量；训练器 MC→TD 目标网同步 bug 修复 | 结论：无探索的离策略 Q 只能复现先验；下一杠杆=覆盖（迭代级 ε 混合/尺度自适应 Boltzmann），解冻议题关闭 |
 | 2026-08-31 | exp55-D tranche-1（exp55_hanchan_prereg，ckpt=experiments/exp55D_t1_ckpts）（done） | 半庄排位训练首个正式 run：I 配方 + W 残差信用 + v3rh + league={bc49,exp46I}，200k 场 @ RunPod 3090Ti | 管线生产规模验证 ✅（9.5 场/s×5.9h，KL 平，棘轮被 expandable_segments 治住）；**强度打平不增益**（终检 vs bc49 双 T=0 n=4000 = 0.4930±0.0079，pt −0.05）；实花 $3.26（含 kill-1 不停表学费 $1.3） | 98 次更新太短，学习信号未现；增益问题留长 tranche/调参；两条运维教训入 SKILLS |
 | 2026-08-30 | `exp58_runpod_migration_prereg`（done） | RunPod 迁移验证：3090Ti 训练全链路 + resume 演练 + exp55-D 形态冒烟 | 训练口径 **190 局/s（10 核宿主）≈12× g4 每美元**；resume 无缝（81920 局 kill→续到 200704）；exp55-D 形态 15.4 场/s；ckpt sha256 逃逸一致；实花 $0.36 | **红线解除：正式训练可上 RunPod**；runbook 增补（核数 re-roll/清场/依赖）；GCS 直推是 gap |
 | 2026-08-30 | `exp57_runpod_cost_prereg`（done） | RunPod 性价比裁决：扩展曲线定瓶颈 + 实查目录重算成本表 + 在 pod 实测每核速率 | 曲线非线性（24核每核效率剩42%，单 run 平台~300局/s，GPU 39%）；**3090Ti community 实测 cnn_m_r 214.5 局/s @ $0.27/h = 794 局/s/$ = g4 的 6.4×**（判据 1.5×）；每核速率反超 g4 核 1.6×；探针实花 $0.12 | **换机裁决：默认训练机改单卡 3090Ti community，多臂开多 pod**；迁移前补 resume 演练/长跑可靠性 |
