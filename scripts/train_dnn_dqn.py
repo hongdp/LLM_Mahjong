@@ -83,6 +83,11 @@ def parse_args():
     ap.add_argument("--pool_dir", default=None,
                     help="exp60: where promoted gen_NNNN.pt land (actors read it)")
     ap.add_argument("--updates_per_iter", type=int, default=200)
+    ap.add_argument("--history_frac", type=float, default=0.0,
+                    help="store mode: per pass, also read one random OLD shard "
+                         "and add this fraction of its episodes to the ring — "
+                         "keeps historical coverage alive instead of a pure "
+                         "sliding window (off-policy: old data is valid data)")
     ap.add_argument("--mc_updates", type=int, default=1000,
                     help="store mode: MC burn-in measured in optimizer updates "
                          "(a restart ingests the whole backlog in one pass, so a "
@@ -369,6 +374,13 @@ def main():
                 time.sleep(5)
             games += sum(m["games"] for m in metas)
             store_proxy = [m["learner_pts"] for m in metas if m.get("learner_pts") is not None]
+            if args.history_frac > 0:
+                old = [p for p in reader.all_shards() if p in reader.seen]
+                if len(old) > 2:
+                    eps_old, _ = read_shard(old[rng.integers(0, len(old) - 1)])
+                    k = max(1, int(len(eps_old) * args.history_frac))
+                    pick = rng.choice(len(eps_old), size=k, replace=False)
+                    episodes.extend(eps_old[i] for i in pick)
         else:
             seeds = [args.seed + it * 100003 + d for d in range(args.games_per_iter)]
             act_net = net if rng.random() < args.self_frac else beh_net
