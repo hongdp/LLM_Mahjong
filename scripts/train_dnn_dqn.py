@@ -70,6 +70,12 @@ def parse_args():
                          "~2/3 of games). Keeps hands coherent, unlike per-step "
                          "epsilon (0.9^110 ~ 0 intact hands)")
     ap.add_argument("--single_dev_temp", type=float, default=1.0)
+    ap.add_argument("--self_frac", type=float, default=0.0,
+                    help="fraction of iterations whose data is collected by the "
+                         "CURRENT Q net (greedy at --temperature, plus single "
+                         "deviations) instead of --behavior_ckpt. Optimistic Q "
+                         "errors are only self-falsifying if the policy acts on "
+                         "them; 1.0 = fully online DQN, 0.0 = pure off-policy")
     ap.add_argument("--all_seats", action="store_true",
                     help="train on all four seats' transitions (frozen T=0 "
                          "opponents included): 4x data per game and a second "
@@ -276,7 +282,8 @@ def main():
         seeds = [args.seed + it * 100003 + d for d in range(args.games_per_iter)]
         net.eval()
         t_r = time.time()
-        episodes, results = collect_parallel(beh_net, len(seeds), cfg,
+        act_net = net if rng.random() < args.self_frac else beh_net
+        episodes, results = collect_parallel(act_net, len(seeds), cfg,
                                              args.workers, seeds)
         rollout_s = time.time() - t_r
         games += len(results)
