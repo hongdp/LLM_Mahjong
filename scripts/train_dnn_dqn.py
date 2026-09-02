@@ -66,7 +66,7 @@ def parse_args():
     ap.add_argument("--replay_ratio", type=float, default=2.0,
                     help="samples consumed per new env step")
     ap.add_argument("--nstep", type=int, default=10)
-    ap.add_argument("--target_every", type=int, default=2000,
+    ap.add_argument("--target_every", type=int, default=500,
                     help="hard target-net sync, in optimizer updates")
     ap.add_argument("--mc_until", type=int, default=20000,
                     help="pure Monte-Carlo targets until this many games "
@@ -210,11 +210,20 @@ def main():
     if args.margin_schedule:
         m_sched = sorted((int(g), float(c)) for g, c in
                          (x.split(":") for x in args.margin_schedule.split(",")))
+    mc_phase = True
     while games < args.total_games:
         it += 1
         for g_thr, coef in m_sched:
             if games >= g_thr:
                 margin_coef = coef
+        if mc_phase and games > args.mc_until:
+            # tranche-1 TB (2026-09-01): the first hard sync landed ~15k games
+            # AFTER the MC->TD switch, so bootstrapping ran off the warm-start
+            # LOGITS (scale +-5) and targets sat at ~+1.0 for 16k games. Sync
+            # the calibrated net into the target the moment bootstrapping starts.
+            target.load_state_dict(net.state_dict())
+            mc_phase = False
+            print(f"🔁 MC->TD switch at {games} games: target net synced", flush=True)
         seeds = [args.seed + it * 100003 + d for d in range(args.games_per_iter)]
         net.eval()
         t_r = time.time()
