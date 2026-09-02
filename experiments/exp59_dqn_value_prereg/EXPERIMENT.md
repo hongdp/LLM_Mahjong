@@ -68,6 +68,16 @@ pip 补 tensorboard、完赛后由工作站侧调 API terminate（kill 1 不停�
   TB `exp59_t1_LIVE`、每 30 分钟 ckpt 回拉。坑：家用上行 ~1Mbps，两个锚 ckpt（32MB）
   scp 走了 12 分钟——以后锚点从 GCS 拉到 pod，不经工作站。
 
+- [09-01 22:00] **tranche-1 完赛**：200,192 局 / 66.5 分钟（50 局/s，23 核宿主），11,561 次更新，
+  margin 1.0→0.3@82k→0.1@144k 按计划执行，TD 收敛 0.019。pod 已 terminate（实花 ~$0.30），
+  ckpt/日志/TB 回收 sha256 一致（`experiments/exp59_t1_ckpts/`，主检出）。
+  **TB 暴露训练器 bug**：MC→TD 切换（20k）后第一次目标网硬同步落在 ~35k，期间自举用的是
+  bc49 原始 logits 尺度的目标网 → target_mean≈+1.0、q_mean≈0.78 的 16k 局假目标高台，
+  第一次同步后坍回。已修（切换瞬间同步 + target_every 2000→500，commit 4214f5c）。
+  **本 run 的 Q 曲线不算干净样本**，终评见下。
+- [09-01 22:05] v1.3 LP-FT 冒烟发射（冻 trunk 30k 局 → 解冻 trunk lr×0.1，无 margin，60k 局）；
+  ConvFormer46 的头是结构化四层（type_head/slot_*，3,542 参数），按名字集合识别。
+
 ## Results
 
 | 冒烟判据（预注册） | 目标 | v1 | v1.1 | v1.2 | 判定 |
@@ -77,6 +87,14 @@ pip 补 tensorboard、完赛后由工作站侧调 API terminate（kill 1 不停�
 | ③贪心不崩 | vs bc49 ≥0.45 | 0.142 ✗ | 0.213 ✗ | **0.4985 ✓** | **✓** |
 
 三次冒烟各 50k 局 / ~11 分钟 / 本地 4080（80 局/s，rollout 栈零改动复用成立）。
+
+| 正式判据（预注册） | 目标 | tranche-1（200k，margin 退火，含目标网 bug 段） | 判定 |
+|---|---|---|---|
+| 贪心 vs bc49（单局，n=1000 复式对） | ≥0.48 | **0.4985 ± 0.0158，−430 分/对**；A/A 对照 0.500/0.0 | ✅ 不劣于；**零增益** |
+
+读法：与 50k 冒烟（0.4985）同值——多 150k 局、margin 松到 0.1，贪心策略仍与 bc49 不可分。
+Q 头只是重新推导了 bc49 的排序，TD 没有在任何可测处推翻先验。
+（`probes/exp59_t1_vs_bc49.json`）
 
 ## Conclusion
 （待）
