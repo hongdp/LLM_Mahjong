@@ -83,6 +83,10 @@ def parse_args():
     ap.add_argument("--pool_dir", default=None,
                     help="exp60: where promoted gen_NNNN.pt land (actors read it)")
     ap.add_argument("--updates_per_iter", type=int, default=200)
+    ap.add_argument("--mc_updates", type=int, default=1000,
+                    help="store mode: MC burn-in measured in optimizer updates "
+                         "(a restart ingests the whole backlog in one pass, so a "
+                         "games-based --mc_until would be skipped outright)")
     ap.add_argument("--promote_every", type=int, default=4000,
                     help="optimizer updates between promotion evals")
     ap.add_argument("--promote_pairs", type=int, default=1000,
@@ -339,7 +343,8 @@ def main():
             target.load_state_dict(net.state_dict())
             print(f"🔥 trunk unfrozen at {games} games (trunk lr x{args.trunk_lr_mult}); "
                   f"target net synced", flush=True)
-        if mc_phase and games > args.mc_until:
+        past_mc = (upd >= args.mc_updates) if args.store_dir else (games > args.mc_until)
+        if mc_phase and past_mc:
             # tranche-1 TB (2026-09-01): the first hard sync landed ~15k games
             # AFTER the MC->TD switch, so bootstrapping ran off the warm-start
             # LOGITS (scale +-5) and targets sat at ~+1.0 for 16k games. Sync
@@ -415,7 +420,7 @@ def main():
             A = torch.from_numpy(replay.act[idx]).to(dev)
             q_all = net(P, S, M)
             q = q_all.gather(1, A[:, None]).squeeze(1)
-            if games <= args.mc_until:
+            if mc_phase:
                 y = torch.from_numpy(replay.mcret[idx]).to(dev)
             else:
                 y = torch.from_numpy(replay.nret[idx]).to(dev)
@@ -450,9 +455,9 @@ def main():
             upd += 1
             if upd % args.target_every == 0:
                 target.load_state_dict(net.state_dict())
-            td_sum += float(loss)
-            q_sum += float(q.mean())
-            y_sum += float(y.mean())
+            td_sum += loss.item()
+            q_sum += q.mean().item()
+            y_sum += y.mean().item()
             nb += 1
         update_s = time.time() - t_u
 
@@ -464,7 +469,7 @@ def main():
                "target_mean": round(y_sum / max(nb, 1), 4),
                "ep_return0": round(ret0, 4), "league_pts": round(proxy, 1),
                "replay": replay.size, "margin_coef": margin_coef,
-               "phase": ("mc" if games <= args.mc_until else f"n{args.nstep}")}
+               "phase": ("mc" if mc_phase else f"n{args.nstep}")}
         log_rows.append(row)
         json.dump(log_rows, open(f"{args.exp_dir}/train_log.json", "w"), indent=1)
         # in store mode the actor owns league_pts (it measures it); the learner
