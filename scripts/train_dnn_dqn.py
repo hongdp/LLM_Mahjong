@@ -76,6 +76,18 @@ def parse_args():
                          "deviations) instead of --behavior_ckpt. Optimistic Q "
                          "errors are only self-falsifying if the policy acts on "
                          "them; 1.0 = fully online DQN, 0.0 = pure off-policy")
+    ap.add_argument("--store_dir", default=None,
+                    help="exp60 learner mode: stream shards written by "
+                         "scripts/value_actor.py instead of collecting rollouts "
+                         "in-process; --updates_per_iter gradient steps per pass")
+    ap.add_argument("--pool_dir", default=None,
+                    help="exp60: where promoted gen_NNNN.pt land (actors read it)")
+    ap.add_argument("--updates_per_iter", type=int, default=200)
+    ap.add_argument("--promote_every", type=int, default=4000,
+                    help="optimizer updates between promotion evals")
+    ap.add_argument("--promote_pairs", type=int, default=1000,
+                    help="duplicate pairs for the greedy promotion eval vs the "
+                         "current newest gen; promote when share >= 0.5 - 1 SE")
     ap.add_argument("--all_seats", action="store_true",
                     help="train on all four seats' transitions (frozen T=0 "
                          "opponents included): 4x data per game and a second "
@@ -241,6 +253,45 @@ def main():
 
     replay = None
     rng = np.random.default_rng(args.seed)
+    reader = None
+    if args.store_dir:
+        from src.agents.dnn.replay_store import StoreReader
+        reader = StoreReader(args.store_dir)
+        os.makedirs(args.pool_dir or args.exp_dir, exist_ok=True)
+        print(f"📥 learner streams {args.store_dir}; promotions -> "
+              f"{args.pool_dir or args.exp_dir}", flush=True)
+    next_promote = args.promote_every
+
+    def promotion_eval(games_now, it_now):
+        """Greedy self vs the newest promoted gen (or --init when none yet):
+        promote when not worse at 1 SE. The eval seeds advance per attempt so
+        a repeated attempt never replays the same walls."""
+        import glob as _glob
+        import math
+        from scripts.run_elo_league import play_pair_vector
+        pool_dir = args.pool_dir or args.exp_dir
+        gens = sorted(_glob.glob(os.path.join(pool_dir, "gen_*.pt")))
+        ref = gens[-1] if gens else args.init
+        cand = os.path.join(pool_dir, "candidate.pt")
+        torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
+                    "arch": args.arch, "games": games_now, "iter": it_now,
+                    "channels": cfg["channels"], "blocks": cfg["blocks"]}, cand)
+        sc, _, _ = play_pair_vector(cand, ref, args.promote_pairs,
+                                    65_000_000 + it_now * 10_007, 20,
+                                    args.train_device, temp_a=0.0, temp_b=0.0,
+                                    hanchan=False)
+        share = sum(sc) / len(sc)
+        se = math.sqrt(max(share * (1 - share), 1e-9) / len(sc))
+        ok = share >= 0.5 - se
+        if ok:
+            new = os.path.join(pool_dir, f"gen_{len(gens) + 1:04d}.pt")
+            os.replace(cand, new)
+        print(f"🏅 promotion eval @ {games_now} games: vs {os.path.basename(ref)} "
+              f"share {share:.4f} ± {se:.4f} -> {'PROMOTED ' + os.path.basename(new) if ok else 'held'}",
+              flush=True)
+        writer.add_scalar("dqn/promo_share_vs_latest", share, games_now)
+        writer.add_scalar("dqn/generation", len(gens) + (1 if ok else 0), games_now)
+        return ok
     games, it, upd, t0 = 0, 0, 0, time.time()
     log_rows = []
     from torch.utils.tensorboard import SummaryWriter
@@ -279,14 +330,30 @@ def main():
             target.load_state_dict(net.state_dict())
             mc_phase = False
             print(f"🔁 MC->TD switch at {games} games: target net synced", flush=True)
-        seeds = [args.seed + it * 100003 + d for d in range(args.games_per_iter)]
         net.eval()
         t_r = time.time()
-        act_net = net if rng.random() < args.self_frac else beh_net
-        episodes, results = collect_parallel(act_net, len(seeds), cfg,
-                                             args.workers, seeds)
+        if args.store_dir:
+            # exp60 learner: the actor process fills the store; ingest whatever
+            # is new, and if nothing arrived yet keep training on the ring
+            from src.agents.dnn.replay_store import read_shard
+            episodes, metas = [], []
+            while True:
+                for p in reader.new_shards():
+                    eps, meta = read_shard(p)
+                    episodes.extend(eps)
+                    metas.append(meta)
+                if episodes or (replay is not None and replay.size >= args.batch):
+                    break
+                time.sleep(5)
+            games += sum(m["games"] for m in metas)
+            store_proxy = [m["learner_pts"] for m in metas if m.get("learner_pts") is not None]
+        else:
+            seeds = [args.seed + it * 100003 + d for d in range(args.games_per_iter)]
+            act_net = net if rng.random() < args.self_frac else beh_net
+            episodes, results = collect_parallel(act_net, len(seeds), cfg,
+                                                 args.workers, seeds)
+            games += len(results)
         rollout_s = time.time() - t_r
-        games += len(results)
 
         new_steps, ret_sum, ret_n = 0, 0.0, 0
         for e in episodes:
@@ -309,12 +376,15 @@ def main():
         # learner mean end-points vs 25k start — free strength proxy vs the
         # frozen anchors (positive = holding its own at the league table);
         # per-game facts live in last_games, `results` is just result strings
-        diffs = [g["points"][g["learner_seats"][0]] - 25000
-                 for g in collect_parallel.last_games
-                 if g.get("learner_seats") and g.get("points")]
-        proxy = float(np.mean(diffs)) if diffs else 0.0
-
-        n_upd = max(1, int(new_steps * args.replay_ratio / args.batch))
+        if args.store_dir:
+            proxy = float(np.mean(store_proxy)) if store_proxy else 0.0
+            n_upd = args.updates_per_iter
+        else:
+            diffs = [g["points"][g["learner_seats"][0]] - 25000
+                     for g in collect_parallel.last_games
+                     if g.get("learner_seats") and g.get("points")]
+            proxy = float(np.mean(diffs)) if diffs else 0.0
+            n_upd = max(1, int(new_steps * args.replay_ratio / args.batch))
         net.train()
         t_u = time.time()
         td_sum, q_sum, y_sum, nb = 0.0, 0.0, 0.0, 0
@@ -389,6 +459,11 @@ def main():
               f"buf={replay.size} {row['phase']}", flush=True)
         if it % args.ckpt_every == 0:
             save(f"games_{games}", games, it)
+        if args.store_dir and upd >= next_promote:
+            net.eval()
+            promotion_eval(games, it)
+            net.train()
+            next_promote += args.promote_every
     save("games_final", games, it)
     print(f"✅ {games} games in {(time.time()-t0)/60:.1f} min -> {args.exp_dir}",
           flush=True)
