@@ -261,6 +261,7 @@ def main():
         print(f"📥 learner streams {args.store_dir}; promotions -> "
               f"{args.pool_dir or args.exp_dir}", flush=True)
     next_promote = args.promote_every
+    promo_state = {"low_streak": 0, "frozen": False}
 
     def promotion_eval(games_now, it_now):
         """Greedy self vs the newest promoted gen (or --init when none yet):
@@ -276,20 +277,36 @@ def main():
         torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                     "arch": args.arch, "games": games_now, "iter": it_now,
                     "channels": cfg["channels"], "blocks": cfg["blocks"]}, cand)
-        sc, _, _ = play_pair_vector(cand, ref, args.promote_pairs,
-                                    65_000_000 + it_now * 10_007, 20,
+        seed0 = 65_000_000 + it_now * 10_007
+        sc, _, _ = play_pair_vector(cand, ref, args.promote_pairs, seed0, 20,
                                     args.train_device, temp_a=0.0, temp_b=0.0,
                                     hanchan=False)
         share = sum(sc) / len(sc)
         se = math.sqrt(max(share * (1 - share), 1e-9) / len(sc))
-        ok = share >= 0.5 - se
+        # absolute scale: the same candidate vs the FIXED prior. A chain of
+        # "not worse than the previous gen" promotions is non-transitive and
+        # can drift down one noisy step at a time; the anchor read catches it.
+        anchor = args.behavior_ckpt or args.init
+        sca, _, _ = play_pair_vector(cand, anchor, args.promote_pairs, seed0 + 1, 20,
+                                     args.train_device, temp_a=0.0, temp_b=0.0,
+                                     hanchan=False)
+        share_bc = sum(sca) / len(sca)
+        promo_state["low_streak"] = promo_state["low_streak"] + 1 if share_bc < 0.48 else 0
+        if promo_state["low_streak"] >= 2 and not promo_state["frozen"]:
+            promo_state["frozen"] = True
+            print(f"🚨 promotions FROZEN: vs {os.path.basename(anchor)} < 0.48 twice in a row "
+                  f"({share_bc:.4f}); generations no longer advance", flush=True)
+        ok = (share >= 0.5) and not promo_state["frozen"]     # point estimate, not 1-SE slack
         if ok:
             new = os.path.join(pool_dir, f"gen_{len(gens) + 1:04d}.pt")
             os.replace(cand, new)
         print(f"🏅 promotion eval @ {games_now} games: vs {os.path.basename(ref)} "
-              f"share {share:.4f} ± {se:.4f} -> {'PROMOTED ' + os.path.basename(new) if ok else 'held'}",
+              f"share {share:.4f} ± {se:.4f} | vs {os.path.basename(anchor)} {share_bc:.4f} "
+              f"-> {'PROMOTED ' + os.path.basename(new) if ok else ('FROZEN' if promo_state['frozen'] else 'held')}",
               flush=True)
         writer.add_scalar("dqn/promo_share_vs_latest", share, games_now)
+        writer.add_scalar("dqn/promo_share_vs_bc49", share_bc, games_now)
+        writer.add_scalar("dqn/promotion_frozen", int(promo_state["frozen"]), games_now)
         writer.add_scalar("dqn/generation", len(gens) + (1 if ok else 0), games_now)
         return ok
     games, it, upd, t0 = 0, 0, 0, time.time()
