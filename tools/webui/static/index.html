@@ -1376,7 +1376,8 @@ async function loadRevList(){
   try { REV.list = await jget("/api/reviews"); } catch(e){ REV.list=[]; }
   const sel=$("#rFile"); sel.innerHTML="";
   REV.list.forEach((r,i)=>{ const o=el("option","",`${r.file}  (${r.models.join(" vs ")} · ${r.games}局 · ${r.decisions}步 · 分歧${r.disagreements})`); o.value=i; sel.append(o); });
-  if (REV.list.length){ sel.value=0; await loadRev(0); } else $("#rStamp").textContent="";
+  if (REV.list.length){ sel.value=0; try { await loadRev(0); } catch(e){ console.error("review render", e); $("#rHost").innerHTML=`<div class="empty">渲染失败：${e}</div>`; } }
+  else $("#rStamp").textContent="";
 }
 async function loadRev(i){
   const r=REV.list[i]; if (!r) return;
@@ -1576,7 +1577,9 @@ async function refreshAll(keepSelection){
 }
 { const det=$("#tab-arena details"); let t=null;
   det.addEventListener("toggle",()=>{ clearInterval(t); t=null; if (det.open){ loadArena(); t=setInterval(loadArena,30000); } }); }
-(async ()=>{ await loadExperiments(); await loadMetrics(); await loadEpochs(); await loadDashList(); await loadRevList(); })();
+(async ()=>{ await loadExperiments(); await loadMetrics(); await loadEpochs(); await loadDashList(); })();
+// the review tab loads independently: a failure in the other tabs' startup must not empty it
+loadRevList().catch(e=>{ console.error("review list", e); const h=$("#rHost"); if (h) h.innerHTML=`<div class="empty">复盘记录加载失败：${e}</div>`; });
 </script>
 </body>
 </html>
