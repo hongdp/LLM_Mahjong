@@ -279,8 +279,13 @@ def _package_game(g, learner_seats, seed, cfg, cmode, league):
     (exp46-C rev3 rollout ratings)."""
     labels = completion_labels(g.result or "") if cmode == "hazard" else None
     eps = []
+    # exp59 v1.5: off-policy value learning can consume EVERY seat's
+    # trajectory (the engine records all four with per-seat rewards); the
+    # caller must guarantee pool members share the learner's encoder/action
+    # space, since episodes are concatenated tensor-wise downstream
+    keep_seats = range(4) if cfg.get("all_seats_episodes") else learner_seats
     for pid in range(4):
-        if pid not in learner_seats:
+        if pid not in keep_seats:
             continue                       # opponents' trajectories are not ours
         steps = g.trajectories[pid]
         if not steps:

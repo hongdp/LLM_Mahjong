@@ -70,6 +70,12 @@ def parse_args():
                          "~2/3 of games). Keeps hands coherent, unlike per-step "
                          "epsilon (0.9^110 ~ 0 intact hands)")
     ap.add_argument("--single_dev_temp", type=float, default=1.0)
+    ap.add_argument("--all_seats", action="store_true",
+                    help="train on all four seats' transitions (frozen T=0 "
+                         "opponents included): 4x data per game and a second "
+                         "expert's choices as plausible alternatives. Requires "
+                         "every league member to share the learner's encoder "
+                         "variant and action space")
     ap.add_argument("--behavior_ckpt", default=None,
                     help="freeze the ACTING policy to this ckpt (e.g. bc49) "
                          "while Q trains off-policy on its data — the v1 "
@@ -222,7 +228,8 @@ def main():
                league=json.load(open(args.league)), league_frac=1.0,
                league_learner_seats=1, league_opp_temp=0.0, hanchan=False,
                hanchan_w_path=None, action_space=space_of_arch(args.arch),
-               single_dev_p=args.single_dev_p, single_dev_temp=args.single_dev_temp)
+               single_dev_p=args.single_dev_p, single_dev_temp=args.single_dev_temp,
+               all_seats_episodes=bool(args.all_seats))
     print(f"🏟 league: {len(cfg['league'])} frozen T=0 opponents, learner x1",
           flush=True)
 
