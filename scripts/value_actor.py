@@ -61,6 +61,13 @@ def main():
     from src.agents.dnn.replay_store import write_shard
 
     os.makedirs(args.store_dir, exist_ok=True)
+    # the actor owns the data-side metrics (throughput, learner-seat outcome
+    # vs the pool, style of the newest gen); the learner owns the loss-side
+    # ones. x-axis here = games produced, the learner's = games ingested.
+    from torch.utils.tensorboard import SummaryWriter
+    from src.agents.dnn.style_stats import summarize
+    writer = SummaryWriter(os.path.join(args.store_dir, "tensorboard_actor"))
+    total_games = 0
     anchors_path = args.anchors or os.path.join(args.pool_dir, "anchors.json")
     anchors = json.load(open(anchors_path))
     dev = torch.device(args.device)
@@ -121,6 +128,19 @@ def main():
         path = write_shard(args.store_dir, episodes, tags, meta,
                            name=f"shard_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{shard_no:05d}")
         shard_no += 1
+        total_games += len(games)
+        n_steps = sum(len(e["actions"]) for e in episodes)
+        writer.add_scalar("actor/games_per_s", len(games) / dt, total_games)
+        writer.add_scalar("actor/steps_per_s", n_steps / dt, total_games)   # transitions produced
+        writer.add_scalar("actor/gen_playing", len(gens), total_games)
+        writer.add_scalar("actor/pool_size", len(pool), total_games)
+        writer.add_scalar("actor/steps_per_shard", n_steps, total_games)
+        if lp:
+            writer.add_scalar("actor/learner_pts_vs_pool", float(np.mean(lp)), total_games)
+        sty = getattr(collect_parallel, "last_style", None)
+        if sty:
+            for k, v in summarize(sty).items():
+                writer.add_scalar(f"style/{k}", float(v), total_games)
         print(f"[{shard_no:4d}] {len(games)} games {dt:5.1f}s ({len(games)/dt:5.1f}局/s) "
               f"{len(episodes)} eps -> {os.path.basename(path)}  learner {meta['learner']} "
               f"pts {meta['learner_pts'] and round(meta['learner_pts'])}  "

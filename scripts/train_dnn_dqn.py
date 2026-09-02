@@ -450,8 +450,18 @@ def main():
                "phase": ("mc" if games <= args.mc_until else f"n{args.nstep}")}
         log_rows.append(row)
         json.dump(log_rows, open(f"{args.exp_dir}/train_log.json", "w"), indent=1)
-        for k in ("td_loss", "q_mean", "target_mean", "ep_return0", "league_pts"):
+        # in store mode the actor owns league_pts (it measures it); the learner
+        # logs only what it computes itself
+        keys = ("td_loss", "q_mean", "target_mean", "ep_return0") + (() if args.store_dir else ("league_pts",))
+        for k in keys:
             writer.add_scalar(f"dqn/{k}", row[k], games)
+        writer.add_scalar("dqn/replay_size", replay.size, games)
+        writer.add_scalar("dqn/margin_coef", margin_coef, games)
+        writer.add_scalar("dqn/updates_per_s", nb / max(update_s, 1e-9), games)
+        writer.add_scalar("dqn/samples_per_s", nb * args.batch / max(update_s, 1e-9), games)
+        writer.add_scalar("dqn/ingest_steps_per_s", new_steps / max(rollout_s, 1e-9), games)
+        writer.add_scalar("dqn/replay_ratio_eff", nb * args.batch / max(new_steps, 1), games)
+        writer.add_scalar("dqn/updates_total", upd, games)
         gs = games / max(time.time() - t0, 1e-9)
         print(f"[{it:4d}] games={games:7d} {row['wall_s']/60:5.1f}min "
               f"{gs:5.1f}局/s td={row['td_loss']:.4f} q={row['q_mean']:+.3f} "
