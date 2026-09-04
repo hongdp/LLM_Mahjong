@@ -263,6 +263,7 @@
   <button class="tabbtn" data-tab="arena">🎴 竞技场</button>
   <button class="tabbtn" data-tab="monitor">📈 训练监控</button>
   <button class="tabbtn" data-tab="replay">🀄 牌局复盘</button>
+  <button class="tabbtn" data-tab="review">🔍 决策复盘</button>
 </div>
 
 
@@ -290,6 +291,23 @@
     <span class="hint">牌谱同步后，去「牌局复盘」页签选 arena_base / arena_ppo / arena_value 逐局回看（A 方座位见每局标头）</span>
   </div>
 </details>
+</div>
+
+<div class="tabpane" id="tab-review">
+<h2>决策复盘 <span class="hint">Mortal 式：同一局面下，每个合法动作在各模型眼中的概率与 Q（logit），V(s) 并排；标出模型间的分歧</span></h2>
+<div class="controls">
+  <label>记录 <select id="rFile"></select></label>
+  <label>牌山 <select id="rGame"></select></label>
+  <label>步 <button id="rPrev" aria-label="上一步">‹</button>
+    <input type="range" id="rstep" min="0" max="0" value="0">
+    <button id="rNext" aria-label="下一步">›</button> <span class="hint" id="rStepNo"></span></label>
+  <label>分歧 <button id="rDisPrev">‹ 上一处</button> <button id="rDisNext">下一处 ›</button> <span class="hint" id="rDisNo"></span></label>
+  <label class="hint"><input type="checkbox" id="rOnlyDis"> 只走分歧步</label>
+  <label class="hint"><input type="checkbox" id="rHide"> 隐藏非行动者手牌</label>
+  <span class="hint">键盘 <kbd>←</kbd> <kbd>→</kbd> 逐步，<kbd>D</kbd> 下一处分歧</span>
+  <span class="hint" id="rStamp"></span>
+</div>
+<div id="rHost"><div class="empty">没有复盘记录。用 <code>scripts/record_review.py --models NAME=ckpt … --out experiments/review/xxx.json</code> 生成后刷新。</div></div>
 </div>
 
 <div class="tabpane" id="tab-monitor">
@@ -1351,6 +1369,147 @@ document.addEventListener("keydown",e=>{
   else if (e.key==="ArrowDown"){ DASH.mi=Math.min(DASH.data.models.length-1,DASH.mi+1); $("#dStage").value=DASH.mi; renderDash(); e.preventDefault(); }
 });
 
+/* ------------------------------------------------ decision review (Mortal-style) */
+const REV = {list:[], data:null, gi:0, si:0};
+const MODELC = ["#2a78d6","#eb6834","#1baf7a","#8a5cd6","#c9a227"];
+async function loadRevList(){
+  try { REV.list = await jget("/api/reviews"); } catch(e){ REV.list=[]; }
+  const sel=$("#rFile"); sel.innerHTML="";
+  REV.list.forEach((r,i)=>{ const o=el("option","",`${r.file}  (${r.models.join(" vs ")} · ${r.games}局 · ${r.decisions}步 · 分歧${r.disagreements})`); o.value=i; sel.append(o); });
+  if (REV.list.length){ sel.value=0; try { await loadRev(0); } catch(e){ console.error("review render", e); $("#rHost").innerHTML=`<div class="empty">渲染失败：${e}</div>`; } }
+  else $("#rStamp").textContent="";
+}
+async function loadRev(i){
+  const r=REV.list[i]; if (!r) return;
+  REV.data = await jget("/api/review?file="+encodeURIComponent(r.file));
+  const D=REV.data;
+  $("#rStamp").textContent=`种子 ${D.seed0}+ · 驾驭者 ${D.models[0].name}（T=${D.temperature}） · ${D.recorded||""}`;
+  const gs=$("#rGame"); gs.innerHTML="";
+  D.records.forEach((g,k)=>{ const o=el("option","",`#${k+1} seed ${g.seed} · ${g.steps.length}步 · 分歧${g.n_disagree}`); o.value=k; gs.append(o); });
+  REV.gi=0; REV.si=0; renderRev();
+}
+function revGame(){ return REV.data.records[REV.gi]; }
+function revJumpDis(dir){
+  const steps=revGame().steps; let k=REV.si;
+  for (let n=0;n<steps.length;n++){ k=(k+dir+steps.length)%steps.length; if (steps[k].disagree){ REV.si=k; renderRev(); return; } }
+}
+function renderRev(){
+  const D=REV.data; if (!D) return;
+  const G=revGame(), steps=G.steps;
+  if (REV.si>steps.length-1) REV.si=steps.length-1;
+  const si=REV.si, st=steps[si], s=st.s, pid=s.pid;
+  $("#rstep").max=steps.length-1; $("#rstep").value=si;
+  $("#rStepNo").textContent=`${si+1} / ${steps.length}`;
+  const disIdx=steps.map((x,k)=>x.disagree?k:-1).filter(k=>k>=0);
+  $("#rDisNo").textContent=`${disIdx.filter(k=>k<=si).length} / ${disIdx.length}`;
+  const host=$("#rHost"); host.innerHTML="";
+  const grid=el("div","dgrid");
+
+  /* left: table (same renderer conventions as the arena tab) */
+  const tbl=el("div","card");
+  const kv=el("div","dkv");
+  kv.append(el("span","",`场风 `)); kv.lastChild.append(el("b","",WINDS[G.round_wind]));
+  kv.append(el("span","",`亲 `)); kv.lastChild.append(el("b","",`座${G.dealer}`));
+  kv.append(el("span","",`余牌 `)); kv.lastChild.append(el("b","",`${s.wall}`));
+  const dr=el("span","","宝牌指示 "); const drow=el("span",""); drow.style.display="inline-flex"; drow.style.gap="2px"; drow.style.verticalAlign="middle";
+  s.dora.forEach(t=>drow.append(tileEl(t,"tiny"))); dr.append(drow); kv.append(dr);
+  if (st.disagree){ const b=el("span","badge riichi","模型分歧"); kv.append(b); }
+  tbl.append(kv);
+  const hide=$("#rHide").checked;
+  const ORDER={m:0,p:1,s:2,z:3}, key=t=>ORDER[t.slice(-1)]*10+(+t.slice(0,-1));
+  const taken=st.legal[st.taken]; const [pty,ptile]=taken.split(":");
+  for (let p=0;p<4;p++){
+    const act=p===pid;
+    const seat=el("div","dseat"+(act?" acting":""));
+    const who=el("div","who");
+    who.append(el("b","",`座${p} ${WINDS[(p-G.dealer+4)%4]}家${p===G.dealer?" 亲":""}`));
+    who.append(document.createTextNode(`${s.points[p]}`));
+    if (s.riichi[p]){ const b=el("span","badge riichi","立直"); b.style.marginLeft="6px"; who.append(b); }
+    if (act){ const b=el("span","badge me","行动"); b.style.marginLeft="6px"; who.append(b); }
+    seat.append(who);
+    const right=el("div");
+    const hrow=el("div","trow"); hrow.append(el("span","rowl","手牌"));
+    if (hide && !act) hrow.append(el("span","hint","（隐藏）"));
+    else {
+      const pickTile=(act && (pty==="discard"||pty==="riichi")) ? ptile : null;
+      let tiles=[...s.hands[p]].sort((a,b)=>key(a)-key(b)); let drawn=null;
+      if (act && st.phase==="turn" && s.drawn){ const k=tiles.indexOf(s.drawn); if (k>=0){ tiles.splice(k,1); drawn=s.drawn; } }
+      const pickOnDrawn = pickTile!==null && drawn===pickTile; let marked=false;
+      tiles.forEach(t=>{ const e=tileEl(t,"mini"); if (pickTile===t && !marked && !pickOnDrawn){ e.classList.add("pick"); marked=true; } hrow.append(e); });
+      if (drawn){ hrow.append(el("span","gap")); const e=tileEl(drawn,"mini chosen"); if (pickOnDrawn) e.classList.add("pick"); hrow.append(e); }
+      if (s.melds[p].length){ const ml=el("span","rowl","副露"); ml.style.width="auto"; ml.style.marginLeft="8px"; hrow.append(ml); hrow.append(meldBoxes(s.melds[p].map(m=>({type:m.t,tiles:m.tiles})),"tiny")); }
+    }
+    right.append(hrow);
+    const rrow=el("div","trow"); rrow.append(el("span","rowl","牌河"));
+    if (s.rivers[p].length) s.rivers[p].forEach(t=>{ const e=tileEl(t.replace("*",""),"tiny"); if (t.endsWith("*")) e.classList.add("sideways"); rrow.append(e); });
+    else rrow.append(el("span","hint","—"));
+    right.append(rrow); seat.append(right); tbl.append(seat);
+  }
+  const res=el("div","dresult");
+  res.innerHTML=`<b>结局</b> ${G.result||"（进行中）"}<br><span class="hint">终点数：${G.points.map((x,i)=>`座${i} ${x}`).join(" · ")}</span>`;
+  tbl.append(res); grid.append(tbl);
+
+  /* right: legal actions x models */
+  const col=el("div");
+  const dec=el("div","card"); dec.style.marginBottom="12px";
+  const h=el("div","title",`本步决策 `); h.style.fontWeight="600";
+  h.append(el("span","hint",`座${pid} · ${st.phase==="turn"?"自家回合":"响应窗口"} · 实际走：`)); h.append(actLabel(taken)); dec.append(h);
+  const vrow=el("div","legend");
+  D.models.forEach((m,k)=>{ const v=st.models[k].v; vrow.innerHTML+=`<span><i style="background:${MODELC[k%MODELC.length]}"></i>${m.name}${m.kind==="q"?"（Q 网）":""} V=${(v>=0?"+":"")+v.toFixed(2)}</span>`; });
+  dec.append(vrow);
+  const T=document.createElement("table"); T.className="rtab"; T.style.width="100%"; T.style.borderCollapse="collapse"; T.style.fontSize="12px";
+  const thead=document.createElement("tr"); thead.innerHTML=`<th style="text-align:left">动作</th>`+D.models.map((m,k)=>`<th style="text-align:left;color:${MODELC[k%MODELC.length]}">${m.name}<br><span class="hint">概率 · Q/logit</span></th>`).join("");
+  T.append(thead);
+  const order=[...st.legal.keys()].sort((a,b)=>{ const qa=st.models[0].q[a]??-1e9, qb=st.models[0].q[b]??-1e9; return qb-qa; });
+  order.forEach(a=>{
+    const tr=document.createElement("tr"); tr.style.borderTop="1px solid var(--grid)";
+    const td0=document.createElement("td"); td0.append(actLabel(st.legal[a])); if (a===st.taken){ const b=el("span","badge me","实际"); b.style.marginLeft="6px"; td0.append(b); } tr.append(td0);
+    st.models.forEach((mm,k)=>{
+      const td=document.createElement("td"); td.style.padding="3px 8px"; td.style.minWidth="150px";
+      const p=mm.probs[a], q=mm.q[a];
+      const pb=el("div","pb"); pb.style.display="inline-block"; pb.style.width="90px"; pb.style.verticalAlign="middle";
+      const i=el("i", mm.pick===a?"pick":""); i.style.width=(p*100).toFixed(1)+"%"; i.style.background=mm.pick===a?MODELC[k%MODELC.length]:"var(--series)"; pb.append(i);
+      td.append(pb);
+      const txt=el("span","pct",` ${(p*100).toFixed(1)}%  Q ${q===null?"—":(q>=0?"+":"")+q.toFixed(3)}`); if (mm.pick===a){ txt.style.fontWeight="700"; txt.style.color=MODELC[k%MODELC.length]; }
+      td.append(txt); tr.append(td);
+    });
+    T.append(tr);
+  });
+  dec.append(T);
+  const lg=el("div","legend"); lg.innerHTML=`<span>行按第一模型的 Q 降序；<b>粗体/彩色</b> = 该模型的贪心选择；"实际" = 驾驭者本局真实走法</span>`;
+  dec.append(lg); col.append(dec);
+
+  /* V of each model over the game (acting seat only) */
+  const vc=el("div","card");
+  const vh=el("div","title","各模型 V 随对局推进（行动席）"); vh.style.fontWeight="600"; vc.append(vh);
+  const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const W=420,H=180,ml=34,mr=10,mt=10,mb=22;
+  const allv=steps.flatMap(x=>x.models.map(m=>m.v)); const lo=Math.min(-1,...allv), hi=Math.max(1,...allv);
+  const N=Math.max(steps.length-1,1); const X=k=>ml+(k/N)*(W-ml-mr), Y=v=>mt+(1-(v-lo)/(hi-lo))*(H-mt-mb);
+  let sv=`<line x1="${ml}" x2="${W-mr}" y1="${Y(0)}" y2="${Y(0)}" stroke="${css("--grid")}"/>`;
+  [lo,0,hi].forEach(v=>{ sv+=`<text x="${ml-4}" y="${Y(v)+4}" text-anchor="end" font-size="10" fill="${css("--muted")}">${v.toFixed(1)}</text>`; });
+  sv+=`<line x1="${X(si)}" x2="${X(si)}" y1="${mt}" y2="${H-mb}" stroke="${css("--muted")}" stroke-dasharray="3 3"/>`;
+  disIdx.forEach(k=>{ sv+=`<line x1="${X(k)}" x2="${X(k)}" y1="${H-mb}" y2="${H-mb+4}" stroke="${css("--neg")}" stroke-width="2"/>`; });
+  D.models.forEach((m,k)=>{ sv+=`<polyline fill="none" stroke="${MODELC[k%MODELC.length]}" stroke-width="1.6" points="${steps.map((x,j)=>X(j)+","+Y(x.models[k].v)).join(" ")}"/>`; });
+  sv+=`<text x="${W-mr}" y="${H-6}" text-anchor="end" font-size="10" fill="${css("--muted")}">决策序号 →（底部红刻 = 分歧步）</text>`;
+  const svg=document.createElementNS("http://www.w3.org/2000/svg","svg"); svg.setAttribute("viewBox",`0 0 ${W} ${H}`); svg.innerHTML=sv; vc.append(svg);
+  col.append(vc); grid.append(col); host.append(grid);
+}
+$("#rFile").onchange=e=>loadRev(+e.target.value);
+$("#rGame").onchange=e=>{ REV.gi=+e.target.value; REV.si=0; renderRev(); };
+$("#rstep").oninput=e=>{ REV.si=+e.target.value; renderRev(); };
+function revStep(d){ if(!REV.data) return; if ($("#rOnlyDis").checked){ revJumpDis(d); return; } REV.si=Math.max(0,Math.min(revGame().steps.length-1,REV.si+d)); renderRev(); }
+$("#rPrev").onclick=()=>revStep(-1); $("#rNext").onclick=()=>revStep(1);
+$("#rDisPrev").onclick=()=>revJumpDis(-1); $("#rDisNext").onclick=()=>revJumpDis(1);
+$("#rHide").onchange=renderRev;
+document.addEventListener("keydown",e=>{
+  if (!document.body.classList.contains("tab-review") || !REV.data) return;
+  if (["SELECT","INPUT","TEXTAREA"].includes(e.target.tagName) && e.target.type!=="range") return;
+  if (e.key==="ArrowRight"){ revStep(1); e.preventDefault(); }
+  else if (e.key==="ArrowLeft"){ revStep(-1); e.preventDefault(); }
+  else if (e.key==="d"||e.key==="D"){ revJumpDis(1); e.preventDefault(); }
+});
+
 /* ------------------------------------------------ tabs */
 function setTab(name){
   document.querySelectorAll(".tabbtn").forEach(b=>b.classList.toggle("active", b.dataset.tab===name));
@@ -1419,6 +1578,8 @@ async function refreshAll(keepSelection){
 { const det=$("#tab-arena details"); let t=null;
   det.addEventListener("toggle",()=>{ clearInterval(t); t=null; if (det.open){ loadArena(); t=setInterval(loadArena,30000); } }); }
 (async ()=>{ await loadExperiments(); await loadMetrics(); await loadEpochs(); await loadDashList(); })();
+// the review tab loads independently: a failure in the other tabs' startup must not empty it
+loadRevList().catch(e=>{ console.error("review list", e); const h=$("#rHost"); if (h) h.innerHTML=`<div class="empty">复盘记录加载失败：${e}</div>`; });
 </script>
 </body>
 </html>

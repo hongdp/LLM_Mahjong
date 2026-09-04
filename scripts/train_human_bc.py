@@ -102,6 +102,12 @@ def main():
     ap.add_argument("--cache_dir", default=None,
                     help="materialized shards (materialize_bc.py); replaces "
                          "per-epoch replay with mmap reads (exp51 optimization)")
+    ap.add_argument("--suit_aug", action="store_true",
+                    help="exp62: suit-permutation augmentation — each training batch is "
+                         "split into 6 chunks, chunk k sees the k-th suit permutation "
+                         "(planes / mask / label permuted consistently; samples holding "
+                         ">= --green_max green tiles are left unpermuted, ryuuiisou guard)")
+    ap.add_argument("--green_max", type=int, default=7)
     ap.add_argument("--out", default=None)
     ap.add_argument("--exp_dir", default=None,
                     help="accepted for launch_g4_git compat; alias of --out")
@@ -139,6 +145,12 @@ def main():
                              seed=a.seed, action_space=aspace)
         hloader = DataLoader(hds, batch_size=2048, num_workers=max(2, a.workers // 2))
 
+    augment = None
+    if a.suit_aug:
+        from src.agents.dnn.symmetry import make_batch_augmenter
+        augment = make_batch_augmenter(variant, aspace, dev, green_max=a.green_max)
+        print(f"🔀 suit augmentation on (6 permutations per batch, green guard >{a.green_max})", flush=True)
+
     from torch.utils.tensorboard import SummaryWriter
     tb = SummaryWriter(os.path.join(a.out, f"tensorboard_{a.arch}"))
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.01)
@@ -159,9 +171,12 @@ def main():
         net.train()
         n_seen, loss_sum, t_ep = 0, 0.0, time.time()
         for planes, scalars, mask, y, _, _ in loader:
+            planes, mask, y = planes.to(dev), mask.to(dev), y.to(dev)
+            if augment is not None:
+                planes, mask, y = augment(planes, mask, y)
             with torch.autocast("cuda", torch.bfloat16, enabled=dev == "cuda"):
-                lg = net(planes.to(dev), scalars.to(dev), mask.to(dev))
-                yd = y.to(dev)
+                lg = net(planes, scalars.to(dev), mask)
+                yd = y
                 if a.riichi_weight != 1.0:
                     is_r = ((yd // 34 == 1) | (yd // 34 == 9)) if aspace == "native" \
                         else (yd == 37)
@@ -195,7 +210,7 @@ def main():
             best, stale = m["acc"], 0
             torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                         "arch": a.arch, "encoder_variant": variant,
-                        "bc_acc": best,
+                        "bc_acc": best, "suit_aug": bool(a.suit_aug),
                        "train_games": (a.limit_games or "cache"),
                         "epoch": e},
                        os.path.join(a.out, f"bc_{a.arch}_best.pt"))

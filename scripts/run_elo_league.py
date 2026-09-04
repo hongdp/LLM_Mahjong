@@ -176,7 +176,8 @@ def play_pair_vector(path_a, path_b, deals, seed0, parallel, device,
                no_episodes=True, league_frac=1.0,
                league=[{"name": "B", "path": path_b}],
                encoder_variant=getattr(net, "encoder_variant", "v1"),
-               action_space=getattr(net, "action_space", "native"))
+               action_space=getattr(net, "action_space", "native"),
+               symmetrize=blob.get("symmetrize"))
     seeds = []
     for d in range(deals):
         w = seed0 + d

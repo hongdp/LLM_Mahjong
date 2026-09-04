@@ -39,6 +39,9 @@ def load_dnn(path, device):
         print(f"[load] {path}: {len(skipped)} critic key(s) not loaded; "
               f"policy loaded fully", flush=True)
     net.eval()
+    if blob.get("symmetrize"):                 # exp61: test-time suit symmetrisation
+        from src.agents.dnn.symmetry import maybe_symmetrize
+        net = maybe_symmetrize(net, blob["symmetrize"]).to(device).eval()
     return net
 
 
