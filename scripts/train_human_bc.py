@@ -112,6 +112,8 @@ def main():
                     help="exp64: warm-start from this checkpoint (policy keys) instead of random init")
     ap.add_argument("--seat_min_rate", type=float, default=None,
                     help="exp64: train only on seats whose Tenhou R >= this (streaming path only)")
+    ap.add_argument("--holdout_list", default=None,
+                    help="exp65: file of '<date>/<id>.mjlog' lines pinning the holdout set (streaming path)")
     ap.add_argument("--max_updates", type=int, default=0,
                     help="stop after this many optimizer steps (0 = epochs/early-stop only); "
                          "lets a control arm be step-matched to a seat-filtered arm")
@@ -148,8 +150,8 @@ def main():
               flush=True)
         hloader = DataLoader(hds, batch_size=2048, num_workers=4)
     else:
-        train_files = list_games(a.raw, holdout=False, limit=a.limit_games)
-        hold_files = list_games(a.raw, holdout=True, limit=a.holdout_games)
+        train_files = list_games(a.raw, holdout=False, limit=a.limit_games, holdout_list=a.holdout_list)
+        hold_files = list_games(a.raw, holdout=True, limit=a.holdout_games, holdout_list=a.holdout_list)
         units = None
         if a.seat_min_rate is not None:
             from src.agents.dnn.human_bc_data import list_units

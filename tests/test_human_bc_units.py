@@ -1,7 +1,22 @@
 import os
 import tempfile
 
-from src.agents.dnn.human_bc_data import list_units, seat_ratings
+from src.agents.dnn.human_bc_data import list_games, list_units, seat_ratings
+
+
+def test_list_games_frozen_holdout():
+    with tempfile.TemporaryDirectory() as d:
+        names = [f"2026010{i}/g{i}.mjlog" for i in range(1, 6)]
+        for n in names:
+            os.makedirs(os.path.join(d, os.path.dirname(n)), exist_ok=True)
+            open(os.path.join(d, n), "w").write(HEAD)
+        lst = os.path.join(d, "hold.txt")
+        open(lst, "w").write(names[1] + "\n" + names[3] + "\n")
+        hold = list_games(d, holdout=True, holdout_list=lst)
+        train = list_games(d, holdout=False, holdout_list=lst)
+        assert [os.path.relpath(f, d) for f in hold] == [names[1], names[3]]
+        assert [os.path.relpath(f, d) for f in train] == [names[0], names[2], names[4]]
+        assert len(list_games(d)) == 5
 
 HEAD = ('<mjloggm ver="2.3"><SHUFFLE seed="x"/><GO type="169" lobby="0"/>'
         '<UN n0="%41" n1="%42" n2="%43" n3="%44" dan="16,17,18,16" '

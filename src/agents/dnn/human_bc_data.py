@@ -196,12 +196,27 @@ def list_units(files: List[str], min_rate: Optional[float] = None,
     return units
 
 
+def load_holdout_list(path: str) -> set:
+    """Frozen holdout set (exp65): '<date>/<id>.mjlog' lines relative to raw_dir."""
+    with open(path) as f:
+        return {ln.strip() for ln in f if ln.strip()}
+
+
 def list_games(raw_dir: str, holdout: Optional[bool] = None,
-               holdout_pct: int = 10, limit: int = 0) -> List[str]:
+               holdout_pct: int = 10, limit: int = 0,
+               holdout_list: Optional[str] = None) -> List[str]:
+    """Sorted mjlog paths. `holdout_list` (a file of '<date>/<id>.mjlog') pins the
+    holdout set explicitly — every other game is train — so a growing raw dir
+    (exp65) keeps the exact holdout the champion was measured on."""
     import glob
     files = sorted(glob.glob(os.path.join(raw_dir, "*", "*.mjlog")))
     if holdout is not None:
-        files = [f for f in files if is_holdout(f, holdout_pct) == holdout]
+        if holdout_list:
+            keep = load_holdout_list(holdout_list)
+            files = [f for f in files
+                     if (os.path.relpath(f, raw_dir) in keep) == holdout]
+        else:
+            files = [f for f in files if is_holdout(f, holdout_pct) == holdout]
     return files[:limit] if limit else files
 
 
