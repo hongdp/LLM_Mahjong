@@ -75,6 +75,38 @@ def test_symmetrized_net_is_invariant():
     assert sym.encoder_variant == "v3r" and sym.action_space == "mortal46"
 
 
+def test_batch_augmenter_consistency():
+    from src.agents.dnn.symmetry import make_batch_augmenter
+    torch.manual_seed(1)
+    aug = make_batch_augmenter("v3r", "mortal46", "cpu", green_max=7)
+    B = 60
+    planes = (torch.rand(B, enc.N_PLANES_V3R, 34) > 0.8).float()
+    planes[:, 0:4] = 0.0
+    # give every sample a 13-tile hand: 4 copies of tiles 0..2 and one of tile 30
+    planes[:, 0:4, 0:3] = 1.0
+    planes[:, 0, 30] = 1.0
+    # sample 59: all-green hand (9 green tiles) -> must be left untouched
+    planes[59, 0:4] = 0.0
+    planes[59, 0:2, [19, 20, 21, 23]] = 1.0
+    planes[59, 0, 32] = 1.0
+    mask = torch.rand(B, ma.MORTAL_ACTION_DIM) > 0.6
+    label = torch.tensor([int(torch.nonzero(mask[i] | (torch.arange(46) == 45))[0]) for i in range(B)])
+    mask[torch.arange(B), label] = True
+    p2, m2, y2 = aug(planes, mask, label)
+    assert torch.equal(p2[0:10], planes[0:10])                     # chunk 0 = identity
+    assert torch.equal(p2[59], planes[59]) and int(y2[59]) == int(label[59])   # green guard
+    for i in range(B):
+        assert bool(m2[i, y2[i]])                                  # permuted label stays legal
+        assert int(m2[i].sum()) == int(mask[i].sum())
+        assert torch.equal(p2[i].sum(-1), planes[i].sum(-1))       # per-plane counts preserved
+    # chunk 3 uses SUIT_PERMS[3]; verify the exact permutation on one row
+    from src.agents.dnn.symmetry import SUIT_PERMS
+    k = 3
+    lo = int(torch.linspace(0, B, 7).long()[k])
+    assert torch.equal(p2[lo], apply_perm(planes[lo], tile_perm(SUIT_PERMS[k])))
+    assert int(y2[lo]) == int(slot_perm("mortal46", SUIT_PERMS[k])[label[lo]])
+
+
 def test_green_count():
     assert green_count(["2s", "3s", "4s", "6s", "8s", "6z", "1m", "5s"], [{"tiles": ["6z", "6z", "6z"]}]) == 9
     assert green_count(["0s", "7s", "5z"], []) == 0

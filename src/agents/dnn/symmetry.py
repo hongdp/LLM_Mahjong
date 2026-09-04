@@ -179,6 +179,55 @@ class SuitSymmetrized(nn.Module):
         return self._unview(self.net(P, S, M).float(), B)
 
 
+_GREEN_IDX = [19, 20, 21, 23, 25, 32]          # 2s 3s 4s 6s 8s 6z on the 34 axis
+
+
+def make_batch_augmenter(variant: str, space_name: str, device, green_max: int = 7,
+                         perms: Sequence[Sequence[int]] = SUIT_PERMS):
+    """Training-time suit augmentation (exp62) as a batch transform.
+
+    Returns f(planes, mask, label) -> (planes, mask, label): the batch is cut
+    into len(perms) chunks and chunk k is rewritten in the k-th suit
+    permutation (planes on the tile axis, mask and label on the action-slot
+    axis). The DataLoader already shuffles, so the chunk assignment is a
+    uniform random permutation per sample. Samples whose own hand + melds
+    hold more than `green_max` green tiles keep the identity (ryuuiisou is
+    the one suit-asymmetric yaku). Planes 0-3 are hand-count>=k and plane 4
+    own-meld presence in every plane-per-tile variant, so the guard reads
+    them directly.
+    """
+    if variant not in PLANE_PER_TILE_VARIANTS:
+        raise ValueError(f"encoder variant {variant!r} is not plane-per-tile; cannot augment")
+    tile_idx = [torch.as_tensor(np.argsort(tile_perm(p)), device=device, dtype=torch.long) for p in perms]
+    slot_fwd = [torch.as_tensor(slot_perm(space_name, p), device=device, dtype=torch.long) for p in perms]
+    slot_idx = [torch.as_tensor(np.argsort(slot_perm(space_name, p)), device=device, dtype=torch.long)
+                for p in perms]
+    green = torch.as_tensor(_GREEN_IDX, device=device, dtype=torch.long)
+    K = len(perms)
+
+    def augment(planes, mask, label):
+        B = planes.shape[0]
+        hand = planes[:, 0:4][:, :, green].sum((1, 2))            # own hand green count
+        meld = planes[:, 4][:, green].sum(1) * 3                   # own meld presence ~ 3 tiles each
+        guard = (hand + meld) > green_max                          # keep identity
+        p_out, m_out, y_out = planes.clone(), mask.clone(), label.clone()
+        bounds = torch.linspace(0, B, K + 1).long().tolist()
+        for k in range(1, K):                                      # chunk 0 = identity
+            lo, hi = bounds[k], bounds[k + 1]
+            if hi <= lo:
+                continue
+            sel = ~guard[lo:hi]
+            if not bool(sel.any()):
+                continue
+            rows = torch.arange(lo, hi, device=planes.device)[sel]
+            p_out[rows] = planes[rows].index_select(-1, tile_idx[k])
+            m_out[rows] = mask[rows].index_select(-1, slot_idx[k])
+            y_out[rows] = slot_fwd[k][label[rows]]
+        return p_out, m_out, y_out
+
+    return augment
+
+
 def maybe_symmetrize(net: nn.Module, tag) -> nn.Module:
     """Wrap `net` when a checkpoint blob / rollout cfg carries
     `symmetrize="suit6"` (the only mode so far). Identity otherwise."""
