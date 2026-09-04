@@ -42,6 +42,9 @@ def _load_policy_ckpt(path):
         net = MahjongPolicyNet(channels=blob.get("channels", 64),
                                blocks=blob.get("blocks", 3))
     load_compatible(net, blob["state_dict"])
+    if blob.get("symmetrize"):
+        from src.agents.dnn.symmetry import maybe_symmetrize
+        net = maybe_symmetrize(net, blob["symmetrize"])
     return net.eval()
 
 
@@ -92,6 +95,9 @@ def _worker(rank, n_games, seeds, state_np, cfg):
             net = MahjongPolicyNet(channels=cfg["channels"], blocks=cfg["blocks"])
         from src.agents.dnn.net import load_compatible
         load_compatible(net, {k: torch.from_numpy(v) for k, v in state_np.items()})
+        if cfg.get("symmetrize"):
+            from src.agents.dnn.symmetry import maybe_symmetrize
+            net = maybe_symmetrize(net, cfg["symmetrize"])
         net.eval()
     cmode = cfg.get("critic_feats", "none")
     pool_nets = {}
