@@ -108,6 +108,13 @@ def main():
                          "(planes / mask / label permuted consistently; samples holding "
                          ">= --green_max green tiles are left unpermuted, ryuuiisou guard)")
     ap.add_argument("--green_max", type=int, default=7)
+    ap.add_argument("--init", default=None,
+                    help="exp64: warm-start from this checkpoint (policy keys) instead of random init")
+    ap.add_argument("--seat_min_rate", type=float, default=None,
+                    help="exp64: train only on seats whose Tenhou R >= this (streaming path only)")
+    ap.add_argument("--max_updates", type=int, default=0,
+                    help="stop after this many optimizer steps (0 = epochs/early-stop only); "
+                         "lets a control arm be step-matched to a seat-filtered arm")
     ap.add_argument("--out", default=None)
     ap.add_argument("--exp_dir", default=None,
                     help="accepted for launch_g4_git compat; alias of --out")
@@ -120,6 +127,12 @@ def main():
     torch.manual_seed(a.seed)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     net = factory().to(dev)
+    if a.init:
+        from src.agents.dnn.net import load_compatible
+        blob0 = torch.load(a.init, map_location="cpu", weights_only=False)
+        skipped = load_compatible(net, blob0["state_dict"])
+        print(f"🔁 warm start from {a.init} (bc_acc {blob0.get('bc_acc')}, epoch {blob0.get('epoch')}; "
+              f"{len(skipped)} non-policy keys skipped)", flush=True)
     variant = getattr(net, "encoder_variant", "v1")
     from src.agents.dnn.action_space import get_space, space_of_arch
     aspace = getattr(net, "action_space", None) or space_of_arch(a.arch)
@@ -137,10 +150,16 @@ def main():
     else:
         train_files = list_games(a.raw, holdout=False, limit=a.limit_games)
         hold_files = list_games(a.raw, holdout=True, limit=a.holdout_games)
+        units = None
+        if a.seat_min_rate is not None:
+            from src.agents.dnn.human_bc_data import list_units
+            units = list_units(train_files, min_rate=a.seat_min_rate)
         print(f"🏗 {a.arch} ({npar/1e6:.1f}M, variant={variant}, space={aspace}) "
-              f"train {len(train_files)} games / holdout {len(hold_files)}", flush=True)
+              f"train {len(train_files)} games / holdout {len(hold_files)}"
+              + (f" / seat units R>={a.seat_min_rate}: {len(units)} of {4 * len(train_files)}"
+                 if units is not None else ""), flush=True)
         ds = HumanBCDataset(train_files, variant=variant, seed=a.seed,
-                            action_space=aspace)
+                            action_space=aspace, units=units)
         hds = HumanBCDataset(hold_files, variant=variant, shuffle_buffer=1,
                              seed=a.seed, action_space=aspace)
         hloader = DataLoader(hds, batch_size=2048, num_workers=max(2, a.workers // 2))
@@ -158,6 +177,7 @@ def main():
                  opt, T_max=a.max_epochs, eta_min=a.lr * 0.1)
              if a.lr_schedule == "cosine" else None)
     hist, best, stale = [], 0.0, 0
+    n_upd, budget_hit = 0, False
     t0 = time.time()
     for e in range(a.max_epochs):
         if a.cache_dir:
@@ -190,14 +210,18 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step()
+            n_upd += 1
             n_seen += len(y)
             loss_sum += float(loss.detach()) * len(y)
             if n_seen % (a.batch * 200) < a.batch:
                 print(f"  [ep{e}] {n_seen} seen loss {loss_sum/n_seen:.4f} "
                       f"{n_seen/(time.time()-t_ep):.0f}/s", flush=True)
+            if a.max_updates and n_upd >= a.max_updates:
+                budget_hit = True
+                break
         m = evaluate(net, hloader, dev, aspace)
         m.update({"epoch": e, "train_loss": loss_sum / max(n_seen, 1),
-                  "train_n": n_seen, "wall_min": (time.time() - t0) / 60})
+                  "train_n": n_seen, "updates": n_upd, "wall_min": (time.time() - t0) / 60})
         hist.append(m)
         for k in ("acc", "defense_acc", "acc_riichi", "acc_call",
                   "acc_discard", "train_loss"):
@@ -211,6 +235,7 @@ def main():
             torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                         "arch": a.arch, "encoder_variant": variant,
                         "bc_acc": best, "suit_aug": bool(a.suit_aug),
+                        "init": a.init, "seat_min_rate": a.seat_min_rate, "updates": n_upd,
                        "train_games": (a.limit_games or "cache"),
                         "epoch": e},
                        os.path.join(a.out, f"bc_{a.arch}_best.pt"))
@@ -222,6 +247,9 @@ def main():
             sched.step()
         if stale >= a.patience:
             print(f"[early-stop] no >{a.min_delta} gain for {a.patience} epochs", flush=True)
+            break
+        if budget_hit:
+            print(f"[budget] --max_updates {a.max_updates} reached", flush=True)
             break
     print(f"✅ {a.arch}: best holdout acc {best:.4f} "
           f"({(time.time()-t0)/60:.1f} min)", flush=True)
