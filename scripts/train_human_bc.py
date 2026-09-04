@@ -241,6 +241,13 @@ def main():
                        os.path.join(a.out, f"bc_{a.arch}_best.pt"))
         else:
             stale += 1
+        # always keep the latest weights too (exp64: step-matched arms compare
+        # LAST-epoch weights, and "best" may be an early epoch)
+        torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
+                    "arch": a.arch, "encoder_variant": variant, "bc_acc": m["acc"],
+                    "suit_aug": bool(a.suit_aug), "init": a.init,
+                    "seat_min_rate": a.seat_min_rate, "updates": n_upd, "epoch": e},
+                   os.path.join(a.out, f"bc_{a.arch}_last.pt"))
         with open(os.path.join(a.out, f"bc_{a.arch}_metrics.json"), "w") as f:
             json.dump(hist, f, indent=1)
         if sched is not None:
