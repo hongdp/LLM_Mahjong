@@ -29,6 +29,10 @@
 3. 诚实条款：T 与 C 步数匹配、同 init、同 lr；不做事后选 epoch（取最后一个 epoch 的权重）。
 
 ## Progress
+- [09-04 01:07] git fb113b1。本机冒烟（300 局、25 更新）：热启动 0 键跳过、席位过滤 320/1200 单元、预算停止生效。
+  pod `m9chauvfbxturo` L40S Secure US-TX-4（$1.09/h），bootstrap 2 分钟。**假发射**：repo.tar 不含 gitignore 的
+  `experiments/_anchors_epoch6/bc49.pt` → 四臂 3 秒内 FileNotFoundError，心跳把 TRAIN_DONE 误判为完成。补传权重后
+  01:10 重发：T 臂席位单元 18,792 / 73,832（25.5%），四臂并行各 3 worker（cgroup 13.6 核）。教训入 SKILLS：pod 归档要显式带锚点。
 
 ## Results
 
