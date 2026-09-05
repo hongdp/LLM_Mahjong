@@ -1,4 +1,5 @@
 """Single-hand rules aligned to Majsoul (docs/design_majsoul_rules.md)."""
+import random
 import unittest
 
 from src.tasks.mahjong.table import PyMahjongTable
@@ -164,14 +165,27 @@ if __name__ == "__main__":
 
 class TestRedDora(unittest.TestCase):
     def test_wall_has_one_red_five_per_suit(self):
-        t = _fresh()
-        everything = list(t.wall) + list(t.dead_wall)
-        for p in range(4):
-            everything += t.display_hand(p)
-        for suit in "mps":
-            self.assertEqual(everything.count(f"0{suit}"), 1, suit)
-            self.assertEqual(everything.count(f"5{suit}"), 3, suit)
-        self.assertEqual(len(everything), 136)
+        # Dead-wall slots 4..13 (dora / ura indicators) are stored normalized
+        # ("indicators: red == plain", they are never drawn), so a red five
+        # that lands there is counted as a plain five here. The invariant is
+        # therefore: four fives per suit in total, at most one of them red,
+        # and exactly one red when none sits in an indicator slot. The old
+        # assertion (always exactly one red) was flaky (2026-09-05 audit).
+        for seed in range(20):
+            random.seed(seed)
+            t = _fresh()
+            everything = list(t.wall) + list(t.dead_wall)
+            for p in range(4):
+                everything += t.display_hand(p)
+            self.assertEqual(len(everything), 136)
+            indicator_fives = sum(1 for x in t.dead_wall[4:] if x[0] == "5" and x[-1] in "mps")
+            for suit in "mps":
+                reds = everything.count(f"0{suit}")
+                self.assertLessEqual(reds, 1, suit)
+                self.assertEqual(reds + everything.count(f"5{suit}"), 4, suit)
+                if not any(x == f"5{suit}" for x in t.dead_wall[4:]):
+                    self.assertEqual(reds, 1, (seed, suit))
+            self.assertLessEqual(indicator_fives, 3)
 
     def test_red_five_is_a_distinct_discard_action(self):
         t = _fresh()
