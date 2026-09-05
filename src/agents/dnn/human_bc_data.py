@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import os
 import random
+import re
 from typing import Iterator, List, Optional, Tuple
 
 import numpy as np
@@ -115,8 +116,10 @@ class HumanBCDataset(IterableDataset):
     def __init__(self, files: List[str], variant: str = "v3r",
                  shuffle_buffer: int = 20000, seed: int = 0,
                  seats: Tuple[int, ...] = (0, 1, 2, 3),
-                 action_space: str = "native"):
-        self.units = [(f, s) for f in files for s in seats]
+                 action_space: str = "native",
+                 units: Optional[List[Tuple[str, int]]] = None):
+        # `units` = explicit (file, seat) list (exp64: seat-filtered fine-tune)
+        self.units = list(units) if units is not None else [(f, s) for f in files for s in seats]
         self.variant = variant
         self.action_space = action_space
         self.shuffle_buffer = shuffle_buffer
@@ -162,12 +165,58 @@ class HumanBCDataset(IterableDataset):
                 int(row["vs_riichi"]))
 
 
+_UN_RE = re.compile(r'<UN [^>]*?dan="([^"]+)"[^>]*?rate="([^"]+)"')
+
+
+def seat_ratings(path: str) -> Tuple[List[int], List[float]]:
+    """(dan codes, R values) of the four seats from the mjlog <UN> header
+    (dan 16 = 七段 ... 20 = 天鳳位). Empty lists if the header is missing."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        head = f.read(6000)
+    m = _UN_RE.search(head)
+    if not m:
+        return [], []
+    return ([int(x) for x in m.group(1).split(",")],
+            [float(x) for x in m.group(2).split(",")])
+
+
+def list_units(files: List[str], min_rate: Optional[float] = None,
+               seats: Tuple[int, ...] = (0, 1, 2, 3)) -> List[Tuple[str, int]]:
+    """(file, seat) units, optionally keeping only seats whose Tenhou R >= min_rate
+    (exp64: fine-tune on the strongest players' decisions only)."""
+    units = []
+    for f in files:
+        if min_rate is None:
+            units += [(f, s) for s in seats]
+            continue
+        _, rates = seat_ratings(f)
+        if len(rates) != 4:
+            continue
+        units += [(f, s) for s in seats if rates[s] >= min_rate]
+    return units
+
+
+def load_holdout_list(path: str) -> set:
+    """Frozen holdout set (exp65): '<date>/<id>.mjlog' lines relative to raw_dir."""
+    with open(path) as f:
+        return {ln.strip() for ln in f if ln.strip()}
+
+
 def list_games(raw_dir: str, holdout: Optional[bool] = None,
-               holdout_pct: int = 10, limit: int = 0) -> List[str]:
+               holdout_pct: int = 10, limit: int = 0,
+               holdout_list: Optional[str] = None) -> List[str]:
+    """Sorted mjlog paths. `holdout_list` (a file of '<date>/<id>.mjlog') pins the
+    holdout set explicitly — every other game is train — so a growing raw dir
+    (exp65) keeps the exact holdout the champion was measured on."""
     import glob
     files = sorted(glob.glob(os.path.join(raw_dir, "*", "*.mjlog")))
     if holdout is not None:
-        files = [f for f in files if is_holdout(f, holdout_pct) == holdout]
+        if holdout_list:
+            keep = load_holdout_list(holdout_list)
+            files = [f for f in files
+                     if (os.path.relpath(f, raw_dir) in keep) == holdout]
+        else:
+            files = [f for f in files if is_holdout(f, holdout_pct) == holdout]
     return files[:limit] if limit else files
 
 
