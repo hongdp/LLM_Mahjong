@@ -232,11 +232,12 @@ class MaterializedBCDataset(torch.utils.data.Dataset):
     def __init__(self, cache_dir: str, split: str):
         import glob as _glob
         import json as _json
+        import mmap as _mmap
         self.shards = []
-        self.index = []                       # (shard_id, row)
-        for d in sorted(_glob.glob(os.path.join(cache_dir, split, "shard_*"))):
-            man = _json.load(open(os.path.join(d, "manifest.json")))
-            n = man["rows"]
+        sids, rows = [], []                   # numpy index (exp65: a 74M-row Python
+        for d in sorted(_glob.glob(os.path.join(cache_dir, split, "shard_*"))):   # list of tuples
+            man = _json.load(open(os.path.join(d, "manifest.json")))              # cost ~6GB RSS
+            n = man["rows"]                                                       # PER worker)
             pshape = tuple(man["planes_shape"])
             sh = {
                 "planes": np.memmap(os.path.join(d, "planes.bin"), dtype=np.uint8,
@@ -251,17 +252,31 @@ class MaterializedBCDataset(torch.utils.data.Dataset):
                                   mode="r", shape=(n, 2)),
                 "scale": float(man["scale"]),
             }
+            # Random row access on a memmap triggers the kernel's readahead
+            # (128KB+ per 2KB row); on a cache larger than the container's
+            # page-cache budget this turned into 1GB/s of disk reads and a
+            # 5x slowdown (exp65). MADV_RANDOM keeps faults at page size.
+            for k in ("planes", "scalars", "mask", "label", "meta"):
+                mm = getattr(sh[k], "_mmap", None)
+                if mm is not None and hasattr(mm, "madvise"):
+                    try:
+                        mm.madvise(_mmap.MADV_RANDOM)
+                    except (OSError, ValueError):
+                        pass
             sid = len(self.shards)
             self.shards.append(sh)
-            self.index.extend((sid, i) for i in range(n))
-        if not self.index:
+            sids.append(np.full(n, sid, dtype=np.int16))
+            rows.append(np.arange(n, dtype=np.int64))
+        if not sids:
             raise FileNotFoundError(f"no shards under {cache_dir}/{split}")
+        self.index_sid = np.concatenate(sids)
+        self.index_row = np.concatenate(rows)
 
     def __len__(self):
-        return len(self.index)
+        return int(self.index_sid.shape[0])
 
     def __getitem__(self, i):
-        sid, r = self.index[i]
+        sid, r = int(self.index_sid[i]), int(self.index_row[i])
         sh = self.shards[sid]
         planes = torch.from_numpy(
             np.asarray(sh["planes"][r], dtype=np.float32)) / sh["scale"]

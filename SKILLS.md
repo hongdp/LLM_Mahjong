@@ -510,6 +510,13 @@ bc49 配方原样重跑（同 seed、同数据）对原版 bc49 的 T=0 配对�
 ④（exp64 补充，2026-09-04）seed 67M 牌山段对 4 个"重跑/续训"模型系统性偏高 +0.5–1.8%，换到 68M 段全部回到 0.500–0.505：
 "噪声地板"有一半其实是牌山段与策略相似度的相关性。**头对头终评一律跑两个不重叠牌山段（67M + 68M）合并报数，单段不下结论。**
 
+## 大缓存训练：容器 cgroup 内存上限 + memmap 预读 = 5× 慢（2026-09-05，exp65）
+145GB 物化缓存在 188GB 容器（`/sys/fs/cgroup/memory.max`）里放不进页缓存，np.memmap 随机行访问触发内核预读（每 2KB 行读 ~128KB），
+磁盘 1GB/s、GPU 0%、5.6k 样本/s；同时 7,400 万行的 Python 元组索引让每个 DataLoader worker 多 6GB 私有 RSS。
+修复后 30k 样本/s：①索引用 numpy 数组；②`mm.madvise(MADV_RANDOM)`；③删掉已完成臂的缓存释放页缓存；④worker 数按核数给满。
+规则：缓存 > 容器内存 × 0.7 时先看 `vmstat` 的 bi 列，磁盘读 ≫ 样本字节数就是预读放大；发射前算一遍"缓存 + worker RSS 是否 < memory.max"。
+心跳的 STALL 判据只看 done=0 的臂（已完成臂日志静默是正常的）。
+
 ## pod 归档不含 gitignore 的锚点权重；心跳的"完成"标记要能区分假完成（2026-09-04，exp64 假发射）
 `git archive HEAD` 打的 repo.tar 不含 `experiments/`（整体 gitignore），pod 上 `--init experiments/_anchors_epoch6/bc49.pt`
 3 秒内 FileNotFoundError，四臂全退出，驱动脚本照样打出 TRAIN_DONE，心跳把它当"✅ DONE"退出——白烧 3 分钟不算什么，

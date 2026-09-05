@@ -31,6 +31,14 @@ min_delta 5e-4，batch 1024，lr 3e-4）。数据量 ~78M 决策/epoch：pod 上
 - [09-05] **采集完成**：2026-01-01 → 09-03 共下载 93,481 局，`data/tenhou/raw` 合计 **114,803 局**（≈ 旧集 20,526 的 5.6×），
   0 个 warn；单会话 throttle 0.4 s，约 26 小时。holdout 冻结为旧集的 1000 局（`experiments/configs/exp65_holdout_1000.txt`）。
   发射：L40S Secure US-TX-4，220GB 盘（全量 uint8 缓存 ≈ 145GB + 旧集 26GB），两臂并行：F = 全量 114.8k 局、C = 旧快照 20.5k 局（同批控制臂）。
+- [09-05 02:45–04:05] pod `si0t05br78kc6s`：上传 750MB 27 秒；物化 FULL **74,212,185 训练行 / 649,328 留出行 / bad 0，66.4 分钟**（11 worker）；
+  物化 OLD 12,724,150 行 11.8 分钟；留出行数两臂完全一致（冻结 holdout 生效）。04:05 两臂发射（各 5 worker）。
+- [09-05 05:29] **C 臂（旧快照）早停**：11 epoch，best acc **0.8077**（83.7 分钟）——与 exp62 控制臂 0.8075 一致。
+- [09-05 06:06] **F 臂慢 5×**：5.6k 样本/s（exp62 25k），GPU 0%，磁盘读 1.0–1.1 GB/s。病根两条：①`MaterializedBCDataset.index` 是
+  7,400 万个 Python 元组（每 worker ~6GB 私有 RSS）；②容器 cgroup memory.max = 188GB，145GB 缓存 + 5 worker × 30GB RSS 放不进页缓存，
+  memmap 随机访问触发内核预读（每 2KB 行读 ~128KB）→ 持续从盘读。修复：索引改 numpy（0.7GB）、memmap `madvise(MADV_RANDOM)`、
+  删除已完成的 OLD 缓存、worker 5→10；kill F 臂重发（丢弃 2.2 小时 ≈ $2.4 的 epoch 0 进度，保留 `exp65_full_try1` 日志）。
+  心跳误报一次 STALL（把已完成的 C 臂当卡死）→ 规则改为只看 done=0 的臂。
 
 ## Results
 
