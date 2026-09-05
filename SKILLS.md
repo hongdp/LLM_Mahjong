@@ -510,6 +510,13 @@ bc49 配方原样重跑（同 seed、同数据）对原版 bc49 的 T=0 配对�
 ④（exp64 补充，2026-09-04）seed 67M 牌山段对 4 个"重跑/续训"模型系统性偏高 +0.5–1.8%，换到 68M 段全部回到 0.500–0.505：
 "噪声地板"有一半其实是牌山段与策略相似度的相关性。**头对头终评一律跑两个不重叠牌山段（67M + 68M）合并报数，单段不下结论。**
 
+## 远程 kill 自匹配的两次重犯（2026-09-04/05，exp64/exp67）
+`ssh pod 'P=$(pgrep -f "seat_min_rate"); kill $P'` 与 `ssh pod 'pkill -9 -f "scripts/train_dnn_ppo"'` 都把**远端 sh -c 自己的命令行**
+（含目标字串）匹配进去，先杀了自己 → ssh 255 退出，后续步骤全没执行、还以为执行了。规则细化：①远程也一样：
+pgrep/pkill 的模式用方括号技巧 `"train_dnn_pp[o]"`（模式本身不再匹配含该字面量的命令行），或者先 `pgrep` 列出 pid、
+下一条独立命令 `kill <pid...>`；②任何"kill 后接着做事"的链，kill 必须单独一条 ssh；③两台 PPO 臂共用一张 44GB 卡时
+batch 4096 各占 21GB，推理服务器重启即 OOM——先算显存再并行。
+
 ## 大缓存训练：容器 cgroup 内存上限 + memmap 预读 = 5× 慢（2026-09-05，exp65）
 145GB 物化缓存在 188GB 容器（`/sys/fs/cgroup/memory.max`）里放不进页缓存，np.memmap 随机行访问触发内核预读（每 2KB 行读 ~128KB），
 磁盘 1GB/s、GPU 0%、5.6k 样本/s；同时 7,400 万行的 Python 元组索引让每个 DataLoader worker 多 6GB 私有 RSS。

@@ -42,6 +42,10 @@
 - [09-05 14:20] 发射准备：L40S Secure US-TX-4，两臂并行（各 6 worker，`games_per_worker 32`，gpu_infer），配方 = exp46I
   （lr 6e-5、warmup 150、KL 锚 0.3、value_detach、熵 0、dup_k 8、league {bc65,bc49} frac 1.0 学习席 1、对手 T=0）+ `--value_warmup 300`。
   预计每臂 ~30 局/s → 100 万局 ≈ 9.3h，两臂并行 ≈ $10.5（上限 $15）；里程碑 ckpt 每 10 万局。
+- [09-05 13:28] pod `jkw919o635e5rl`，首发 batch 4096：两臂各占 21GB，L40S 44GB 打满，O 臂推理服务器重启时 OOM（try1 保留）。
+  改 **batch 2048**（两臂同改，A/B 仍公平）重发：两臂各 **90 局/s**（比预估快 3×，GPU 推理服务器承担了演员），
+  每迭代 8192 局 1.5 分钟 → 100 万局 ≈ **3.1h**，两臂并行 ≈ **$3.5**；显存合计 24GB。
+  重发过程中远程 `pkill -f` 再次自匹配杀掉 ssh 会话（SKILLS 老坑第二次），改为"先列 pid、再单独 kill"。
 
 ## Results
 
