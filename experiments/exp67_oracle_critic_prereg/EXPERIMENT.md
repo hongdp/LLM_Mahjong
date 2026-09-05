@@ -36,6 +36,12 @@
 4. < 0.495：RL 毁值，检查锚系数。
 
 ## Progress
+- [09-05 13:30] 规则审计完成（docs/engine_known_issues.md 2026-09-05）：引擎零改动，指纹不变，无需重校。bc65 复制为 `experiments/_anchors_epoch6/bc65.pt`。
+- [09-05 14:10] git 53a0679：oracle 特征 / `_oc` 网络 / 训练器支持；测试 2/2；本机冒烟（768 局，batch 1024 因 16GB 显存）：
+  EV −0.000 → 0.006 → 0.012 三迭代上升，KL 到锚 0.001–0.004，策略 logits 与 bc65 逐位一致（测试保证）。
+- [09-05 14:20] 发射准备：L40S Secure US-TX-4，两臂并行（各 6 worker，`games_per_worker 32`，gpu_infer），配方 = exp46I
+  （lr 6e-5、warmup 150、KL 锚 0.3、value_detach、熵 0、dup_k 8、league {bc65,bc49} frac 1.0 学习席 1、对手 T=0）+ `--value_warmup 300`。
+  预计每臂 ~30 局/s → 100 万局 ≈ 9.3h，两臂并行 ≈ $10.5（上限 $15）；里程碑 ckpt 每 10 万局。
 
 ## Results
 
