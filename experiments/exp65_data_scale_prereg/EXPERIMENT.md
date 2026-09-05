@@ -28,6 +28,9 @@ min_delta 5e-4，batch 1024，lr 3e-4）。数据量 ~78M 决策/epoch：pod 上
 ## Progress
 - [09-04 00:45] 探针：2025-03-01、2025-10-01 日归档 0 局（不再提供）；2026-01-15 474 局 → 可取范围 2026-01-01 起。
   采集启动（pid 见 scratchpad `harvest65.log`），2026-01-01 570 局。
+- [09-05] **采集完成**：2026-01-01 → 09-03 共下载 93,481 局，`data/tenhou/raw` 合计 **114,803 局**（≈ 旧集 20,526 的 5.6×），
+  0 个 warn；单会话 throttle 0.4 s，约 26 小时。holdout 冻结为旧集的 1000 局（`experiments/configs/exp65_holdout_1000.txt`）。
+  发射：L40S Secure US-TX-4，220GB 盘（全量 uint8 缓存 ≈ 145GB + 旧集 26GB），两臂并行：F = 全量 114.8k 局、C = 旧快照 20.5k 局（同批控制臂）。
 
 ## Results
 
