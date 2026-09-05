@@ -27,12 +27,20 @@ C_SHANTEN, C_UKEIRE = 2.0, 0.05
 # Privileged CRITIC-ONLY features (exp11 A1/A2). The policy never sees them:
 # they ride in a separate tensor consumed only by the value path, so the
 # actor keeps information parity with the LLM baseline.
-CFEAT_DIM = {"none": 0, "profile": 4, "hazard": 45}   # hazard: 9 families x 5
+from src.agents.dnn.oracle_features import ORACLE_DIM, oracle_features   # noqa: E402
+
+CFEAT_DIM = {"none": 0, "profile": 4, "hazard": 45,   # hazard: 9 families x 5
+             "oracle": ORACLE_DIM}                    # exp67: hidden state for the critic
 
 
 def critic_features(table, pid, mode: str) -> Optional[torch.Tensor]:
     if mode == "none":
         return None
+    if mode == "oracle":
+        try:
+            return oracle_features(table, pid)
+        except Exception:                 # noqa: BLE001
+            return torch.zeros(ORACLE_DIM)
     hand = table.hands[pid]
     n_melds = len(table.melds[pid])
     closed = n_melds == 0                 # proxy: ankan also counts as open

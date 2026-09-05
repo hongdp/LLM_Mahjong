@@ -177,7 +177,7 @@ def main():
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
                          "H=0.44; guard for aggressive anneal arms)")
-    ap.add_argument("--critic_feats", choices=["none", "profile", "hazard"],
+    ap.add_argument("--critic_feats", choices=["none", "profile", "hazard", "oracle"],
                     default="none",
                     help="Privileged CRITIC-ONLY features (exp11; the policy "
                          "never sees them). profile = 4-dim value-distance "
@@ -252,11 +252,15 @@ def main():
     dev = torch.device(args.train_device)
     use_cf = args.critic_feats != "none"
     if args.arch:
-        if use_cf:
-            raise SystemExit("--critic_feats requires the default CNN "
-                             "(zoo nets don't carry the critic variants)")
         from src.agents.dnn.arch_zoo import ZOO
         net = ZOO[args.arch][0]().to(dev)
+        if use_cf:
+            from src.agents.dnn.selfplay import CFEAT_DIM as _CFD
+            if getattr(net, "critic_feat_dim", 0) != _CFD[args.critic_feats]:
+                raise SystemExit(f"--critic_feats {args.critic_feats} needs a zoo net with "
+                                 f"critic_feat_dim={_CFD[args.critic_feats]} (e.g. *_oc); "
+                                 f"{args.arch} has {getattr(net, 'critic_feat_dim', 0)}")
+            print(f"🔭 critic_feats: {args.critic_feats} (dim {_CFD[args.critic_feats]}, value path only)", flush=True)
         print(f"🏗 arch: {args.arch}", flush=True)
     else:
         from src.agents.dnn.selfplay import CFEAT_DIM
