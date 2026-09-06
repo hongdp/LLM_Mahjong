@@ -240,6 +240,9 @@ ZOO = {
                                            in_scalars=N_SCALARS_V3, encoder_variant="v3"), False),
     # red-dora variants (Majsoul rules, 2026-08-23): +5 red planes
     "cnn_m_r": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+    # exp68 pure line: cnn_m_r + 8 oracle planes (zeros at play time; filled only
+    # by the training rollout under the hide-probability schedule)
+    "cnn_m_ro": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R + 8, encoder_variant="v1ro"), False),
     "convformer_m_r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V1R,
                                           encoder_variant="v1r"), False),
     "cnn_m_v3r": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R,

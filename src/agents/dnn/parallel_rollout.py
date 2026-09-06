@@ -474,6 +474,12 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             pkg["roles"] = roles
             payload.append(pkg)
             return
+        # exp68 oracle policy guiding: with probability (1 - hide_p) this game's
+        # observations carry the hidden-state planes (v1ro encoder). Default
+        # hide_p = 1.0 -> never visible, so every non-training path is blind.
+        hide_p = float(cfg.get("oracle_hide_p", 1.0))
+        if hide_p < 1.0:
+            table.oracle_visible = random.Random((seed or 0) * 31 + 7).random() >= hide_p
         active[i] = {"gen": gen, "table": table, "reqs": reqs, "seed": seed,
                      "learner": learner_seats, "opp": opp, "temps": temps,
                      "roles": roles,
