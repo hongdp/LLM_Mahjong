@@ -510,6 +510,13 @@ bc49 配方原样重跑（同 seed、同数据）对原版 bc49 的 T=0 配对�
 ④（exp64 补充，2026-09-04）seed 67M 牌山段对 4 个"重跑/续训"模型系统性偏高 +0.5–1.8%，换到 68M 段全部回到 0.500–0.505：
 "噪声地板"有一半其实是牌山段与策略相似度的相关性。**头对头终评一律跑两个不重叠牌山段（67M + 68M）合并报数，单段不下结论。**
 
+## Community 宿主的 CUDA 驱动可能低于镜像（2026-09-05，exp68 首发）
+create-pod 响应里的 `cudaVersion` 是**宿主驱动**版本；Community 拿到 12.4 宿主时 cu128 镜像的 torch 看不到 GPU，
+训练器不会报错——`gpu_infer` 静默退到 CPU（日志只有一行 `_cuda_getDeviceCount` 警告），两臂空转烧钱。
+规则：①建 pod 后先看响应的 `cudaVersion`，按它选镜像（12.4 → `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04`；
+≥12.8 → cu128 镜像）；②发射脚本在启动训练前必须 `python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"`；
+③心跳把"首迭代 GPU 显存 < 1GB"当异常。Secure 机型迄今都是 12.8+，Community 不保证。
+
 ## 远程 kill 自匹配的两次重犯（2026-09-04/05，exp64/exp67）
 `ssh pod 'P=$(pgrep -f "seat_min_rate"); kill $P'` 与 `ssh pod 'pkill -9 -f "scripts/train_dnn_ppo"'` 都把**远端 sh -c 自己的命令行**
 （含目标字串）匹配进去，先杀了自己 → ssh 255 退出，后续步骤全没执行、还以为执行了。规则细化：①远程也一样：

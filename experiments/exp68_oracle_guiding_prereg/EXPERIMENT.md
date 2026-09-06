@@ -36,6 +36,9 @@ Suphx 的 oracle guiding 让策略在训练前期看见对手暗手/待张，先
   凤凰卓人类 21.2% / 12.5% / 18.2% / 33.8%。纯血冠军对 bc49 桌放铳率高 7pp、和牌率低 7pp；defense_iq 0.011 vs 0.184。
 - [09-05 21:50] git 2671f2f：v1ro 编码器 / cnn_m_ro / `--oracle_hide_schedule`；测试 20/20；冒烟 768 局 hide_p 0→0.5→1.0 生效；
   向量化 rollout 验证：hide 1.0 → 0/2865 步含 oracle；0.0 → 2890/2890；0.5 → 17/32 局（按局抽签）。
+- [09-05 19:30] 首发 Community L40S（24 vCPU，$0.79/h）：宿主驱动 CUDA 12.4，cu128 镜像下 `torch.cuda.is_available()=False`，
+  两臂静默落到 CPU 推理（日志只有一行 `_cuda_getDeviceCount` 警告）→ terminate（~$0.15）。`allowedCudaVersions` 参数未改变分配结果
+  （仍 12.4 宿主）→ 改用 `runpod/pytorch:2.4.0-py3.11-cuda12.4.1` 镜像重建（同一宿主），发射前加 `torch.cuda.is_available()` 守卫。
 
 ## Results
 
