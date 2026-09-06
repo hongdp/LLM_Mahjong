@@ -4,6 +4,7 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
+| 2026-09-06 | `exp68_oracle_guiding_prereg` 第 2 轮（done，L40S Secure $4.3） | 同第 1 轮，games_per_iter 2048 | **G2 vs P2 0.5412±0.0035（z=11.8）**；暴露席放铳 0.143 vs 0.217；defense_iq 代理仍 ≈0；P2 vs exp27A 0.312（训练器默认值与 exp27A 不同 + 场况随机化） | oracle guiding 两轮独立复现为正；第 3 轮旗标对齐 exp27A（ppo_epochs 1 / adv_clamp 5 / target_kl 0.03 / batch 4096）进行中 |
 | 2026-09-05 | `exp68_oracle_guiding_prereg` 第 1 轮（done，L40S Secure $3.6+$0.3 废机） | 纯血线 v2：Suphx 式 oracle policy guiding 从零（cnn_m_ro，隐藏概率 0→1@60 万局）vs 冠军配方原样（cnn_m_r），各 100 万局 | **G vs P 0.5148±0.0035（z=4.2）**；defense_iq G −0.002 / P 0.025 / exp27A 0.055 / bc49 0.209；两臂对 exp27A 0.37（games_per_iter 8192 混淆：迭代数只有 exp27A 的 1/4） | oracle guiding = 小而显著的加速器，防守不迁移；第 2 轮忠实配方 2048 进行中 |
 | 2026-09-05 | `exp67_oracle_critic_prereg`（done，判负，L40S Secure $4.7） | RL 前置条件：critic 看隐藏状态（对手暗手/待张/牌山/隐藏宝牌 319 维）vs 盲 critic，PPO 从 bc65 各 100 万局（exp46I 配方） | critic EV **0.102 vs 0.107**；O vs C 70k 对 **0.4982±0.0019**；O vs bc65 0.5010、C vs bc65 0.5040；探针：全隐藏信息只把回报 R² 从 5.3% 提到 6.0%（末 5 步 8.4→9.6%） | 本局结局 ≥90% 由摸牌顺序决定，(σ/Δ)² 内生；RL 前置条件方向关闭；bc65 = 单局设定下 RL 不动点 |
 | 2026-09-05 | `exp65_data_scale_prereg`（done，L40S Secure $10.5） | 凤凰卓 2026-01→09 全量 114.8k 局（5.6×）BC 重训 vs 同批旧快照控制臂，冻结 holdout | acc **0.8171 vs 0.8077（+0.94pp）**；F vs C 双段合并 20k 对 **0.5105±0.0035（z=3.0）**；F vs bc49 **0.5095±0.0035（z=2.7）**；C vs bc49 0.5002；破缺率 5.7%→2.05% | 数据兑现但斜率 3.8→1.4 pp/十倍，人类噪声地板 ≈0.82–0.83；满足加冕统计判据未达预注册门槛 → 候选 `bc65_full_ep6`，待用户拍板 |
