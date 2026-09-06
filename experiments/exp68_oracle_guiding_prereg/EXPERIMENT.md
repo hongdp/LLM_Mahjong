@@ -47,10 +47,39 @@ Suphx 的 oracle guiding 让策略在训练前期看见对手暗手/待张，先
   P600 **−0.039**（0.175/0.211/0.214）、exp27A（同批复测）0.055；暴露步数 G/P 只有 ~630 vs exp27A 8,300——60 万局的自对弈里立直还很少，
   防守读数噪声大。早读：G 与 P 无差别，等 100 万局终评。
 
-## Results
+- [09-05 22:50] **两臂完成**：各 123 迭代 / 1,007,616 局 / 175–185 分钟（88–94 局/s）。pod terminate（204），≈3.3h ≈ **$3.6**（+ 三次废机 $0.3）。
+  轨迹：G 熵 1.89 → 1.06、迭代胜率 0.605；P 熵 1.90 → 1.17、胜率 0.557；G 的 hide_p 按计划 0 → 1.0@62 万局。
 
-## Conclusion
+## Results（第 1 轮，games_per_iter 8192）
+
+| 判据 | 目标 | 实测 | 判定 |
+|---|---|---|---|
+| 1 防守涌现：G defense_iq（800 局 T=0） | ≥ 0.10 | **G −0.002**、P 0.025；同批 exp27A 0.055、bc49 0.209 | ❌ 无涌现，G ≈ P |
+| 2 强度：G vs P 双段合并 20k 对 | ≥ 0.53 | 67M 0.5178、68M 0.5141 → **0.5148±0.0035（z=+4.2）** | ❌ 未达 0.53，但显著为正（+1.5%） |
+| 2 强度：G vs exp27A | ≥ 0.53 | **0.3733±0.0034**；P vs exp27A 0.3720 | ❌ 两臂都远弱于 exp27A |
+| G/P vs bc49 | — | 0.2112 / 0.2078 | 与 exp27A 的 0.203 同层 |
+| 暴露席放铳率（探针） | — | G 0.230、P 0.243、exp27A 0.156、bc49 0.126 | G 的 +1.5% 不来自防守 |
+
+**配方混淆**：为吞吐把 `games_per_iter` 从 exp27A 的 2048 提到 8192 → 100 万局只有 123 次 PPO 迭代（exp27A 488 次），
+两臂都处在学习曲线更早的位置（对 exp27A 0.37），因此"对 exp27A ≥0.53"判据在本轮不可判；A/B（G vs P）本身公平。
+
+## 第 2 轮预注册（2026-09-05 23:00）：忠实 exp27-A 配方（games_per_iter 2048）
+唯一改动 = `--games_per_iter 2048`（其余同第 1 轮），G2/P2 各 100 万局同批。判据不变（defense_iq ≥0.10；G2 vs P2 ≥0.53；
+P2 vs exp27A 应 ≈0.50 作为复现检查，若 <0.45 则配方仍有差异需查）。预算 ≈ 4–5h ≈ $5，上限 $8。
+
+## Conclusion（第 1 轮）
+Oracle policy guiding 在同预算下给了**小而显著的强度增益（+1.5% share，z=4.2）**，但**没有让防守涌现**：全盲后 defense_iq 回到 0，
+暴露席放铳率与对照臂相同。也就是说，退火期间策略学到的"看暗手弃张"没有迁移成"看公开线索弃张"；留下的增益更像是
+更快的进攻学习（G 熵更低、迭代胜率更高）。第 1 轮因 games_per_iter 的混淆无法回答"是否越过 exp27A"，第 2 轮修正。
 
 ## Next Steps
+- 第 2 轮（进行中）。若 G2 仍无防守：oracle guiding 作为"加速器"保留（+1.5%），防守涌现需要别的机制
+  （候选：对手待张作为**辅助预测目标**而非输入——策略从公开线索预测隐藏待张的辅助头，纯、可迁移；或半庄级顺位奖励）。
 
 ## Artifacts
+| Path | Size | Description |
+|---|---|---|
+| experiments/exp68_{G,P}/ + gs://llm-mahjong-experiments/exp68_{G,P}/ | 12 ckpt ×~2MB 各 | 里程碑 ckpt、latest.pt、train_log.json、TB |
+| experiments/exp68_pull/*.log | — | pod 日志 |
+| experiments/probes/exp68_arms.json、exp68_defense_600k.json、exp68_defense_final.json、exp68_style_vs_bc49.json、pure_vs_prior_style_vs_bc49.json | — | 终评、防守探针、风格向量 |
+| src/agents/dnn/encoder.py（v1ro）、arch_zoo `cnn_m_ro`、train_dnn_ppo `--oracle_hide_schedule`、tests/test_oracle_guiding.py | — | 基建 |
