@@ -41,6 +41,16 @@
 3. **oracle critic 从零**（RVR 形态）叠加在 1 上（同一 `_ro` 网络的 value 头再看 319 维 oracle 特征）。
 4. 半庄级 episode + 顺位奖励（设定变更，需用户批准）。
 
+## 4b. 执行结果（2026-09-06 回填）
+- **exp68 oracle policy guiding（三轮）**：慢配方下 G vs P +1.5% → +4.1%；冠军配方（`ppo_epochs 1 / adv_clamp 5 / target_kl 0.03 / batch 4096`）下
+  P3 复现 exp27A（0.492），G3 = exp27A（0.4999），G3 vs P3 只剩 +0.7%；防守三轮均未迁移（defense_iq ≈0，放铳率 0.197 = 0.196）。
+  → **加速器，不是平台抬升器**；输入侧 oracle 课程不能把"看暗手弃张"变成"读线索弃张"。
+- **从零配方钉死**：`--ppo_epochs 1 --adv_clamp 5.0 --target_kl 0.03 --batch 4096 --games_per_iter 2048`（训练器默认值已漂移，见 SKILLS）。
+- 意外：新配方（含场况随机化）产物对 bc49 0.32–0.33，exp27A 0.203——纯血锚点非传递，梯子刻度需重评。
+- 路线 1 关闭；路线 3（oracle critic 从零）预期同 exp67（回报方差内生）不做；**下一步 = 待张辅助预测头（exp69）**：
+  策略 trunk 上加 3×34 的辅助头，目标 = 三家隐藏待张（引擎标签），BCE 联合训练；推理不需隐藏信息。假设：显式学"读线索→待张"
+  会把防守表示学进 trunk，defense_iq 与放铳率同时改善。
+
 ## 5. 判据与刻度
 - 强度：T=0 配对牌山头对头（双牌山段合并 ≥20k 对）对 exp27-A 与对 bc49；梯子 Elo（纪元 6 池）。
 - 防守：`scripts/probe_defense.py` defense_iq（人类先验 0.18–0.19；纯血 0.01）；风格向量 vs bc49（`eval_style_profile.py --vs_anchors`）。
