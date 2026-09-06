@@ -240,6 +240,9 @@ ZOO = {
                                            in_scalars=N_SCALARS_V3, encoder_variant="v3"), False),
     # red-dora variants (Majsoul rules, 2026-08-23): +5 red planes
     "cnn_m_r": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+    # exp68 pure line: cnn_m_r + 8 oracle planes (zeros at play time; filled only
+    # by the training rollout under the hide-probability schedule)
+    "cnn_m_ro": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R + 8, encoder_variant="v1ro"), False),
     "convformer_m_r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V1R,
                                           encoder_variant="v1r"), False),
     "cnn_m_v3r": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R,
@@ -355,12 +358,19 @@ class ConvFormer46(ConvFormer):
 
 
     def __init__(self, d=160, layers=6, heads=5, in_planes=N_PLANES,
-                 in_scalars=N_SCALARS, encoder_variant="v1"):
+                 in_scalars=N_SCALARS, encoder_variant="v1", critic_feat_dim=0):
         super().__init__(d, layers, heads, in_planes=in_planes,
                          in_scalars=in_scalars, encoder_variant=encoder_variant)
         from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
         self.action_space = "mortal46"
         self.action_dim = MORTAL_ACTION_DIM
+        # exp67 oracle critic: privileged features enter the VALUE path only
+        # (concatenated to the global token); the policy logits never see them
+        self.critic_feat_dim = critic_feat_dim
+        if critic_feat_dim > 0:
+            self.value_cfeat_proj = nn.Sequential(nn.Linear(critic_feat_dim, 128), nn.GELU())
+            self.value_head = nn.Sequential(nn.Linear(d + 128, 128), nn.ReLU(),
+                                            nn.Linear(128, 1))
         # red-five tokens as a device buffer: a python-list index creates a
         # CPU tensor every forward, which breaks CUDA graph capture in the
         # infer server (exp46 launch crash, 2026-08-28)
@@ -391,8 +401,13 @@ class ConvFormer46(ConvFormer):
         # ~0.02-0.07 by deal luck, value gradients into the trunk are mostly
         # noise continuously eroding the policy's representation
         hv = h.detach() if getattr(self, "value_detach", False) else h
+        g = hv[:, 0, :]
+        if getattr(self, "critic_feat_dim", 0) > 0:
+            if cfeats is None:
+                cfeats = torch.zeros(g.shape[0], self.critic_feat_dim, device=g.device, dtype=g.dtype)
+            g = torch.cat([g, self.value_cfeat_proj(cfeats.to(g.dtype))], dim=1)
         return (self._logits46(h).masked_fill(~mask, float("-inf")),
-                self.value_head(hv[:, 0, :]).squeeze(-1))
+                self.value_head(g).squeeze(-1))
 
 
 # ----------------------------------------------------------------------
@@ -553,6 +568,11 @@ ZOO.update({
     "convformer_m_v3r_m46": (lambda: ConvFormer46(
         160, 6, 5, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3,
         encoder_variant="v3r"), False),
+    # exp67: same trunk/head, value path additionally reads the 319-dim oracle
+    # (hidden-state) features; policy keys load from any *_v3r_m46 checkpoint
+    "convformer_m_v3r_m46_oc": (lambda: ConvFormer46(
+        160, 6, 5, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3,
+        encoder_variant="v3r", critic_feat_dim=319), False),
     "convformer_m_v3rh_m46": (lambda: ConvFormer46(
         160, 6, 5, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3H,
         encoder_variant="v3rh"), False),

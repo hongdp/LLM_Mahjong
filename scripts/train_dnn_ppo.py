@@ -177,7 +177,11 @@ def main():
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
                          "H=0.44; guard for aggressive anneal arms)")
-    ap.add_argument("--critic_feats", choices=["none", "profile", "hazard"],
+    ap.add_argument("--oracle_hide_schedule", default=None,
+                    help="exp68 oracle policy guiding (needs a *_ro arch): 'games:p,...' piecewise-linear "
+                         "schedule of the probability that a rollout game HIDES the oracle planes "
+                         "(0 = always visible, 1 = blind). E.g. '0:0.0,600000:1.0'. Play/eval are always blind.")
+    ap.add_argument("--critic_feats", choices=["none", "profile", "hazard", "oracle"],
                     default="none",
                     help="Privileged CRITIC-ONLY features (exp11; the policy "
                          "never sees them). profile = 4-dim value-distance "
@@ -220,6 +224,23 @@ def main():
         ent_schedule = sorted((int(g), float(c)) for g, c in
                               (p.split(":") for p in
                                args.entropy_schedule.split(",")))
+    oracle_sched = []
+    if args.oracle_hide_schedule:
+        oracle_sched = sorted((int(g), float(c)) for g, c in
+                              (p.split(":") for p in args.oracle_hide_schedule.split(",")))
+        if not args.arch or not args.arch.endswith("_ro"):
+            raise SystemExit("--oracle_hide_schedule needs a *_ro arch (v1ro encoder)")
+
+    def oracle_hide_p(g):
+        """piecewise-linear interpolation of the hide probability on the game counter"""
+        if not oracle_sched:
+            return 1.0
+        if g <= oracle_sched[0][0]:
+            return oracle_sched[0][1]
+        for (g0, p0), (g1, p1) in zip(oracle_sched, oracle_sched[1:]):
+            if g0 <= g <= g1:
+                return p0 + (p1 - p0) * (g - g0) / max(1, g1 - g0)
+        return oracle_sched[-1][1]
 
     torch.set_num_threads(max(1, os.cpu_count() // 3))
     torch.manual_seed(args.seed); random.seed(args.seed)
@@ -252,11 +273,15 @@ def main():
     dev = torch.device(args.train_device)
     use_cf = args.critic_feats != "none"
     if args.arch:
-        if use_cf:
-            raise SystemExit("--critic_feats requires the default CNN "
-                             "(zoo nets don't carry the critic variants)")
         from src.agents.dnn.arch_zoo import ZOO
         net = ZOO[args.arch][0]().to(dev)
+        if use_cf:
+            from src.agents.dnn.selfplay import CFEAT_DIM as _CFD
+            if getattr(net, "critic_feat_dim", 0) != _CFD[args.critic_feats]:
+                raise SystemExit(f"--critic_feats {args.critic_feats} needs a zoo net with "
+                                 f"critic_feat_dim={_CFD[args.critic_feats]} (e.g. *_oc); "
+                                 f"{args.arch} has {getattr(net, 'critic_feat_dim', 0)}")
+            print(f"🔭 critic_feats: {args.critic_feats} (dim {_CFD[args.critic_feats]}, value path only)", flush=True)
         print(f"🏗 arch: {args.arch}", flush=True)
     else:
         from src.agents.dnn.selfplay import CFEAT_DIM
@@ -385,6 +410,8 @@ def main():
         for g_thr, coef in ent_schedule:      # step function on the counter
             if games >= g_thr:
                 ent_alpha = coef
+        if oracle_sched:
+            cfg["oracle_hide_p"] = oracle_hide_p(games)
         n_deals = max(1, args.games_per_iter // args.dup_k)
         base = 6_000_000 + it * 9973
         seeds = [base + d for d in range(n_deals) for _ in range(args.dup_k)]
@@ -603,6 +630,7 @@ def main():
                "entropy_before": ent_before, "entropy": ent_after,
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
                "explained_var": ev, "win_rate": win,
+               "oracle_hide_p": cfg.get("oracle_hide_p"),
                # value-scale context (user 2026-08-30): value_loss is MSE in
                # squared normalized-reward units — read it against ret_std;
                # v_std/ret_std is the critic's conservatism ratio

@@ -59,6 +59,14 @@ N_SCALARS_V3H = N_SCALARS_V3 + 3
 N_PLANES_RED = 6
 N_PLANES_V1R = N_PLANES + N_PLANES_RED      # 21
 N_PLANES_V3R = N_PLANES_V3 + N_PLANES_RED   # 56
+# exp68 oracle POLICY guiding (Suphx-style, pure line): 8 hidden-state planes
+# appended to v1r — 3 opponents' concealed hand counts /4, 3 opponents' wait
+# masks, live wall counts /4, hidden ura indicator one-hot. They are filled
+# ONLY when the table carries `oracle_visible=True` (set by the training
+# rollout with the schedule's probability); every other path (arena, ladder,
+# bridge, tests) sees zeros, so a "_ro" checkpoint can never cheat at play.
+N_PLANES_ORACLE = 8
+N_PLANES_V1RO = N_PLANES_V1R + N_PLANES_ORACLE   # 29
 # v3r2 (exp51): +12 defense-theory planes, still zero derived features —
 # post-riichi discards, first-occurrence discard order (the last-write
 # collision fix), and meld call junme recovered from the discarder's
@@ -80,6 +88,7 @@ EV_PLANES = (EV_MAX * EV_F + TILE_TYPES - 1) // TILE_TYPES   # 31
 N_PLANES_V4 = N_PLANES_V1R + EV_PLANES
 VARIANT_SHAPE = {                            # encoder variant -> (planes, scalars)
     "v1": (N_PLANES, N_SCALARS), "v1r": (N_PLANES_V1R, N_SCALARS),
+    "v1ro": (N_PLANES_V1RO, N_SCALARS),
     "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
     "v3r2": (N_PLANES_V3R2, N_SCALARS_V3),
     "v3rh": (N_PLANES_V3R, N_SCALARS_V3H),
@@ -102,11 +111,12 @@ def variant_of_arch(arch: str) -> str:
     arch = arch or ""
     # action-space suffix ('..._m46') is not an encoder marker and would
     # shadow the real one under endswith (exp46-C: v3r opponents read as v1)
+    arch = re.sub(r"_oc$", "", arch)          # exp67 oracle-critic suffix is not an encoder marker
     arch = re.sub(r"_m\d+$", "", arch)
     if arch.startswith("mortal_full"):
         return "mortal_v3_pure" if "_pure" in arch else "mortal_v3"
     for suf, v in (("_v4", "v4"), ("_v3rh", "v3rh"), ("_v3r", "v3r"),
-                   ("_v3", "v3"), ("_r", "v1r")):
+                   ("_v3", "v3"), ("_ro", "v1ro"), ("_r", "v1r")):
         if arch.endswith(suf):
             return v
     return "v1"
@@ -237,6 +247,32 @@ def _red_planes(table, player_id: int) -> np.ndarray:
     return R
 
 
+def _oracle_planes(table, player_id: int) -> np.ndarray:
+    """[8, 34] hidden-state planes for oracle policy guiding (exp68). All zero
+    unless `table.oracle_visible` is True — the training rollout is the only
+    code path that ever sets it."""
+    O = np.zeros((N_PLANES_ORACLE, TILE_TYPES), dtype=np.float32)
+    if not getattr(table, "oracle_visible", False):
+        return O
+    for off in range(1, 4):
+        opp = (player_id + off) % 4
+        for t in table.hands[opp]:
+            O[off - 1][tile_to_34(t)] += 0.25
+        try:
+            if len(table.hands[opp]) % 3 == 1:          # 13-tile state: waits defined
+                for w in table._waits(opp):
+                    O[2 + off][tile_to_34(w)] = 1.0
+        except Exception:                                # noqa: BLE001
+            pass
+    for t in table.wall:
+        O[6][tile_to_34(t)] += 0.25
+    try:
+        O[7][tile_to_34(table.dead_wall[9])] = 1.0       # ura indicator under the first dora
+    except Exception:                                    # noqa: BLE001
+        pass
+    return O
+
+
 def _event_planes(table, player_id: int) -> np.ndarray:
     """[EV_PLANES, 34]: the packed event buffer (see the layout note above).
     Events in global order: every seat's river events (tile, tsumogiri,
@@ -334,6 +370,9 @@ def encode_state(table, player_id: int,
     if variant == "v1r":
         P, sc = encode_state(table, player_id, with_order=False, variant="v1")
         return torch.cat([P, torch.from_numpy(_red_planes(table, player_id))]), sc
+    if variant == "v1ro":
+        P, sc = encode_state(table, player_id, with_order=False, variant="v1r")
+        return torch.cat([P, torch.from_numpy(_oracle_planes(table, player_id))]), sc
     if variant == "v4":
         P, _ = encode_state(table, player_id, with_order=False, variant="v1")
         Pr = _red_planes(table, player_id)
