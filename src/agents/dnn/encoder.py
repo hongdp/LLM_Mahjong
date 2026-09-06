@@ -112,6 +112,7 @@ def variant_of_arch(arch: str) -> str:
     # action-space suffix ('..._m46') is not an encoder marker and would
     # shadow the real one under endswith (exp46-C: v3r opponents read as v1)
     arch = re.sub(r"_oc$", "", arch)          # exp67 oracle-critic suffix is not an encoder marker
+    arch = re.sub(r"_aux$", "", arch)         # exp69 auxiliary-head suffix is not an encoder marker
     arch = re.sub(r"_m\d+$", "", arch)
     if arch.startswith("mortal_full"):
         return "mortal_v3_pure" if "_pure" in arch else "mortal_v3"

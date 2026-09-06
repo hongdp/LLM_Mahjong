@@ -31,7 +31,7 @@ class CnnPolicy(MahjongPolicyNet):
     """The incumbent, parameterized by input planes for encoder v2."""
 
     def __init__(self, channels=64, blocks=3, in_planes=N_PLANES,
-                 in_scalars=N_SCALARS, encoder_variant="v1"):
+                 in_scalars=N_SCALARS, encoder_variant="v1", aux_waits=False):
         nn.Module.__init__(self)
         self.encoder_variant = encoder_variant
         self.in_planes = in_planes
@@ -51,6 +51,17 @@ class CnnPolicy(MahjongPolicyNet):
             nn.Linear(channels * TILE_TYPES + 64, 256), nn.ReLU(),
             nn.Linear(256, 1),
         )
+        # exp69 (pure line): auxiliary prediction of the three opponents'
+        # hidden waits (3 x 34 multi-label) from the PUBLIC observation. The
+        # targets come from the engine at rollout time (critic_feats=oracle
+        # slots 111:213); the head shares the trunk so "reading the river"
+        # is learned into the policy's representation. Never used at play.
+        self.aux_waits = aux_waits
+        self.aux_waits_head = (nn.Sequential(nn.Linear(channels * TILE_TYPES + 64, 256), nn.ReLU(),
+                                             nn.Linear(256, 3 * TILE_TYPES)) if aux_waits else None)
+
+    def aux_waits_logits(self, planes, scalars):
+        return self.aux_waits_head(self.trunk(planes, scalars))
 
 
 class SEChannelAttention(nn.Module):
@@ -243,6 +254,8 @@ ZOO = {
     # exp68 pure line: cnn_m_r + 8 oracle planes (zeros at play time; filled only
     # by the training rollout under the hide-probability schedule)
     "cnn_m_ro": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R + 8, encoder_variant="v1ro"), False),
+    # exp69 pure line: cnn_m_r + auxiliary opponents'-waits prediction head (public input only)
+    "cnn_m_r_aux": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R, encoder_variant="v1r", aux_waits=True), False),
     "convformer_m_r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V1R,
                                           encoder_variant="v1r"), False),
     "cnn_m_v3r": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R,
