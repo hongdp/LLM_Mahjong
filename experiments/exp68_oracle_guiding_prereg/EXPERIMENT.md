@@ -39,6 +39,10 @@ Suphx 的 oracle guiding 让策略在训练前期看见对手暗手/待张，先
 - [09-05 19:30] 首发 Community L40S（24 vCPU，$0.79/h）：宿主驱动 CUDA 12.4，cu128 镜像下 `torch.cuda.is_available()=False`，
   两臂静默落到 CPU 推理（日志只有一行 `_cuda_getDeviceCount` 警告）→ terminate（~$0.15）。`allowedCudaVersions` 参数未改变分配结果
   （仍 12.4 宿主）→ 改用 `runpod/pytorch:2.4.0-py3.11-cuda12.4.1` 镜像重建（同一宿主），发射前加 `torch.cuda.is_available()` 守卫。
+- [09-05 19:36] cu124 镜像在同一宿主上仍 `CUDA unknown error` → 宿主 GPU 本身坏/配置错，不是版本问题；Community 两次都分到同一台
+  （60.249.37.148）→ 放弃 Community，改 **Secure L40S US-TX-4**（$1.09/h；纯血无资产，Secure 只是可靛性选择）。三次建机浪费 ≈ $0.3。
+- [09-05 19:40] **发射** pod `l53wqg84un9454`：CUDA 守卫通过；G 79.6 局/s、P 85.4 局/s（8192 局/迭代 ≈ 1.7 分钟），显存 16GB，GPU 98%；
+  起点熵 1.89（≈ 6.6 个等价动作），KL 0.008–0.009。预计 100 万局 ≈ 3.5h，两臂并行 ≈ **$4**。
 
 ## Results
 
