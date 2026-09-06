@@ -31,6 +31,11 @@ Suphx 的 oracle guiding 让策略在训练前期看见对手暗手/待张，先
 - 预算：两臂并行 1.0M 局各 ≈ 3h（L40S community $0.79/h）≈ **$2.5**；若 3090Ti community 可得则更低。上限 $6。
 
 ## Progress
+- [09-05 21:30] 差距诊断（`experiments/probes/pure_vs_prior_style_vs_bc49.json`，各 600 局 T=0 坐 bc49 桌）：
+  exp27-A 和牌 14.7% / **放铳 20.7%** / 立直 23.0% / 副露 23.0%；bc65 21.8% / 13.7% / 14.7% / 32.3%；bc49 22.5% / 13.7% / 16.8% / 29.0%；
+  凤凰卓人类 21.2% / 12.5% / 18.2% / 33.8%。纯血冠军对 bc49 桌放铳率高 7pp、和牌率低 7pp；defense_iq 0.011 vs 0.184。
+- [09-05 21:50] git 2671f2f：v1ro 编码器 / cnn_m_ro / `--oracle_hide_schedule`；测试 20/20；冒烟 768 局 hide_p 0→0.5→1.0 生效；
+  向量化 rollout 验证：hide 1.0 → 0/2865 步含 oracle；0.0 → 2890/2890；0.5 → 17/32 局（按局抽签）。
 
 ## Results
 
