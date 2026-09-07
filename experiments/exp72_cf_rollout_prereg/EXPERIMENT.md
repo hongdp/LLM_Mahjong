@@ -34,6 +34,10 @@ A_cf = R(执行动作) − mean R(替代) 替换该步的 GAE 优势（基线独
 - [09-07 00:40 PDT] 实现：`parallel_rollout` 分支 rollout（deepcopy 0.46 ms/次，槽位预算，forced first action，回合内新分支不接收回复）、
   `collect_parallel` 按席附加 `cf_adv`/`cf_fold_gain`（用组基线前的原始回报）、训练器旗标/优势替换/日志（cf_n, cf_adv_mean, cf_exec_best_frac, cf_fold_n, cf_fold_gain_mean, cf_skipped）。
   `tests/test_cf_rollout.py` 2/2（分支有限优势；T=0 下父局轨迹不受分支影响 ≥90%）。本机冒烟 512 局 ×2（cf_p 0/1）：rollout 4.6–4.9 s → 5.3–5.6 s。
+- [09-07 00:29 PDT] **发射**：Secure L40S US-TX-4 pod `b6qeav6pwdmj4g`（$1.09/h，ssh 195.26.232.147:21096），GPU 数值校验通过；提交 bcf1c38。
+  C1（`--cf_p 1.0`，仅立直暴露）与 C2（`--cf_p 0.02 --cf_all`）并行，`--cf_k 2 --cf_slots 64`，其余 = P3 钉死配方，100 万局/臂。
+  心跳、拉取（含 TB 镜像）、在轨循环（每 ckpt 对同局数 P3 n=600）已挂；TB 加 exp72_C1/C2_LIVE。
+  同时在跑：exp70（半庄，63%→ 预计 01:50 完成）。$200 计划累计承诺 ≈ exp70 8.6 + exp71 3.7 + exp72 ≈10 = ≈$22。
 
 ## Results
 
