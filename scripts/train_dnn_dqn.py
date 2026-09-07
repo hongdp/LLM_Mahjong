@@ -39,6 +39,14 @@ def parse_args():
                     help="json list of {name, path} frozen T=0 opponents; "
                          "entry 0 fills most seats (stationary env). Omit = "
                          "mirror self-play, four learner seats (exp71)")
+    ap.add_argument("--target_entropy_frac", default=None,
+                    help="ADAPTIVE Boltzmann temperature (exp71 r2): each "
+                         "iteration set T so the mean behaviour entropy over a "
+                         "replay sample equals this fraction of the uniform "
+                         "entropy over legal actions; piecewise-linear by "
+                         "games 'games:frac,...'. Overrides --temp_schedule. "
+                         "Fix for r1: fixed T=0.03 vs Q gaps ~4e-4 gave "
+                         "uniform-random behaviour data for 300k deals")
     ap.add_argument("--temp_schedule", default=None,
                     help="piecewise-linear Boltzmann temperature by games, "
                          "'games:T,games:T,...' (exp71 from scratch: Q starts "
@@ -149,6 +157,29 @@ def parse_temp_schedule(spec):
         return []
     pts = sorted((int(g), float(t)) for g, t in (x.split(":") for x in spec.split(",")))
     return pts
+
+
+@torch.no_grad()
+def solve_temperature(q_all, mask, frac, lo=1e-5, hi=10.0, iters=40):
+    """Bisection over log T: mean softmax(Q/T) entropy on multi-choice rows ==
+    frac * mean log(#legal). q_all: [N, A] with illegal = -inf already."""
+    legal = mask.sum(1)
+    rows = legal > 1
+    if rows.sum() == 0:
+        return hi
+    q = q_all[rows]
+    target = float(frac) * float(torch.log(legal[rows].float()).mean())
+    def ent(t):
+        p = torch.softmax(q / t, 1)
+        return float(-(p * torch.log(p.clamp_min(1e-12))).sum(1).mean())
+    a, b = float(np.log(lo)), float(np.log(hi))
+    for _ in range(iters):
+        m = 0.5 * (a + b)
+        if ent(float(np.exp(m))) > target:
+            b = m
+        else:
+            a = m
+    return float(np.exp(0.5 * (a + b)))
 
 
 def temp_at(sched, games):
@@ -301,6 +332,7 @@ def main():
         print("🪞 mirror self-play: four learner seats, episodes from all seats",
               flush=True)
     t_sched = parse_temp_schedule(args.temp_schedule)
+    e_sched = parse_temp_schedule(args.target_entropy_frac)
 
     replay = None
     rng = np.random.default_rng(args.seed)
@@ -380,7 +412,19 @@ def main():
     mc_phase = True
     while games < args.total_games:
         it += 1
-        if t_sched:
+        if e_sched and replay is not None and replay.size >= 4096:
+            # adaptive T: behaviour entropy tracks the schedule regardless of
+            # the Q scale (MC calibration, TD drift, reward_scale)
+            frac = temp_at(e_sched, games)
+            idx = rng.integers(0, replay.size, size=4096)
+            net.eval()
+            with torch.no_grad():
+                qa = net(torch.from_numpy(replay.planes[idx]).to(dev).float(),
+                         torch.from_numpy(replay.scal[idx]).to(dev),
+                         torch.from_numpy(replay.mask[idx]).to(dev)).float()
+            cfg["temperature"] = solve_temperature(qa, torch.from_numpy(replay.mask[idx]).to(dev), frac)
+            writer.add_scalar("dqn/target_entropy_frac", frac, games)
+        elif t_sched:
             cfg["temperature"] = temp_at(t_sched, games)
         for g_thr, coef in m_sched:
             if games >= g_thr:
