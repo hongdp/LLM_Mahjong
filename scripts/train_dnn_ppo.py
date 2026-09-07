@@ -86,6 +86,12 @@ def main():
                          "then counts MATCHES (~10 deals each).")
     ap.add_argument("--hanchan_w_path",
                     default="experiments/placement_value/w_resid.pt")
+    ap.add_argument("--hanchan_pure", action="store_true",
+                    help="exp70 pure line: --hanchan with FOUR learner copies (mirror self-play over a full "
+                         "hanchan, no league/anchor seats); needs no --league")
+    ap.add_argument("--hanchan_credit", choices=["w", "rank", "none"], default="w",
+                    help="per-deal credit in hanchan mode: w = learned placement value (exp55-D, human data), "
+                         "rank = analytic rank-uma potential (pure, exp70), none = raw deal points + final uma only")
     ap.add_argument("--league_opp_temp", type=float, default=None,
                     help="sampling temperature for frozen pool seats "
                          "(None = global temperature; 0 = greedy opponents)")
@@ -177,6 +183,10 @@ def main():
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
                          "H=0.44; guard for aggressive anneal arms)")
+    ap.add_argument("--aux_waits_coef", type=float, default=0.0,
+                    help="exp69: weight of the auxiliary BCE that predicts the three opponents' hidden waits "
+                         "(3x34) from the public observation; needs a *_aux arch and --critic_feats oracle "
+                         "(the oracle vector is used ONLY as the target; the policy/value never read it)")
     ap.add_argument("--oracle_hide_schedule", default=None,
                     help="exp68 oracle policy guiding (needs a *_ro arch): 'games:p,...' piecewise-linear "
                          "schedule of the probability that a rollout game HIDES the oracle planes "
@@ -275,13 +285,19 @@ def main():
     if args.arch:
         from src.agents.dnn.arch_zoo import ZOO
         net = ZOO[args.arch][0]().to(dev)
+        if args.aux_waits_coef > 0:
+            if not getattr(net, "aux_waits", False) or args.critic_feats != "oracle":
+                raise SystemExit("--aux_waits_coef needs a *_aux arch and --critic_feats oracle (targets)")
+            print(f"🎯 aux waits head: coef {args.aux_waits_coef} (oracle vector = targets only)", flush=True)
         if use_cf:
             from src.agents.dnn.selfplay import CFEAT_DIM as _CFD
-            if getattr(net, "critic_feat_dim", 0) != _CFD[args.critic_feats]:
+            cfd = getattr(net, "critic_feat_dim", 0)
+            if cfd != _CFD[args.critic_feats] and not (args.aux_waits_coef > 0 and cfd == 0):
                 raise SystemExit(f"--critic_feats {args.critic_feats} needs a zoo net with "
                                  f"critic_feat_dim={_CFD[args.critic_feats]} (e.g. *_oc); "
-                                 f"{args.arch} has {getattr(net, 'critic_feat_dim', 0)}")
-            print(f"🔭 critic_feats: {args.critic_feats} (dim {_CFD[args.critic_feats]}, value path only)", flush=True)
+                                 f"{args.arch} has {cfd}")
+            if cfd:
+                print(f"🔭 critic_feats: {args.critic_feats} (dim {_CFD[args.critic_feats]}, value path only)", flush=True)
         print(f"🏗 arch: {args.arch}", flush=True)
     else:
         from src.agents.dnn.selfplay import CFEAT_DIM
@@ -391,12 +407,19 @@ def main():
         cfg["league_frac"] = args.league_frac
         cfg["league_learner_seats"] = args.league_learner_seats
         cfg["league_opp_temp"] = args.league_opp_temp
-        cfg["hanchan"] = bool(args.hanchan)
-        cfg["hanchan_w_path"] = args.hanchan_w_path
         print(f"🏟 league: {len(cfg['league'])} frozen opponents, frac {args.league_frac}, "
               f"learner seats {args.league_learner_seats or 'rand 1-2'}, "
               f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
               flush=True)
+    if args.hanchan or args.hanchan_pure:
+        cfg["hanchan"] = True
+        cfg["hanchan_pure"] = bool(args.hanchan_pure)
+        cfg["hanchan_credit"] = args.hanchan_credit
+        cfg["hanchan_w_path"] = args.hanchan_w_path if args.hanchan_credit == "w" else None
+        if not args.hanchan_pure and not args.league:
+            raise SystemExit("--hanchan (four-seat table) needs --league; use --hanchan_pure for mirror self-play")
+        print(f"🀄 hanchan mode: {'pure mirror (4 learner seats)' if args.hanchan_pure else 'exp55-D four-seat table'}, "
+              f"per-deal credit = {args.hanchan_credit}; games_per_iter counts MATCHES", flush=True)
     if args.gpu_infer:
         print(f"🚀 gpu_infer: batched rollout inference on {args.train_device} "
               f"(max_batch {args.infer_max_batch}, wait {args.infer_wait_ms} ms)", flush=True)
@@ -494,6 +517,7 @@ def main():
         net.train()
         t_upd0 = time.time()
         stop, passes, kls, closs, vloss, hloss, bkls = False, 0, [], [], [], [], []
+        aloss, asep = [], []                  # exp69 aux waits BCE / positive-negative separation
         for ep in range(args.ppo_epochs):
             order = idx_keep[torch.randperm(n_eff, device=dev)]
             pass_kl = []
@@ -543,6 +567,24 @@ def main():
                         net.hazard_head(cfe[sel]), hlab[sel])
                     loss = loss + args.hazard_coef * hz
                     hloss.append(hz.item())
+                if args.aux_waits_coef > 0:
+                    # exp69: supervised "read the river" channel — predict the
+                    # opponents' hidden waits (engine fact) from the public obs
+                    tgt = cfe[sel][:, 111:213]
+                    # waits are sparse (a few 1s in 102 slots): without a positive
+                    # weight the head collapses to all-zeros (smoke: BCE 0.01, sep 0)
+                    n_pos = tgt.sum().clamp(min=1.0)
+                    pw = ((tgt.numel() - n_pos) / n_pos).clamp(1.0, 50.0)
+                    with torch.autocast("cuda", enabled=False):
+                        alog = net.aux_waits_logits(planes[sel], scal[sel]).float()
+                        aw = torch.nn.functional.binary_cross_entropy_with_logits(alog, tgt, pos_weight=pw)
+                    loss = loss + args.aux_waits_coef * aw
+                    aloss.append(aw.item())
+                    with torch.no_grad():
+                        pr = torch.sigmoid(alog)
+                        pos, neg = tgt > 0.5, tgt <= 0.5
+                        if bool(pos.any()) and bool(neg.any()):
+                            asep.append(float(pr[pos].mean() - pr[neg].mean()))
                 opt.zero_grad(); loss.backward()
                 if in_vwarm:
                     # value-only means value-HEAD-only: the head shares the
@@ -641,6 +683,9 @@ def main():
                "n_effective": n_eff, "n_raw": int(len(acts))}
         if hloss:
             row["hazard_bce"] = float(np.mean(hloss))
+        if aloss:
+            row["aux_bce"] = float(np.mean(aloss))
+            row["aux_sep"] = float(np.mean(asep)) if asep else 0.0
         log.append(row)
         for k, v in row.items():
             if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
