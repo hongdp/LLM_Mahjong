@@ -254,6 +254,8 @@ ZOO = {
     # exp68 pure line: cnn_m_r + 8 oracle planes (zeros at play time; filled only
     # by the training rollout under the hide-probability schedule)
     "cnn_m_ro": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R + 8, encoder_variant="v1ro"), False),
+    # exp70 pure line (hanchan training): cnn_m_r + 3 match-context scalars (round number / honba / all-last)
+    "cnn_m_rh": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R, in_scalars=N_SCALARS + 3, encoder_variant="v1rh"), False),
     # exp69 pure line: cnn_m_r + auxiliary opponents'-waits prediction head (public input only)
     "cnn_m_r_aux": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R, encoder_variant="v1r", aux_waits=True), False),
     "convformer_m_r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V1R,

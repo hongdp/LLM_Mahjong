@@ -67,6 +67,9 @@ N_PLANES_V3R = N_PLANES_V3 + N_PLANES_RED   # 56
 # bridge, tests) sees zeros, so a "_ro" checkpoint can never cheat at play.
 N_PLANES_ORACLE = 8
 N_PLANES_V1RO = N_PLANES_V1R + N_PLANES_ORACLE   # 29
+# exp70 (pure line, hanchan training): v1r planes + the three match-context
+# scalars v3rh carries (within-wind round number, honba, all-last flag)
+N_SCALARS_V1H = N_SCALARS + 3
 # v3r2 (exp51): +12 defense-theory planes, still zero derived features —
 # post-riichi discards, first-occurrence discard order (the last-write
 # collision fix), and meld call junme recovered from the discarder's
@@ -89,6 +92,7 @@ N_PLANES_V4 = N_PLANES_V1R + EV_PLANES
 VARIANT_SHAPE = {                            # encoder variant -> (planes, scalars)
     "v1": (N_PLANES, N_SCALARS), "v1r": (N_PLANES_V1R, N_SCALARS),
     "v1ro": (N_PLANES_V1RO, N_SCALARS),
+    "v1rh": (N_PLANES_V1R, N_SCALARS_V1H),
     "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
     "v3r2": (N_PLANES_V3R2, N_SCALARS_V3),
     "v3rh": (N_PLANES_V3R, N_SCALARS_V3H),
@@ -117,7 +121,7 @@ def variant_of_arch(arch: str) -> str:
     if arch.startswith("mortal_full"):
         return "mortal_v3_pure" if "_pure" in arch else "mortal_v3"
     for suf, v in (("_v4", "v4"), ("_v3rh", "v3rh"), ("_v3r", "v3r"),
-                   ("_v3", "v3"), ("_ro", "v1ro"), ("_r", "v1r")):
+                   ("_v3", "v3"), ("_ro", "v1ro"), ("_rh", "v1rh"), ("_r", "v1r")):
         if arch.endswith(suf):
             return v
     return "v1"
@@ -374,6 +378,14 @@ def encode_state(table, player_id: int,
     if variant == "v1ro":
         P, sc = encode_state(table, player_id, with_order=False, variant="v1r")
         return torch.cat([P, torch.from_numpy(_oracle_planes(table, player_id))]), sc
+    if variant == "v1rh":
+        P, sc = encode_state(table, player_id, with_order=False, variant="v1r")
+        ex = np.zeros(3, dtype=np.float32)
+        ex[0] = getattr(table, "round_number", 1) / 4.0
+        ex[1] = min(getattr(table, "honba", 0) / 8.0, 1.0)
+        ex[2] = 1.0 if (table.round_wind_idx >= 1
+                        and getattr(table, "round_number", 1) >= 4) else 0.0
+        return P, torch.cat([sc, torch.from_numpy(ex)])
     if variant == "v4":
         P, _ = encode_state(table, player_id, with_order=False, variant="v1")
         Pr = _red_planes(table, player_id)

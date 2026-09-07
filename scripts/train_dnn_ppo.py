@@ -86,6 +86,12 @@ def main():
                          "then counts MATCHES (~10 deals each).")
     ap.add_argument("--hanchan_w_path",
                     default="experiments/placement_value/w_resid.pt")
+    ap.add_argument("--hanchan_pure", action="store_true",
+                    help="exp70 pure line: --hanchan with FOUR learner copies (mirror self-play over a full "
+                         "hanchan, no league/anchor seats); needs no --league")
+    ap.add_argument("--hanchan_credit", choices=["w", "rank", "none"], default="w",
+                    help="per-deal credit in hanchan mode: w = learned placement value (exp55-D, human data), "
+                         "rank = analytic rank-uma potential (pure, exp70), none = raw deal points + final uma only")
     ap.add_argument("--league_opp_temp", type=float, default=None,
                     help="sampling temperature for frozen pool seats "
                          "(None = global temperature; 0 = greedy opponents)")
@@ -401,12 +407,19 @@ def main():
         cfg["league_frac"] = args.league_frac
         cfg["league_learner_seats"] = args.league_learner_seats
         cfg["league_opp_temp"] = args.league_opp_temp
-        cfg["hanchan"] = bool(args.hanchan)
-        cfg["hanchan_w_path"] = args.hanchan_w_path
         print(f"🏟 league: {len(cfg['league'])} frozen opponents, frac {args.league_frac}, "
               f"learner seats {args.league_learner_seats or 'rand 1-2'}, "
               f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
               flush=True)
+    if args.hanchan or args.hanchan_pure:
+        cfg["hanchan"] = True
+        cfg["hanchan_pure"] = bool(args.hanchan_pure)
+        cfg["hanchan_credit"] = args.hanchan_credit
+        cfg["hanchan_w_path"] = args.hanchan_w_path if args.hanchan_credit == "w" else None
+        if not args.hanchan_pure and not args.league:
+            raise SystemExit("--hanchan (four-seat table) needs --league; use --hanchan_pure for mirror self-play")
+        print(f"🀄 hanchan mode: {'pure mirror (4 learner seats)' if args.hanchan_pure else 'exp55-D four-seat table'}, "
+              f"per-deal credit = {args.hanchan_credit}; games_per_iter counts MATCHES", flush=True)
     if args.gpu_infer:
         print(f"🚀 gpu_infer: batched rollout inference on {args.train_device} "
               f"(max_batch {args.infer_max_batch}, wait {args.infer_wait_ms} ms)", flush=True)

@@ -363,6 +363,20 @@ class PlacementCredit:
         return base + float(u[0]) * 1000.0
 
 
+class RankUmaCredit:
+    """exp70 (pure line): ANALYTIC placement potential, zero learned parts and
+    zero human data — W(state) = uma of the seat's CURRENT rank + its point
+    delta from 25k (`_rank_uma_single`). Per-deal credit W(after)-W(before)
+    telescopes exactly to the final uma_points (the generator pays
+    true_uma - W(before) on the last deal), so placement pressure is
+    distributed over deals without any learned residual."""
+
+    def w(self, me: int, points, dealer: int, rw: int, honba: int,
+          kyotaku: int, deals_left: float) -> float:
+        rel = [points[(me + k) % 4] for k in range(4)]
+        return float(_rank_uma_single(rel))
+
+
 def _rank_uma_single(rel_points) -> float:
     """rank_uma_baseline for one row: UMA by current order (ties favour
     self) + own delta from 25k."""

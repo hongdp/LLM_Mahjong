@@ -237,6 +237,12 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
         h, roles = game.get("hanchan"), game.get("roles")
         if not h or not roles or "learner" not in roles:
             continue          # v2 table rows carry rotation roles, not seats
+        if roles.get("pure"):
+            # exp70: all four seats are the learner; report placement spread
+            # (mean |uma|) as the only meaningful mirror statistic
+            u, n = hz.get("pure_abs_uma", (0.0, 0))
+            hz["pure_abs_uma"] = (u + sum(abs(x) for x in h["uma_points"]) / 4.0, n + 1)
+            continue
         for role in ("learner", "twin", "bc", "top"):
             seat = roles[role]
             u, n = hz.get(role, (0.0, 0))
@@ -369,7 +375,11 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
     _DIAG = {"rpc": 0.0, "rounds": 0, "rows": 0, "t0": time.perf_counter()}
 
     hanchan_credit = None
-    if cfg.get("hanchan") and cfg.get("hanchan_w_path"):
+    if cfg.get("hanchan") and cfg.get("hanchan_credit") == "rank":
+        # exp70 pure line: analytic rank-uma potential, no learned W
+        from src.tasks.mahjong.hanchan import RankUmaCredit
+        hanchan_credit = RankUmaCredit()
+    elif cfg.get("hanchan") and cfg.get("hanchan_credit", "w") == "w" and cfg.get("hanchan_w_path"):
         # eval-mode hanchan (exp56 arena) carries no W and needs no reward
         from src.tasks.mahjong.hanchan import PlacementCredit
         hanchan_credit = PlacementCredit(cfg["hanchan_w_path"])
@@ -437,6 +447,13 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             learner_seats, opp, temps, roles = table_plan(seed)
         elif cfg.get("arena"):
             learner_seats, opp, temps, roles = arena_plan(seed)
+        elif cfg.get("hanchan") and cfg.get("hanchan_pure"):
+            # exp70 pure line: four copies of the learner at the training
+            # temperature (mirror self-play over a full hanchan); the dup
+            # replicas of the same match seed give the group baseline
+            learner_seats, opp = list(range(4)), {}
+            temps = {p: cfg["temperature"] for p in range(4)}
+            roles = {"pure": True, "learner": 0}
         elif cfg.get("hanchan"):
             learner_seats, opp, temps, roles = hanchan_plan(seed)
         else:
