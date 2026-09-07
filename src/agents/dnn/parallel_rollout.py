@@ -341,7 +341,7 @@ def _package_game(g, learner_seats, seed, cfg, cmode, league):
                 expanded.append(st)
             steps = expanded
         if cfg["shaping"]:
-            apply_shaping(steps, cfg["gamma"])
+            apply_shaping(steps, cfg["gamma"], float(cfg.get("shaping_scale", 1.0)))
         rets = returns_to_go(steps, cfg["gamma"])
         # ship compact tensors, not the whole step objects
         # numpy on the wire: torch tensors travel via shared-memory
@@ -441,7 +441,7 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         if not steps:
             return 0.0
         if cfg["shaping"]:
-            apply_shaping(steps, cfg["gamma"])
+            apply_shaping(steps, cfg["gamma"], float(cfg.get("shaping_scale", 1.0)))
         rets = returns_to_go(steps, cfg["gamma"])
         return float(rets[0]) if len(rets) else 0.0
 

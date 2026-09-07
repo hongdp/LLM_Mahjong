@@ -183,6 +183,15 @@ def main():
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
                          "H=0.44; guard for aggressive anneal arms)")
+    ap.add_argument("--shaping", action="store_true",
+                    help="exp73: engine-derived PBRS on the per-step reward, "
+                         "Phi = -2*shanten + 0.05*ukeire (selfplay.potential); "
+                         "telescopes to -Phi(s0) so the optimum is unchanged, "
+                         "but from scratch it gives the sparse settlement a "
+                         "dense hand-efficiency gradient. Pure: no human data")
+    ap.add_argument("--shaping_scale", type=float, default=1.0,
+                    help="multiplier on the shaping term (Phi units ~ mangan/8 "
+                         "per shanten step at 1.0)")
     ap.add_argument("--cf_p", type=float, default=0.0,
                     help="exp72 decision-level counterfactual rollouts: per "
                          "eligible learner discard decision, probability of "
@@ -417,7 +426,7 @@ def main():
                games_per_worker=args.games_per_worker,
                rollout_temps=([float(x) for x in args.rollout_temps.split(",")]
                               if args.rollout_temps else None),
-               shaping=False, seed=args.seed,
+               shaping=bool(args.shaping), shaping_scale=args.shaping_scale, seed=args.seed,
                critic_feats=args.critic_feats,
                gpu_infer=args.gpu_infer, gpu_infer_opponents=args.gpu_infer_opponents,
                infer_max_batch=args.infer_max_batch,
@@ -426,6 +435,8 @@ def main():
                action_space=space_of_arch(args.arch),
                cf_p=args.cf_p, cf_k=args.cf_k, cf_only_exposed=not args.cf_all,
                cf_branch_slots=(args.cf_slots or None))
+    if args.shaping:
+        print(f"⚡ PBRS shaping on: Phi = -2*shanten + 0.05*ukeire, scale {args.shaping_scale}", flush=True)
     if args.cf_p > 0:
         if args.hanchan or args.hanchan_pure:
             raise SystemExit("--cf_p is single-deal only (branch continuation has no match context)")

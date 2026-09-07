@@ -34,7 +34,9 @@ def _run(cf_p, temperature, n=16):
 
 def test_cf_branches_attach_finite_advantages():
     eps, res = _run(cf_p=1.0, temperature=1.0)
-    assert len(res) == 16 and len(eps) == 64          # mirror: four seats per game
+    # mirror: four seats per game; an abortive draw (九种九牌) can leave a seat
+    # with no decision, so allow a couple of missing episodes
+    assert len(res) == 16 and 56 <= len(eps) <= 64
     n_cf = sum(len(e.get("cf_adv") or {}) for e in eps)
     assert n_cf > 0 and collect_parallel.last_cf_n == n_cf
     for e in eps:

@@ -57,12 +57,40 @@ def critic_features(table, pid, mode: str) -> Optional[torch.Tensor]:
 
 
 def potential(table, pid) -> float:
-    """Phi(s) = -2.0*shanten + 0.05*|ukeire| for this seat's hand.
+    """Phi(s) = -2.0 * best reachable shanten for this seat's hand.
 
-    Same potential the LLM runs used (rewards.MahjongPotentialReward), so
-    the two shaping setups stay comparable. Computed straight off the
-    table instead of parsing prompt text.
+    exp73 (2026-09-07): the LLM-era potential (-2*shanten + 0.05*|ukeire|,
+    kept below as potential_full) costs 7.6 ms per decision because ukeire
+    enumerates 34 draws x shanten; on the vectorized rollout path that made
+    a 2048-deal iteration 17x slower. The table's own memoised shanten is
+    ~0 ms, so the potential is shanten-only: for a 14-tile hand the best
+    discard's shanten (min over distinct tiles), for 13 tiles the hand's.
+    Still potential-based (a function of the state only), so the PBRS
+    telescoping/optimality guarantees are unchanged.
     """
+    try:
+        tiles = table.hands[pid]
+        nm = len(table.melds[pid])
+        if len(tiles) % 3 == 2:
+            best = None
+            for t in set(tiles):
+                h = list(tiles)
+                h.remove(t)
+                sh = table._shanten(h, nm)
+                if best is None or sh < best:
+                    best = sh
+                    if best <= 0:
+                        break
+            sh = best if best is not None else 8
+        else:
+            sh = table._shanten(list(tiles), nm)
+        return -C_SHANTEN * float(sh)
+    except Exception:
+        return 0.0
+
+
+def potential_full(table, pid) -> float:
+    """LLM-era potential: -2.0*shanten + 0.05*|ukeire| (slow; reference)."""
     try:
         tiles = table.hands[pid]
         padded = pad_for_melds(tiles, len(table.melds[pid]))
@@ -264,8 +292,8 @@ def play_game(net, temperature: float = 1.0, device="cpu",
     return game
 
 
-def apply_shaping(steps: List[DnnStep], gamma: float) -> None:
-    """In-place PBRS: F_t = gamma*Phi_{t+1} - Phi_t, terminal Phi := 0.
+def apply_shaping(steps: List[DnnStep], gamma: float, scale: float = 1.0) -> None:
+    """In-place PBRS: F_t = scale * (gamma*Phi_{t+1} - Phi_t), terminal Phi := 0.
 
     Potential-based, so the discounted shaping telescopes to -Phi(s_0) and
     the optimal policy is unchanged (Ng et al. 1999). exp2 showed this adds
@@ -275,7 +303,7 @@ def apply_shaping(steps: List[DnnStep], gamma: float) -> None:
     """
     for i, s in enumerate(steps):
         nxt = 0.0 if i + 1 >= len(steps) else steps[i + 1].phi
-        s.reward += gamma * nxt - s.phi
+        s.reward += scale * (gamma * nxt - s.phi)
 
 
 def returns_to_go(steps: List[DnnStep], gamma: float) -> List[float]:
