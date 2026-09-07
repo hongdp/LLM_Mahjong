@@ -189,6 +189,11 @@ def main():
                          "telescopes to -Phi(s0) so the optimum is unchanged, "
                          "but from scratch it gives the sparse settlement a "
                          "dense hand-efficiency gradient. Pure: no human data")
+    ap.add_argument("--shaping_schedule", default=None,
+                    help="exp74: piecewise-linear shaping scale by games, "
+                         "'games:scale,...' (e.g. 0:1.0,400000:0.0). Overrides "
+                         "--shaping_scale; shaping is switched off (no potential "
+                         "calls) once the scale reaches 0")
     ap.add_argument("--shaping_scale", type=float, default=1.0,
                     help="multiplier on the shaping term (Phi units ~ mangan/8 "
                          "per shanten step at 1.0)")
@@ -435,8 +440,22 @@ def main():
                action_space=space_of_arch(args.arch),
                cf_p=args.cf_p, cf_k=args.cf_k, cf_only_exposed=not args.cf_all,
                cf_branch_slots=(args.cf_slots or None))
+    shaping_sched = []
+    if args.shaping_schedule:
+        shaping_sched = sorted((int(g), float(c)) for g, c in (x.split(":") for x in args.shaping_schedule.split(",")))
+        if not args.shaping:
+            raise SystemExit("--shaping_schedule needs --shaping")
+
+    def shaping_scale_at(g):
+        if g <= shaping_sched[0][0]:
+            return shaping_sched[0][1]
+        for (g0, c0), (g1, c1) in zip(shaping_sched, shaping_sched[1:]):
+            if g <= g1:
+                return c0 + (g - g0) / max(g1 - g0, 1) * (c1 - c0)
+        return shaping_sched[-1][1]
     if args.shaping:
-        print(f"⚡ PBRS shaping on: Phi = -2*best_shanten (memoised), scale {args.shaping_scale}", flush=True)
+        print(f"⚡ PBRS shaping on: Phi = -2*best_shanten (memoised), scale {args.shaping_scale}"
+              + (f", schedule {args.shaping_schedule}" if shaping_sched else ""), flush=True)
     if args.cf_p > 0:
         if args.hanchan or args.hanchan_pure:
             raise SystemExit("--cf_p is single-deal only (branch continuation has no match context)")
@@ -475,6 +494,10 @@ def main():
                 ent_alpha = coef
         if oracle_sched:
             cfg["oracle_hide_p"] = oracle_hide_p(games)
+        if shaping_sched:
+            sc_now = shaping_scale_at(games)
+            cfg["shaping_scale"] = sc_now
+            cfg["shaping"] = sc_now > 0.0          # no potential calls once annealed to 0
         n_deals = max(1, args.games_per_iter // args.dup_k)
         base = 6_000_000 + it * 9973
         seeds = [base + d for d in range(n_deals) for _ in range(args.dup_k)]
@@ -734,6 +757,8 @@ def main():
                "bc_kl": float(np.mean(bkls)) if bkls else None,
                "entropy_coef": ent_alpha,
                "n_effective": n_eff, "n_raw": int(len(acts))}
+        if args.shaping:
+            row["shaping_scale"] = float(cfg.get("shaping_scale", args.shaping_scale)) if cfg.get("shaping") else 0.0
         if args.cf_p > 0:
             row["cf_n"] = cf_n
             row["cf_adv_mean"] = cf_sum / max(cf_n, 1)
