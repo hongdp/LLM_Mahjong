@@ -14,7 +14,9 @@ Each worker pins torch to 1 thread: 16 processes each spawning 24 BLAS
 threads is catastrophically slower than 16 single-threaded ones.
 """
 
+import copy
 import os
+import re
 import time
 import random
 from typing import List, Optional
@@ -171,11 +173,16 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
             cfg["league"] = tagged
         n_pl, n_sc = variant_shape(variant)
         K = int(cfg.get("games_per_worker", 1) or 1)
+        if cfg.get("cf_p") and not cfg.get("hanchan"):
+            # exp72: branch rollouts are extra interleaved games; give them
+            # their own slot budget (default: as many as the parents)
+            cfg = dict(cfg, cf_branch_slots=int(cfg.get("cf_branch_slots") or K))
+        B = int(cfg.get("cf_branch_slots") or 0)
         server = InferenceServer(state_np, cfg, n_slots=workers, n_planes=n_pl,
                                  n_scalars=n_sc, device=cfg.get("infer_device", "cuda"),
                                  max_batch=cfg.get("infer_max_batch", 256),
                                  wait_ms=cfg.get("infer_wait_ms", 4.0),
-                                 rows_per_worker=3 * K if K > 1 else 1)
+                                 rows_per_worker=3 * (K + B) if K > 1 else 1)
         state_np = {}                      # workers don't need weights
     ctx = mp.get_context("fork")
     args, lo = [], 0
@@ -195,9 +202,33 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
             server.stop()
 
     episodes, results = [], []
+    n_cf = 0
     for game in collected:
+        cfm = game.get("cf") or {}
+        if cfm:
+            for ep in game["episodes"]:
+                recs = cfm.get(ep["key"][1])
+                if not recs:
+                    continue
+                rets = ep["returns"]
+                adv, fold = {}, {}
+                for step, rec in recs.items():
+                    alts = list(rec["alts"].values())
+                    if not alts or step >= len(rets):
+                        continue
+                    # executed action's realised return minus the mean of the
+                    # same-wall alternative continuations (baseline chosen
+                    # independently of the executed action -> unbiased)
+                    adv[int(step)] = float(rets[step] - sum(alts) / len(alts))
+                    g = rec.get("genbutsu")
+                    if g is not None and g in rec["alts"]:
+                        fold[int(step)] = float(rec["alts"][g] - rets[step])
+                ep["cf_adv"], ep["cf_fold_gain"] = adv, fold
+                n_cf += len(adv)
         episodes.extend(game["episodes"])
         results.append(game["result"])
+    collect_parallel.last_cf_n = n_cf
+    collect_parallel.last_cf_skipped = sum(g.get("cf_skipped", 0) for g in collected)
     # style facts of this iteration's games (learner seats only), for TB
     from src.agents.dnn.style_stats import new_agg, add_game
     agg = new_agg()
@@ -384,6 +415,105 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         from src.tasks.mahjong.hanchan import PlacementCredit
         hanchan_credit = PlacementCredit(cfg["hanchan_w_path"])
 
+    # exp72 decision-level counterfactual rollouts: at a sampled learner
+    # decision, clone the table (true wall, true hidden hands) and play
+    # alternative actions to the end of the deal with the same policy; the
+    # paired difference vs the executed action's realised return is a
+    # low-noise advantage for that decision (design:
+    # experiments/designs/design_offpolicy_data_and_counterfactual.md §3).
+    # Single-deal games only (hanchan continuation needs the match context).
+    cf_p = float(cfg.get("cf_p") or 0.0) if not cfg.get("hanchan") else 0.0
+    cf_k = int(cfg.get("cf_k") or 2)
+    cf_only_exposed = bool(cfg.get("cf_only_exposed", True))
+    cf_records = {}          # parent game idx -> {seat: {step: {"alts": {slot: R}, "genbutsu": slot|None}}}
+    cf_counter = [0]
+    # branches get their own slot budget (the inference server sized its
+    # per-worker rows for K parents + cf_branch_slots branches); when the
+    # budget is full the decision is simply not evaluated (counted)
+    cf_slots = int(cfg.get("cf_branch_slots") or 0) if cf_p > 0 else 0
+    n_branch = [0]
+    cf_skipped = [0]
+    _TILE_RE = re.compile(r'tile="([^"]+)"')
+    from src.tasks.mahjong.table import norm_tile as _norm
+
+    def branch_return(g, pid):
+        steps = g.trajectories[pid]
+        if not steps:
+            return 0.0
+        if cfg["shaping"]:
+            apply_shaping(steps, cfg["gamma"])
+        rets = returns_to_go(steps, cfg["gamma"])
+        return float(rets[0]) if len(rets) else 0.0
+
+    def start_branch(parent_gi, pid, step_idx, slot, action_str, genbutsu):
+        pst = active[parent_gi]
+        clone = copy.deepcopy(pst["table"])
+        gen = play_game_gen(table=clone, shaping=cfg["shaping"])
+        try:
+            _table, reqs = next(gen)
+        except StopIteration:
+            return
+        if not reqs or reqs[0][0] != pid:
+            return
+        rec = cf_records.setdefault(parent_gi, {}).setdefault(pid, {}).setdefault(
+            step_idx, {"alts": {}, "genbutsu": None})
+        if genbutsu:
+            rec["genbutsu"] = slot
+        # the forced first action rides on a placeholder step: branches never
+        # ship episodes, only the seat's realised return
+        st0 = DnnStep(planes=torch.zeros(1), scalars=torch.zeros(1),
+                      mask=torch.zeros(1, dtype=torch.bool), action_idx=slot, logprob=0.0)
+        cf_counter[0] += 1
+        key = f"b{cf_counter[0]}"
+        try:
+            table, reqs = gen.send([(st0, action_str)])
+        except StopIteration as e:
+            rec["alts"][slot] = branch_return(e.value, pid)
+            return
+        active[key] = {"gen": gen, "table": table, "reqs": reqs, "seed": None,
+                       "learner": [pid], "opp": pst["opp"], "temps": pst["temps"],
+                       "roles": None, "dev_rng": None, "deviated": True,
+                       "branch": (parent_gi, pid, step_idx, slot), "nstep": [0, 0, 0, 0]}
+        n_branch[0] += 1
+
+    def maybe_branch(k, gi, pid, actions, chosen_slot, lookup):
+        st = active[gi]
+        if st.get("branch") or pid not in st["learner"] or len(lookup) < 2:
+            return
+        if not any('type="discard"' in a for a in actions):
+            return                              # turn-phase discard decisions only
+        tbl = st["table"]
+        riichi_opp = [q for q in range(4) if q != pid and tbl.riichi[q]]
+        if cf_only_exposed and not riichi_opp:
+            return
+        if st["cf_rng"].random() >= cf_p:
+            return
+        if n_branch[0] + cf_k > cf_slots:
+            cf_skipped[0] += 1
+            return
+        chosen = lookup[chosen_slot]
+        m = _TILE_RE.search(chosen)
+        chosen_tile = _norm(m.group(1)) if m else None
+        genbutsu = set()
+        for q in riichi_opp:
+            genbutsu.update(_norm(t.rstrip("*")) for t in tbl.discards[q])
+        cands = [(s, a) for s, a in lookup.items() if s != chosen_slot and 'type="discard"' in a]
+        def _tile(a):
+            mm = _TILE_RE.search(a)
+            return _norm(mm.group(1)) if mm else None
+        gb = [(s, a) for s, a in cands if _tile(a) in genbutsu and _tile(a) != chosen_tile]
+        picks = []
+        if gb:
+            s, a = st["cf_rng"].choice(gb)
+            picks.append((s, a, True))
+        rest = [(s, a) for s, a in cands if s not in {p[0] for p in picks}]
+        st["cf_rng"].shuffle(rest)
+        for s, a in rest[:max(0, cf_k - len(picks))]:
+            picks.append((s, a, False))
+        step_idx = st["nstep"][pid]
+        for s, a, g in picks:
+            start_branch(gi, pid, step_idx, s, a, g)
+
     def hanchan_plan(seed):
         """exp55-D four-seat table (user spec): learner T=1, greedy twin of
         the CURRENT weights T=0 (live deployment-form measurement), bc
@@ -504,9 +634,11 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                      # learner decision per game is sampled at single_dev_temp,
                      # every other one plays at the seat temperature (0 = greedy)
                      "dev_rng": random.Random((seed or 0) * 100003 + 17),
-                     "deviated": False}
+                     "deviated": False,
+                     "branch": None, "nstep": [0, 0, 0, 0],
+                     "cf_rng": random.Random((seed or 0) * 7919 + 101)}
 
-    while queue and len(active) < K:
+    while queue and len(active) - n_branch[0] < K:
         start(queue.pop(0))
     while active:
         # gather every pending request across the active games
@@ -555,6 +687,9 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         _t0 = time.perf_counter()
         idx, lp = net.act_batch(P, S, M, torch.tensor(temps), torch.tensor(mids, dtype=torch.int32))
         _DIAG["rpc"] += time.perf_counter() - _t0; _DIAG["rounds"] += 1; _DIAG["rows"] += len(rows)
+        if cf_p > 0:
+            for k, (gi, ri, pid, actions, model_id, var) in enumerate(rows):
+                maybe_branch(k, gi, pid, actions, int(idx[k]), lookups[k])
         if rank == 0 and _DIAG["rounds"] % 200 == 0 and os.environ.get("INFER_DIAG"):
             print(f"[worker0] rounds {_DIAG['rounds']} rows/round {_DIAG['rows']/_DIAG['rounds']:.1f} "
                   f"rpc {_DIAG['rpc']/_DIAG['rounds']*1000:.2f} ms/round wall {(time.perf_counter()-_DIAG['t0'])/_DIAG['rounds']*1000:.2f} ms/round", flush=True)
@@ -602,7 +737,11 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                     f_lookups[j][a2])
 
         # distribute replies per game and advance each generator
-        replies = {gi: [None] * len(active[gi]["reqs"]) for gi in active}
+        # only the games that asked this round get a reply; branches started
+        # mid-round (maybe_branch) already consumed their forced first action
+        replies = {}
+        for gi, _ri, _pid, _a, _m, _v in rows:
+            replies.setdefault(gi, [None] * len(active[gi]["reqs"]))
         for k, (gi, ri, pid, actions, model_id, var) in enumerate(rows):
             if k in follow:
                 step2, action_str = follow[k]
@@ -612,15 +751,28 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
                 replies[gi][ri] = (step2, action_str)
             else:
                 replies[gi][ri] = (first_steps[k], lookups[k][int(idx[k])])
-        for gi in list(active):
+            active[gi]["nstep"][pid] += 2 if k in follow else 1
+        for gi in list(replies):
             st = active[gi]
             try:
                 st["table"], st["reqs"] = st["gen"].send(replies[gi])
             except StopIteration as e:
+                if st.get("branch"):
+                    pgi, bpid, step_idx, slot = st["branch"]
+                    cf_records[pgi][bpid][step_idx]["alts"][slot] = branch_return(e.value, bpid)
+                    del active[gi]
+                    n_branch[0] -= 1
+                    continue
                 pkg = _package_game(e.value, st["learner"], st["seed"], cfg, cmode, st["opp"])
                 pkg["roles"] = st.get("roles")
+                pkg["_gi"] = gi
                 payload.append(pkg)
                 del active[gi]
-                if queue:
+                if queue and len(active) - n_branch[0] < K:
                     start(queue.pop(0))
+    for pkg in payload:
+        gi = pkg.pop("_gi", None)
+        pkg["cf"] = cf_records.get(gi) if cf_p > 0 else None
+    if payload and cf_p > 0:
+        payload[0]["cf_skipped"] = cf_skipped[0]
     return payload

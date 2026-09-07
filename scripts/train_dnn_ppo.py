@@ -183,6 +183,28 @@ def main():
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
                          "H=0.44; guard for aggressive anneal arms)")
+    ap.add_argument("--cf_p", type=float, default=0.0,
+                    help="exp72 decision-level counterfactual rollouts: per "
+                         "eligible learner discard decision, probability of "
+                         "cloning the table and playing --cf_k alternative "
+                         "discards to the end of the deal (same wall, same "
+                         "policy); the executed action's realised return minus "
+                         "the alternatives' mean REPLACES its GAE advantage. "
+                         "Single-deal mode only. 0 = off")
+    ap.add_argument("--cf_k", type=int, default=2,
+                    help="alternatives per sampled decision (a genbutsu safe "
+                         "tile vs the riichi seat when one exists, the rest "
+                         "random legal discards)")
+    ap.add_argument("--cf_all", action="store_true",
+                    help="sample every discard decision, not only those with "
+                         "an opponent riichi on the table")
+    ap.add_argument("--cf_slots", type=int, default=0,
+                    help="concurrent branch-rollout slots per worker (0 = same "
+                         "as --games_per_worker); decisions drawn while the "
+                         "budget is full are not evaluated (logged as cf_skipped)")
+    ap.add_argument("--cf_scale", type=float, default=1.0,
+                    help="multiplier on the counterfactual advantage (return "
+                         "units) before the global normalisation")
     ap.add_argument("--aux_waits_coef", type=float, default=0.0,
                     help="exp69: weight of the auxiliary BCE that predicts the three opponents' hidden waits "
                          "(3x34) from the public observation; needs a *_aux arch and --critic_feats oracle "
@@ -401,7 +423,14 @@ def main():
                infer_max_batch=args.infer_max_batch,
                infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device,
                bf16_infer=args.bf16_infer,
-               action_space=space_of_arch(args.arch))
+               action_space=space_of_arch(args.arch),
+               cf_p=args.cf_p, cf_k=args.cf_k, cf_only_exposed=not args.cf_all,
+               cf_branch_slots=(args.cf_slots or None))
+    if args.cf_p > 0:
+        if args.hanchan or args.hanchan_pure:
+            raise SystemExit("--cf_p is single-deal only (branch continuation has no match context)")
+        print(f"🔀 counterfactual rollouts: p={args.cf_p} per {'discard' if args.cf_all else 'riichi-exposed discard'} "
+              f"decision, k={args.cf_k} alternatives, scale {args.cf_scale}", flush=True)
     if args.league:
         cfg["league"] = json.load(open(args.league))
         cfg["league_frac"] = args.league_frac
@@ -509,6 +538,19 @@ def main():
                 off += n
         else:
             adv_raw = rets - vals
+        cf_n, cf_sum, cf_best, cf_fold = 0, 0.0, 0, []
+        if args.cf_p > 0:
+            # exp72: replace the GAE advantage at counterfactually evaluated
+            # decisions with the same-wall paired difference (return units)
+            off = 0
+            for e in episodes:
+                n = len(e["returns"])
+                for t, a in (e.get("cf_adv") or {}).items():
+                    if t < n:
+                        adv_raw[off + t] = args.cf_scale * a
+                        cf_n += 1; cf_sum += a; cf_best += int(a >= 0)
+                cf_fold.extend((e.get("cf_fold_gain") or {}).values())
+                off += n
         adv = ((adv_raw - adv_raw[idx_keep].mean())
                / (adv_raw[idx_keep].std() + 1e-8))
         if args.adv_clamp:
@@ -681,6 +723,15 @@ def main():
                "bc_kl": float(np.mean(bkls)) if bkls else None,
                "entropy_coef": ent_alpha,
                "n_effective": n_eff, "n_raw": int(len(acts))}
+        if args.cf_p > 0:
+            row["cf_n"] = cf_n
+            row["cf_adv_mean"] = cf_sum / max(cf_n, 1)
+            row["cf_exec_best_frac"] = cf_best / max(cf_n, 1)
+            row["cf_fold_n"] = len(cf_fold)
+            # mean (genbutsu continuation - executed continuation): the
+            # direct, same-wall estimate of what folding was worth here
+            row["cf_fold_gain_mean"] = float(np.mean(cf_fold)) if cf_fold else 0.0
+            row["cf_skipped"] = int(getattr(collect_parallel, "last_cf_skipped", 0))
         if hloss:
             row["hazard_bce"] = float(np.mean(hloss))
         if aloss:
