@@ -29,6 +29,9 @@ LLM 时代 exp1/exp2 在 SFT 先验上测过 PBRS（无差异，64 局 arena，C
 ## Progress
 - [09-07 05:55 PDT] 实现 `--shaping/--shaping_scale`、`apply_shaping(scale)`、快速势函数；`tests/test_shaping_scale.py` 1/1、`test_cf_rollout.py` 2/2（断言放宽：九种九牌流局可少席位）。
   冒烟 512 局：rollout 4.7 s → 6.3 s（+34%），ret_std 0.9→2.3（含 −Φ(s0) 常数，组基线抵消）。
+- [09-07 06:01 PDT] **发射**：Secure L40S US-TX-4 pod `cl9dzh4hzf5bqx`（$1.09/h，ssh 195.26.232.178:21530），GPU 数值校验通过；提交 441e946。
+  S1（scale 1.0）/S2（scale 0.3）并行，100 万局/臂。心跳、拉取（含 TB 镜像）、在轨循环已挂；TB 加 exp73_S1/S2_LIVE。预计 6–7 h。
+  $200 计划累计：exp70 8.6 + exp71 3.7 + exp72 5.4 = $17.7 已花；exp73 ≈$7–8 进行中。
 
 ## Results
 
