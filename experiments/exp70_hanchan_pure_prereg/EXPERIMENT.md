@@ -32,6 +32,10 @@ exp68/69 证明从零 RL 的防守缺失不是感知问题：看得见暗手、�
 - 预算：两臂 ≈ 4–6h ≈ **$6，上限 $10**。
 
 ## Progress
+- [09-06 12:20] 用户批准立项。实现：`RankUmaCredit`（解析 W = 当前名次 uma + 自身点差；逐局 ΔW，末局付 true_uma − W(before)，
+  测试验证对任意局序列 telescoping 到 true_uma − W(start)）；`--hanchan_pure`（四席学习者镜像，dup 复式 = 组基线；roles 统计改报 mean|uma|）；
+  `--hanchan_credit {w,rank,none}`；`v1rh`/`cnn_m_rh`（+局数/本场/all-last 三标量）。测试 11/11；本机冒烟 96 场（4.6 场/s，8 worker）正常。
+  发射：Secure L40S US-TX-4，H（rank）与 H0（none）并行，各 15 万场（≈1.5M 局），games_per_iter 256 场，熵 0.03→0.01@9 万场。
 
 ## Results
 
