@@ -42,6 +42,9 @@ exp68/69 证明从零 RL 的防守缺失不是感知问题：看得见暗手、�
   花费 ≈$0.45。r1 无可用结果；待用户确认后以同配置重发（r2）。
 - [09-06 18:20 PDT] 用户确认非本人删除，批准重发。create-pod 返回 **402 账户余额不足** → r1 的 pod 消失原因确定为 RunPod 余额耗尽自动回收
   （不是故障）。r2 阻塞在充值，TB 三件套（exp70_H/H0_LIVE）与镜像目录仍在位，充值后同脚本直接重发。
+- [09-06 19:16 PDT] **r2 发射**：用户充值后新建 Secure L40S US-TX-4 pod `rl9cqt2t8tncjb`（$1.09/h，ssh 195.26.232.163:49651），GPU 数值校验通过
+  （ones matmul = 1e9、4096² 与 CPU 最大误差 2e-4）。同 repo.tar（代码自 r1 未变，只改文档）、同 exp70_pod_train.sh；H/H0 迭代 1 各 6.8/7.0 场/s。
+  r1 残留目录移到 `experiments/exp70_r1_dead/`。心跳/拉取（含 TB 镜像 rsync 到 _cloud_mirror）/90k 探针重挂。预计 ~6h、≈$6.5，累计 ≈$7。
 
 ## Results
 
