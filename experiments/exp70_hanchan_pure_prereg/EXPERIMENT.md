@@ -36,6 +36,12 @@ exp68/69 证明从零 RL 的防守缺失不是感知问题：看得见暗手、�
   测试验证对任意局序列 telescoping 到 true_uma − W(start)）；`--hanchan_pure`（四席学习者镜像，dup 复式 = 组基线；roles 统计改报 mean|uma|）；
   `--hanchan_credit {w,rank,none}`；`v1rh`/`cnn_m_rh`（+局数/本场/all-last 三标量）。测试 11/11；本机冒烟 96 场（4.6 场/s，8 worker）正常。
   发射：Secure L40S US-TX-4，H（rank）与 H0（none）并行，各 15 万场（≈1.5M 局），games_per_iter 256 场，熵 0.03→0.01@9 万场。
+- [09-06 18:12 PDT] **发射 r1 夭折**：pod `2dwweiv0o0ywl4` 在 18:02–18:12 之间消失（ssh 拒连，RunPod API 404 "pod not found"，非 stop 而是删除；
+  本会话脚本无任何 terminate 调用，删除来源外部/未知）。两臂各跑到 ~6,400 场（25 迭代，6.5 场/s，熵 1.89→1.72，H 臂 EV +0.02），
+  首个 ckpt（iter 25）尚未拉回，本地只有 games_0.pt + 前 20 迭代 train_log。心跳按"发射死线"退出码 3 报警，拉取循环与 90k 探针已停。
+  花费 ≈$0.45。r1 无可用结果；待用户确认后以同配置重发（r2）。
+- [09-06 18:20 PDT] 用户确认非本人删除，批准重发。create-pod 返回 **402 账户余额不足** → r1 的 pod 消失原因确定为 RunPod 余额耗尽自动回收
+  （不是故障）。r2 阻塞在充值，TB 三件套（exp70_H/H0_LIVE）与镜像目录仍在位，充值后同脚本直接重发。
 
 ## Results
 
