@@ -30,6 +30,9 @@
 
 ## Progress
 - [09-06 21:55 PDT] 用户批准同步开跑。训练器改动 + `tests/test_dqn_from_scratch.py`；本机冒烟后发射。
+- [09-06 21:20 PDT] 本机冒烟 192 局：随机初始化 199 万参数、镜像四席、replay 21×34 fp16（≈89 步/局，2M cap ≈ 3.5 GB）、MC→TD 切换、温度表生效。
+  提交 e6f35f2。发射：Secure L40S US-TX-4 pod `tvrd13n1982g0b`（$1.09/h，ssh 195.26.232.177:46107），GPU 数值校验通过，Q 臂 04:20 UTC 起跑。
+  心跳/拉取（含 TB 镜像）挂好；TB 加 exp71_Q_LIVE。预计 ≈4.5–5h。
 
 ## Results
 

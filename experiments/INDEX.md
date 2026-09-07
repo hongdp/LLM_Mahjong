@@ -4,6 +4,7 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
+| 2026-09-06 | `exp71_dqn_scratch_prereg`（running，L40S Secure，独立 pod） | 纯血线估计器判决：exp59 Double DQN 训练器改随机初始化 + 四席镜像自对弈 + Boltzmann 温度表，P3 同预算 100 万局，无锚无人类数据 | 进行中 | 主判据 Q vs P3 单局 ≥0.50 / ≤0.45 |
 | 2026-09-06 | `exp69_aux_waits_prereg`（done，判负，L40S Secure $4.4） | 纯血线：策略 trunk 上加 3×34 对手待张辅助预测头（引擎标签，推理不需隐藏信息）vs 同配方对照，各 100 万局 | aux_sep **0.44**（头有效）；暴露席放铳 A 0.212 vs P 0.200；defense_iq −0.025/0.000；**A vs P 0.4938±0.0035**；P vs exp27A 0.4974 | 感知不是防守瓶颈——知道对手待张也不弃张；单局点差设定下"不防"是均衡；剩余杠杆 = 半庄级顺位奖励从零（需用户批准） |
 | 2026-09-06 | `exp68_oracle_guiding_prereg` 第 3 轮（done，L40S Secure $4.2） | 训练器旗标对齐 exp27A（ppo_epochs 1 / adv_clamp 5 / target_kl 0.03 / batch 4096） | **P3 vs exp27A 0.4922（复现成功）**；G3 vs exp27A 0.4999；G3 vs P3 0.5070±0.0035（z=2.0）；defense_iq 0.034/0.021；暴露席放铳 0.197=0.196；G3/P3 vs bc49 0.32–0.33（exp27A 0.203） | oracle guiding = 加速器非平台抬升；防守不迁移；训练器默认值漂移是前两轮弱的原因；下一步 exp69 待张辅助预测头 |
 | 2026-09-06 | `exp68_oracle_guiding_prereg` 第 2 轮（done，L40S Secure $4.3） | 同第 1 轮，games_per_iter 2048 | **G2 vs P2 0.5412±0.0035（z=11.8）**；暴露席放铳 0.143 vs 0.217；defense_iq 代理仍 ≈0；P2 vs exp27A 0.312（训练器默认值与 exp27A 不同 + 场况随机化） | oracle guiding 两轮独立复现为正；第 3 轮旗标对齐 exp27A（ppo_epochs 1 / adv_clamp 5 / target_kl 0.03 / batch 4096）进行中 |
