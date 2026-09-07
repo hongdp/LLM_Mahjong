@@ -23,3 +23,15 @@ exp74 的 H2 读数（A2 在 50–60 万局达 P3 终点水平后 40 万局持�
 - 预算：≈80 局/s ⇒ 4M ≈ 14 h ≈ $15；2M 早停 ≈ $8。**上限 $20**。
 
 ## Progress
+- [09-07 14:34 PDT] **发射**：Secure L40S US-TX-4 pod `zwtphhmopifwvt`（$1.09/h，ssh 195.26.232.151:29517），GPU 数值校验通过；提交 f09e936（代码同 exp74）。
+  单臂 X，4M 局，milestones 每 50 万局。心跳（18h 窗）、拉取（含 TB 镜像）、在轨循环（每 10 万局 ckpt 对 P3 终点 n=600）已挂；TB 加 exp75_X_LIVE。
+  $200 计划累计已花 ≈$26.3（exp70 8.6 / 71 3.7 / 72 5.4 / 73 4.6 / 74 4.0）；exp75 上限 $20。
+
+## Results
+
+## Conclusion
+
+## Next Steps
+
+## Artifacts
+
