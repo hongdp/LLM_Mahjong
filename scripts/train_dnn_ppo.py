@@ -436,7 +436,7 @@ def main():
                cf_p=args.cf_p, cf_k=args.cf_k, cf_only_exposed=not args.cf_all,
                cf_branch_slots=(args.cf_slots or None))
     if args.shaping:
-        print(f"⚡ PBRS shaping on: Phi = -2*shanten + 0.05*ukeire, scale {args.shaping_scale}", flush=True)
+        print(f"⚡ PBRS shaping on: Phi = -2*best_shanten (memoised), scale {args.shaping_scale}", flush=True)
     if args.cf_p > 0:
         if args.hanchan or args.hanchan_pure:
             raise SystemExit("--cf_p is single-deal only (branch continuation has no match context)")
