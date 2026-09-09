@@ -24,3 +24,7 @@ exp77 的缩放曲线 vs bc49 每倍增 +4.0 → +2.2 → +1.15 pp，24M→32M �
 - 预算：A 32M 局 ≈ 11 h ≈ $2.5；B（大网络，16 vCPU 主机）≈ 16–20 h ≈ $4；**上限 $10**。
 
 ## Progress
+- [09-09 08:52 PDT] **发射**：A = 社区 3090 pod `in85f6icots6rz`（32 vCPU，ssh 64.119.209.250:17426），从 exp77_X32 终点 `--resume`（含优化器矩），lr 3e-5，→64M；
+  B = 社区 3090 pod `mqrlzqeoqyr6qd`（16 vCPU，ssh :19802），cnn_l_r 从零 32M。两 pod 各自构建 riichi_rs、GPU 数值校验通过。提交 427353e。
+  心跳（25h 窗）×2、拉取 ×2（含 TB 镜像）、在轨循环（两臂 1M 倍数 ckpt vs P3 终点 + bc49）已挂；TB 加 exp78_A/B_LIVE。
+
