@@ -25,4 +25,9 @@ riichi_rs 已在 7 套差分测试上与 Python 引擎位级一致（含 T=0 端
 - [09-08 19:55 PDT] **发射**：Secure L40S US-TX-4 pod `tj4kxcz3k6z6m6`（$1.09/h，ssh 195.26.232.163:44323）。bootstrap 在 pod 上装 rustup + maturin 构建
   riichi_rs（Python 3.12 wheel）并跑 random/table/game 三套 parity 守卫 **16/16 通过**；GPU 数值校验通过。单臂 R，`--engine rust --games_per_worker 1024`。
   心跳/拉取（含 TB 镜像）/在轨循环已挂；TB 加 exp76_R_LIVE。
+- [09-08 21:30 PDT] **训练完成**：1,001,472 局 **82.3 min**（P3 207 min），中位 rollout 2.3 s / 更新 0.4 s 每 2048 局 ⇒ 稠态 ≈760 局/s；
+  但每迭代墙钟 10.1 s，差额 7.4 s 是训练器自身的逐步 Python GAE 循环（GPU 标量索引 55 万次/迭代）——P3 时期同样存在（8.2 s）只是被 rollout 掩盖。
+  已向量化（与参考循环数值等价，本机每迭代开销 7 s → 0.4 s，提交 2fe4821）。pod 费用 ≈$1.5。在轨曲线 vs 同局数 P3：0.49/0.48/0.53/0.53/0.52/0.51/0.50/0.52/0.50。
+- [09-08 21:35 PDT] **成本探针（社区 RTX 3090，32 vCPU，$0.22/h，pod `1vodnftrw3y9nd`）**：riichi_rs 构建 + GPU 数值校验通过；`collect_rust` T=1 吞吐
+  K=512 828 / **K=1024 1,193** / K=2048 1,021 局/s ⇒ 1M 局 rollout ≈14 min，加更新与开销 ≈18–20 min ⇒ **≈$0.07/百万局**（L40S+Python 引擎 $3.1，≈45×）。
 
