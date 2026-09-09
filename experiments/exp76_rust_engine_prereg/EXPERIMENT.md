@@ -22,3 +22,7 @@ riichi_rs 已在 7 套差分测试上与 Python 引擎位级一致（含 T=0 端
 - 预算：≈0.5–1 h L40S Secure ≈ **$1，上限 $3**。
 
 ## Progress
+- [09-08 19:55 PDT] **发射**：Secure L40S US-TX-4 pod `tj4kxcz3k6z6m6`（$1.09/h，ssh 195.26.232.163:44323）。bootstrap 在 pod 上装 rustup + maturin 构建
+  riichi_rs（Python 3.12 wheel）并跑 random/table/game 三套 parity 守卫 **16/16 通过**；GPU 数值校验通过。单臂 R，`--engine rust --games_per_worker 1024`。
+  心跳/拉取（含 TB 镜像）/在轨循环已挂；TB 加 exp76_R_LIVE。
+
