@@ -4,10 +4,14 @@
 use pyo3::prelude::*;
 
 pub mod pyrandom;
+pub mod tiles;
+pub mod table;
+pub mod pytable;
 
 #[pymodule]
 fn riichi_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<pyrandom::PyRandom>()?;
+    m.add_class::<pytable::PyTable>()?;
     m.add("__version__", "0.1.0")?;
     Ok(())
 }
