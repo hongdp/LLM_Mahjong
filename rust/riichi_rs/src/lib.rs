@@ -7,6 +7,8 @@ pub mod pyrandom;
 pub mod tiles;
 pub mod shanten;
 pub mod score;
+pub mod encoder;
+pub mod vecenv;
 pub mod table;
 pub mod pytable;
 
@@ -83,14 +85,25 @@ fn py_estimate_hand(py: Python<'_>, tiles: Vec<String>, win_tile: String, melds:
     }
 }
 
+/// encoder.legal_mask: (mask as list[bool], {slot: action}) for parity tests
+#[pyfunction]
+#[pyo3(name = "legal_mask")]
+fn py_legal_mask(actions: Vec<String>) -> (Vec<bool>, std::collections::HashMap<usize, String>) {
+    let (mask, lookup) = encoder::legal_mask(&actions);
+    let lk = lookup.into_iter().map(|(s, i)| (s, actions[i].clone())).collect();
+    (mask.to_vec(), lk)
+}
+
 #[pymodule]
 fn riichi_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<pyrandom::PyRandom>()?;
     m.add_class::<pytable::PyTable>()?;
+    m.add_class::<vecenv::VecEnv>()?;
     m.add_function(wrap_pyfunction!(py_shanten, m)?)?;
     m.add_function(wrap_pyfunction!(py_waits, m)?)?;
     m.add_function(wrap_pyfunction!(py_tile_only_as_triplet, m)?)?;
     m.add_function(wrap_pyfunction!(py_estimate_hand, m)?)?;
+    m.add_function(wrap_pyfunction!(py_legal_mask, m)?)?;
     m.add("__version__", "0.1.0")?;
     Ok(())
 }

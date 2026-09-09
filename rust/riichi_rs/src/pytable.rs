@@ -122,6 +122,14 @@ impl PyTable {
         resolve_claims(&mut self.t, &cands)
     }
     fn waits(&self, pid: usize) -> Vec<String> { strs(&self.t.waits(pid)) }
+    /// v1r observation for `pid`: (planes [21*34], scalars [20]) as flat lists
+    fn encode(&self, pid: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut planes = vec![0f32; crate::encoder::N_PLANES * 34];
+        let mut scalars = vec![0f32; crate::encoder::N_SCALARS];
+        crate::encoder::encode_v1r(&self.t, pid, &mut planes, &mut scalars);
+        (planes, scalars)
+    }
+    fn potential(&self, pid: usize) -> f64 { crate::encoder::potential(&self.t, pid) }
     fn win_result(&self, py: Python<'_>, pid: usize, tile: &str, is_tsumo: bool, chankan: bool) -> PyResult<Option<PyObject>> {
         let t = parse(tile).ok_or_else(|| pyo3::exceptions::PyValueError::new_err("bad tile"))?;
         match self.t.win_result(pid, norm(t), is_tsumo, chankan) {
