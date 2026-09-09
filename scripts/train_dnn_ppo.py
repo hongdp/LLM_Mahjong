@@ -564,21 +564,30 @@ def main():
                                        cfeats=cfe[i:i + 8192] if use_cf else None)[1]
                 for i in range(0, len(acts), 8192)])
         if args.gae_lambda is not None:
-            # per-episode GAE over the SAME per-step V used elsewhere
-            adv_raw = torch.zeros_like(rets)
-            off = 0
+            # per-episode GAE over the SAME per-step V used elsewhere. Vectorized
+            # (2026-09-08): the per-step Python loop cost ~7 s per 2048-deal
+            # iteration on 182k GPU scalars — 3x the Rust rollout itself.
             lam, gam = args.gae_lambda, args.gamma
-            for e in episodes:
-                n = len(e["returns"])
-                r = torch.from_numpy(e["rewards"]).to(vals.device)
-                v = vals[off:off + n]
-                gae = 0.0
-                for t in range(n - 1, -1, -1):
-                    v_next = v[t + 1] if t + 1 < n else 0.0   # terminal V := 0
-                    delta = r[t] + gam * v_next - v[t]
-                    gae = delta + gam * lam * gae
-                    adv_raw[off + t] = gae
-                off += n
+            lens = torch.tensor([len(e["returns"]) for e in episodes], device=dev, dtype=torch.long)
+            E, T = len(episodes), int(lens.max())
+            starts = torch.cumsum(lens, 0) - lens
+            ar = torch.arange(T, device=dev)
+            idx = starts[:, None] + ar[None, :]                       # [E, T] flat step index
+            valid = ar[None, :] < lens[:, None]
+            idx_c = idx.clamp(max=len(acts) - 1)
+            rew_flat = torch.from_numpy(cat("rewards")).to(dev)
+            R = torch.where(valid, rew_flat[idx_c], torch.zeros((), device=dev))
+            V = torch.where(valid, vals[idx_c], torch.zeros((), device=dev))
+            valid_next = torch.cat([valid[:, 1:], torch.zeros_like(valid[:, :1])], 1)
+            V_next = torch.cat([V[:, 1:], torch.zeros_like(V[:, :1])], 1) * valid_next   # terminal V := 0
+            delta = R + gam * V_next - V
+            A = torch.zeros_like(delta)
+            gae = torch.zeros(E, device=dev)
+            for t in range(T - 1, -1, -1):
+                gae = delta[:, t] + gam * lam * gae * valid_next[:, t]
+                A[:, t] = gae
+            adv_raw = torch.zeros_like(rets)
+            adv_raw[idx[valid]] = A[valid]
         else:
             adv_raw = rets - vals
         cf_n, cf_sum, cf_best, cf_fold = 0, 0.0, 0, []

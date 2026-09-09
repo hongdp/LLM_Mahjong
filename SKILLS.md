@@ -582,3 +582,9 @@ batch 4096 各占 21GB，推理服务器重启即 OOM——先算显存再并行
   仅支持镜像单局 + native 动作空间 + v1r 编码；联赛/半庄/oracle/反事实分支仍走 Python 引擎。
 - 性能剖析先看每回合分解（observe/h2d/forward/d2h/step/drain），别猜；rayon 并行让 Rust 步进从 16 ms 降到 2.5 ms/回合。
 
+## 2026-09-08 训练器每迭代 7 秒的隐藏开销：逐步 Python 循环里的 GPU 标量索引
+- 现象：exp76 Rust 引擎 rollout 2.3 s + 更新 0.4 s，但每迭代墙钟 10 s；P3（Python 引擎）同样有 ~8 s 差额被 rollout 掩盖。
+- 根因：`train_dnn_ppo.py` 的 GAE 是 per-step Python 循环，每步对 CUDA 张量做 `v[t]`/`r[t]`/`adv_raw[i]=` 标量索引 → 18 万步 ≈ 55 万次微内核+同步。
+- 修法：按 episode 填充成 [E,T] 矩阵，沿 T 做 30 次向量化反向递推（与参考循环差 0.0），每迭代开销 7 s → 0.4 s。
+- 规矩：**任何按步的 Python 循环都不得触碰 GPU 张量**；新旧实现必须做一次数值等价断言再替换。剖析时看 `main` 的 tottime（自身时间）而不只是子函数 cumtime。
+
