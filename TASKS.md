@@ -7,6 +7,9 @@
 - **教训与状态快照**：[SKILLS.md](SKILLS.md)
 
 ## 当前队列（快照，详情见上述文件）
+0. **【当前总目标，用户 2026-09-06】用 RunPod 新充的 $200 让从零 RL（纯血）模型达到 bc49 / Mortal 水平**——
+   计划、预算台账、里程碑与停止规则见 [experiments/designs/design_pure_line_200usd_program.md](experiments/designs/design_pure_line_200usd_program.md)；
+   在跑：exp70（半庄顺位奖励）、exp71 r2（从零 DQN 判决）；下一轮：exp72 决策级反事实 rollout 优势。
 1. ~~exp46 收官~~ 已结案：纪元 6 单局 T=0 榜 I 1198.0 / bc49 1189.0，双 T=0 头对头 0.5005±0.0158 = 打平不增益
 2. 纪元 6 完整交付（exp56 进行中）：引擎合并 ✅（PR #8/#9 已 merge）、单局全体重锚 ✅、
    候选 T=0 ✅ / **锚池 T=0 重标**（进行中）、**margin/pt 刻度**（进行中）、

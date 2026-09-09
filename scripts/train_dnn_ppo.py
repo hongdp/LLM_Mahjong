@@ -33,6 +33,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.dnn.net import MahjongPolicyNet                      # noqa: E402
+from src.agents.dnn.rust_rollout import collect_rust   # noqa: E402
 from src.agents.dnn.parallel_rollout import (apply_group_baseline,   # noqa: E402
                                              collect_parallel)
 
@@ -183,6 +184,47 @@ def main():
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
                          "H=0.44; guard for aggressive anneal arms)")
+    ap.add_argument("--engine", choices=["python", "rust"], default="python",
+                    help="rollout engine: 'rust' = riichi_rs.VecEnv (rules+encoder+batching in "
+                         "Rust, policy forward in-process on --train_device; mirror single-deal "
+                         "only, ignores --workers/--gpu_infer). Bit-identical episodes to the "
+                         "Python engine (tests/test_rust_rollout_parity.py)")
+    ap.add_argument("--shaping", action="store_true",
+                    help="exp73: engine-derived PBRS on the per-step reward, "
+                         "Phi = -2*shanten + 0.05*ukeire (selfplay.potential); "
+                         "telescopes to -Phi(s0) so the optimum is unchanged, "
+                         "but from scratch it gives the sparse settlement a "
+                         "dense hand-efficiency gradient. Pure: no human data")
+    ap.add_argument("--shaping_schedule", default=None,
+                    help="exp74: piecewise-linear shaping scale by games, "
+                         "'games:scale,...' (e.g. 0:1.0,400000:0.0). Overrides "
+                         "--shaping_scale; shaping is switched off (no potential "
+                         "calls) once the scale reaches 0")
+    ap.add_argument("--shaping_scale", type=float, default=1.0,
+                    help="multiplier on the shaping term (Phi units ~ mangan/8 "
+                         "per shanten step at 1.0)")
+    ap.add_argument("--cf_p", type=float, default=0.0,
+                    help="exp72 decision-level counterfactual rollouts: per "
+                         "eligible learner discard decision, probability of "
+                         "cloning the table and playing --cf_k alternative "
+                         "discards to the end of the deal (same wall, same "
+                         "policy); the executed action's realised return minus "
+                         "the alternatives' mean REPLACES its GAE advantage. "
+                         "Single-deal mode only. 0 = off")
+    ap.add_argument("--cf_k", type=int, default=2,
+                    help="alternatives per sampled decision (a genbutsu safe "
+                         "tile vs the riichi seat when one exists, the rest "
+                         "random legal discards)")
+    ap.add_argument("--cf_all", action="store_true",
+                    help="sample every discard decision, not only those with "
+                         "an opponent riichi on the table")
+    ap.add_argument("--cf_slots", type=int, default=0,
+                    help="concurrent branch-rollout slots per worker (0 = same "
+                         "as --games_per_worker); decisions drawn while the "
+                         "budget is full are not evaluated (logged as cf_skipped)")
+    ap.add_argument("--cf_scale", type=float, default=1.0,
+                    help="multiplier on the counterfactual advantage (return "
+                         "units) before the global normalisation")
     ap.add_argument("--aux_waits_coef", type=float, default=0.0,
                     help="exp69: weight of the auxiliary BCE that predicts the three opponents' hidden waits "
                          "(3x34) from the public observation; needs a *_aux arch and --critic_feats oracle "
@@ -395,13 +437,36 @@ def main():
                games_per_worker=args.games_per_worker,
                rollout_temps=([float(x) for x in args.rollout_temps.split(",")]
                               if args.rollout_temps else None),
-               shaping=False, seed=args.seed,
+               shaping=bool(args.shaping), shaping_scale=args.shaping_scale, seed=args.seed,
                critic_feats=args.critic_feats,
                gpu_infer=args.gpu_infer, gpu_infer_opponents=args.gpu_infer_opponents,
                infer_max_batch=args.infer_max_batch,
                infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device,
                bf16_infer=args.bf16_infer,
-               action_space=space_of_arch(args.arch))
+               action_space=space_of_arch(args.arch),
+               cf_p=args.cf_p, cf_k=args.cf_k, cf_only_exposed=not args.cf_all,
+               cf_branch_slots=(args.cf_slots or None))
+    shaping_sched = []
+    if args.shaping_schedule:
+        shaping_sched = sorted((int(g), float(c)) for g, c in (x.split(":") for x in args.shaping_schedule.split(",")))
+        if not args.shaping:
+            raise SystemExit("--shaping_schedule needs --shaping")
+
+    def shaping_scale_at(g):
+        if g <= shaping_sched[0][0]:
+            return shaping_sched[0][1]
+        for (g0, c0), (g1, c1) in zip(shaping_sched, shaping_sched[1:]):
+            if g <= g1:
+                return c0 + (g - g0) / max(g1 - g0, 1) * (c1 - c0)
+        return shaping_sched[-1][1]
+    if args.shaping:
+        print(f"⚡ PBRS shaping on: Phi = -2*best_shanten (memoised), scale {args.shaping_scale}"
+              + (f", schedule {args.shaping_schedule}" if shaping_sched else ""), flush=True)
+    if args.cf_p > 0:
+        if args.hanchan or args.hanchan_pure:
+            raise SystemExit("--cf_p is single-deal only (branch continuation has no match context)")
+        print(f"🔀 counterfactual rollouts: p={args.cf_p} per {'discard' if args.cf_all else 'riichi-exposed discard'} "
+              f"decision, k={args.cf_k} alternatives, scale {args.cf_scale}", flush=True)
     if args.league:
         cfg["league"] = json.load(open(args.league))
         cfg["league_frac"] = args.league_frac
@@ -435,12 +500,19 @@ def main():
                 ent_alpha = coef
         if oracle_sched:
             cfg["oracle_hide_p"] = oracle_hide_p(games)
+        if shaping_sched:
+            sc_now = shaping_scale_at(games)
+            cfg["shaping_scale"] = sc_now
+            cfg["shaping"] = sc_now > 0.0          # no potential calls once annealed to 0
         n_deals = max(1, args.games_per_iter // args.dup_k)
         base = 6_000_000 + it * 9973
         seeds = [base + d for d in range(n_deals) for _ in range(args.dup_k)]
         net.eval()
         t_roll0 = time.time()
-        episodes, results = collect_parallel(net, len(seeds), cfg, args.workers, seeds)
+        if args.engine == "rust":
+            episodes, results = collect_rust(net, len(seeds), cfg, args.workers, seeds, device=args.train_device)
+        else:
+            episodes, results = collect_parallel(net, len(seeds), cfg, args.workers, seeds)
         apply_group_baseline(episodes, args.gamma)
         rollout_s = time.time() - t_roll0
         games += len(results)
@@ -492,23 +564,45 @@ def main():
                                        cfeats=cfe[i:i + 8192] if use_cf else None)[1]
                 for i in range(0, len(acts), 8192)])
         if args.gae_lambda is not None:
-            # per-episode GAE over the SAME per-step V used elsewhere
-            adv_raw = torch.zeros_like(rets)
-            off = 0
+            # per-episode GAE over the SAME per-step V used elsewhere. Vectorized
+            # (2026-09-08): the per-step Python loop cost ~7 s per 2048-deal
+            # iteration on 182k GPU scalars — 3x the Rust rollout itself.
             lam, gam = args.gae_lambda, args.gamma
-            for e in episodes:
-                n = len(e["returns"])
-                r = torch.from_numpy(e["rewards"]).to(vals.device)
-                v = vals[off:off + n]
-                gae = 0.0
-                for t in range(n - 1, -1, -1):
-                    v_next = v[t + 1] if t + 1 < n else 0.0   # terminal V := 0
-                    delta = r[t] + gam * v_next - v[t]
-                    gae = delta + gam * lam * gae
-                    adv_raw[off + t] = gae
-                off += n
+            lens = torch.tensor([len(e["returns"]) for e in episodes], device=dev, dtype=torch.long)
+            E, T = len(episodes), int(lens.max())
+            starts = torch.cumsum(lens, 0) - lens
+            ar = torch.arange(T, device=dev)
+            idx = starts[:, None] + ar[None, :]                       # [E, T] flat step index
+            valid = ar[None, :] < lens[:, None]
+            idx_c = idx.clamp(max=len(acts) - 1)
+            rew_flat = torch.from_numpy(cat("rewards")).to(dev)
+            R = torch.where(valid, rew_flat[idx_c], torch.zeros((), device=dev))
+            V = torch.where(valid, vals[idx_c], torch.zeros((), device=dev))
+            valid_next = torch.cat([valid[:, 1:], torch.zeros_like(valid[:, :1])], 1)
+            V_next = torch.cat([V[:, 1:], torch.zeros_like(V[:, :1])], 1) * valid_next   # terminal V := 0
+            delta = R + gam * V_next - V
+            A = torch.zeros_like(delta)
+            gae = torch.zeros(E, device=dev)
+            for t in range(T - 1, -1, -1):
+                gae = delta[:, t] + gam * lam * gae * valid_next[:, t]
+                A[:, t] = gae
+            adv_raw = torch.zeros_like(rets)
+            adv_raw[idx[valid]] = A[valid]
         else:
             adv_raw = rets - vals
+        cf_n, cf_sum, cf_best, cf_fold = 0, 0.0, 0, []
+        if args.cf_p > 0:
+            # exp72: replace the GAE advantage at counterfactually evaluated
+            # decisions with the same-wall paired difference (return units)
+            off = 0
+            for e in episodes:
+                n = len(e["returns"])
+                for t, a in (e.get("cf_adv") or {}).items():
+                    if t < n:
+                        adv_raw[off + t] = args.cf_scale * a
+                        cf_n += 1; cf_sum += a; cf_best += int(a >= 0)
+                cf_fold.extend((e.get("cf_fold_gain") or {}).values())
+                off += n
         adv = ((adv_raw - adv_raw[idx_keep].mean())
                / (adv_raw[idx_keep].std() + 1e-8))
         if args.adv_clamp:
@@ -651,14 +745,15 @@ def main():
         # comes from the arena, where different policies actually meet.
         update_s = time.time() - t_upd0
         win = sum(1 for r in results if "荣和" in r or "自摸" in r) / max(len(results), 1)
-        hz = getattr(collect_parallel, "last_hanchan", None)
+        collector = collect_rust if args.engine == "rust" else collect_parallel
+        hz = getattr(collector, "last_hanchan", None)
         if hz:
             with open(f"{exp_dir}/hanchan_stats.jsonl", "a") as f:
                 f.write(json.dumps({"iter": it, "games": games, "roles": hz})
                         + "\n")
             for role, v in hz.items():
                 writer.add_scalar(f"hanchan/uma_{role}", v["mean_uma"], games)
-        lg = getattr(collect_parallel, "last_league", None)
+        lg = getattr(collector, "last_league", None)
         if lg:
             # rollout ratings (exp46-C rev3): learner-vs-pool point-share per
             # opponent, one jsonl row per iteration; chunk drivers aggregate
@@ -681,6 +776,17 @@ def main():
                "bc_kl": float(np.mean(bkls)) if bkls else None,
                "entropy_coef": ent_alpha,
                "n_effective": n_eff, "n_raw": int(len(acts))}
+        if args.shaping:
+            row["shaping_scale"] = float(cfg.get("shaping_scale", args.shaping_scale)) if cfg.get("shaping") else 0.0
+        if args.cf_p > 0:
+            row["cf_n"] = cf_n
+            row["cf_adv_mean"] = cf_sum / max(cf_n, 1)
+            row["cf_exec_best_frac"] = cf_best / max(cf_n, 1)
+            row["cf_fold_n"] = len(cf_fold)
+            # mean (genbutsu continuation - executed continuation): the
+            # direct, same-wall estimate of what folding was worth here
+            row["cf_fold_gain_mean"] = float(np.mean(cf_fold)) if cf_fold else 0.0
+            row["cf_skipped"] = int(getattr(collector, "last_cf_skipped", 0))
         if hloss:
             row["hazard_bce"] = float(np.mean(hloss))
         if aloss:
@@ -691,7 +797,7 @@ def main():
             if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
                 writer.add_scalar(TB_TAG.get(k, k), float(v), games)
         from src.agents.dnn.style_stats import summarize as _style_sum
-        _sty = getattr(collect_parallel, "last_style", None)
+        _sty = getattr(collector, "last_style", None)
         if _sty:
             for k, v in _style_sum(_sty).items():
                 if k != "games":

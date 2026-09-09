@@ -94,3 +94,6 @@ experiments/rating/*
 *.swp
 *.swo
 .DS_Store
+
+# Rust build artifacts
+rust/riichi_rs/target/

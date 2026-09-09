@@ -32,10 +32,26 @@ import torch.nn.functional as F
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", required=True)
-    ap.add_argument("--init", required=True, help="warm-start ckpt (bc49)")
-    ap.add_argument("--league", required=True,
+    ap.add_argument("--init", default=None,
+                    help="warm-start ckpt (bc49); omit = random init (exp71 "
+                         "pure-line from scratch)")
+    ap.add_argument("--league", default=None,
                     help="json list of {name, path} frozen T=0 opponents; "
-                         "entry 0 fills most seats (stationary env)")
+                         "entry 0 fills most seats (stationary env). Omit = "
+                         "mirror self-play, four learner seats (exp71)")
+    ap.add_argument("--target_entropy_frac", default=None,
+                    help="ADAPTIVE Boltzmann temperature (exp71 r2): each "
+                         "iteration set T so the mean behaviour entropy over a "
+                         "replay sample equals this fraction of the uniform "
+                         "entropy over legal actions; piecewise-linear by "
+                         "games 'games:frac,...'. Overrides --temp_schedule. "
+                         "Fix for r1: fixed T=0.03 vs Q gaps ~4e-4 gave "
+                         "uniform-random behaviour data for 300k deals")
+    ap.add_argument("--temp_schedule", default=None,
+                    help="piecewise-linear Boltzmann temperature by games, "
+                         "'games:T,games:T,...' (exp71 from scratch: Q starts "
+                         "at logit scale ~0 so T=1 is uniform play; anneal "
+                         "toward greedy as TD calibrates)")
     ap.add_argument("--total_games", type=int, default=50000)
     ap.add_argument("--games_per_iter", type=int, default=512)
     ap.add_argument("--workers", type=int, default=16)
@@ -135,6 +151,49 @@ def parse_args():
     return ap.parse_args()
 
 
+def parse_temp_schedule(spec):
+    """'games:T,games:T,...' -> sorted [(games, T)]; None/'' -> []."""
+    if not spec:
+        return []
+    pts = sorted((int(g), float(t)) for g, t in (x.split(":") for x in spec.split(",")))
+    return pts
+
+
+@torch.no_grad()
+def solve_temperature(q_all, mask, frac, lo=1e-5, hi=10.0, iters=40):
+    """Bisection over log T: mean softmax(Q/T) entropy on multi-choice rows ==
+    frac * mean log(#legal). q_all: [N, A] with illegal = -inf already."""
+    legal = mask.sum(1)
+    rows = legal > 1
+    if rows.sum() == 0:
+        return hi
+    q = q_all[rows]
+    target = float(frac) * float(torch.log(legal[rows].float()).mean())
+    def ent(t):
+        p = torch.softmax(q / t, 1)
+        return float(-(p * torch.log(p.clamp_min(1e-12))).sum(1).mean())
+    a, b = float(np.log(lo)), float(np.log(hi))
+    for _ in range(iters):
+        m = 0.5 * (a + b)
+        if ent(float(np.exp(m))) > target:
+            b = m
+        else:
+            a = m
+    return float(np.exp(0.5 * (a + b)))
+
+
+def temp_at(sched, games):
+    """Piecewise-linear interpolation of the temperature schedule; flat
+    beyond the ends."""
+    if games <= sched[0][0]:
+        return sched[0][1]
+    for (g0, t0), (g1, t1) in zip(sched, sched[1:]):
+        if games <= g1:
+            f = (games - g0) / max(g1 - g0, 1)
+            return t0 + f * (t1 - t0)
+    return sched[-1][1]
+
+
 class Replay:
     """Ring buffer of transitions with insert-time n-step targets.
 
@@ -208,10 +267,15 @@ def main():
     from src.agents.dnn.parallel_rollout import collect_parallel
 
     net = ZOO[args.arch][0]().to(dev)
-    blob = torch.load(args.init, map_location="cpu", weights_only=False)
-    skipped = load_compatible(net, blob["state_dict"])
-    print(f"🏗 arch {args.arch}, warm-start {args.init}"
-          + (f" (fresh: {skipped})" if skipped else ""), flush=True)
+    if args.init:
+        blob = torch.load(args.init, map_location="cpu", weights_only=False)
+        skipped = load_compatible(net, blob["state_dict"])
+        print(f"🏗 arch {args.arch}, warm-start {args.init}"
+              + (f" (fresh: {skipped})" if skipped else ""), flush=True)
+    else:
+        blob = {}
+        print(f"🏗 arch {args.arch}, RANDOM init (from scratch, "
+              f"{sum(p.numel() for p in net.parameters())} params)", flush=True)
     target = ZOO[args.arch][0]().to(dev)
     target.load_state_dict(net.state_dict())
     target.eval()
@@ -255,13 +319,20 @@ def main():
                infer_max_batch=args.infer_max_batch,
                infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device,
                bf16_infer=False, no_episodes=False,
-               league=json.load(open(args.league)), league_frac=1.0,
+               league=(json.load(open(args.league)) if args.league else []),
+               league_frac=(1.0 if args.league else 0.0),
                league_learner_seats=1, league_opp_temp=0.0, hanchan=False,
                hanchan_w_path=None, action_space=space_of_arch(args.arch),
                single_dev_p=args.single_dev_p, single_dev_temp=args.single_dev_temp,
                all_seats_episodes=bool(args.all_seats))
-    print(f"🏟 league: {len(cfg['league'])} frozen T=0 opponents, learner x1",
-          flush=True)
+    if cfg["league"]:
+        print(f"🏟 league: {len(cfg['league'])} frozen T=0 opponents, learner x1",
+              flush=True)
+    else:
+        print("🪞 mirror self-play: four learner seats, episodes from all seats",
+              flush=True)
+    t_sched = parse_temp_schedule(args.temp_schedule)
+    e_sched = parse_temp_schedule(args.target_entropy_frac)
 
     replay = None
     rng = np.random.default_rng(args.seed)
@@ -341,6 +412,20 @@ def main():
     mc_phase = True
     while games < args.total_games:
         it += 1
+        if e_sched and replay is not None and replay.size >= 4096:
+            # adaptive T: behaviour entropy tracks the schedule regardless of
+            # the Q scale (MC calibration, TD drift, reward_scale)
+            frac = temp_at(e_sched, games)
+            idx = rng.integers(0, replay.size, size=4096)
+            net.eval()
+            with torch.no_grad():
+                qa = net(torch.from_numpy(replay.planes[idx]).to(dev).float(),
+                         torch.from_numpy(replay.scal[idx]).to(dev),
+                         torch.from_numpy(replay.mask[idx]).to(dev)).float()
+            cfg["temperature"] = solve_temperature(qa, torch.from_numpy(replay.mask[idx]).to(dev), frac)
+            writer.add_scalar("dqn/target_entropy_frac", frac, games)
+        elif t_sched:
+            cfg["temperature"] = temp_at(t_sched, games)
         for g_thr, coef in m_sched:
             if games >= g_thr:
                 margin_coef = coef
@@ -495,6 +580,7 @@ def main():
         for k in keys:
             writer.add_scalar(f"dqn/{k}", row[k], games)
         writer.add_scalar("dqn/replay_size", replay.size, games)
+        writer.add_scalar("dqn/temperature", float(cfg["temperature"]), games)
         writer.add_scalar("dqn/margin_coef", margin_coef, games)
         writer.add_scalar("dqn/updates_per_s", nb / max(update_s, 1e-9), games)
         writer.add_scalar("dqn/samples_per_s", nb * args.batch / max(update_s, 1e-9), games)
@@ -505,7 +591,7 @@ def main():
         print(f"[{it:4d}] games={games:7d} {row['wall_s']/60:5.1f}min "
               f"{gs:5.1f}局/s td={row['td_loss']:.4f} q={row['q_mean']:+.3f} "
               f"y={row['target_mean']:+.3f} lg={row['league_pts']:+6.0f} "
-              f"buf={replay.size} {row['phase']}", flush=True)
+              f"buf={replay.size} {row['phase']} T={cfg['temperature']:.3f}", flush=True)
         if it % args.ckpt_every == 0:
             save(f"games_{games}", games, it)
         if args.store_dir and upd >= next_promote:
