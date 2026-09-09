@@ -2,7 +2,7 @@
 //! HandDivider / FuCalculator / yaku list / ScoresCalculator as configured by
 //! the Python engine (open tanyao, aka dora, double yakuman, kazoe = yakuman,
 //! renhou off, no honba/kyoutaku inside the calculator).
-use crate::tiles::*;
+
 
 pub const EAST: u8 = 27;
 pub const SOUTH: u8 = 28;

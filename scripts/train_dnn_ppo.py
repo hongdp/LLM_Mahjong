@@ -33,6 +33,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.dnn.net import MahjongPolicyNet                      # noqa: E402
+from src.agents.dnn.rust_rollout import collect_rust   # noqa: E402
 from src.agents.dnn.parallel_rollout import (apply_group_baseline,   # noqa: E402
                                              collect_parallel)
 
@@ -183,6 +184,11 @@ def main():
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
                          "H=0.44; guard for aggressive anneal arms)")
+    ap.add_argument("--engine", choices=["python", "rust"], default="python",
+                    help="rollout engine: 'rust' = riichi_rs.VecEnv (rules+encoder+batching in "
+                         "Rust, policy forward in-process on --train_device; mirror single-deal "
+                         "only, ignores --workers/--gpu_infer). Bit-identical episodes to the "
+                         "Python engine (tests/test_rust_rollout_parity.py)")
     ap.add_argument("--shaping", action="store_true",
                     help="exp73: engine-derived PBRS on the per-step reward, "
                          "Phi = -2*shanten + 0.05*ukeire (selfplay.potential); "
@@ -503,7 +509,10 @@ def main():
         seeds = [base + d for d in range(n_deals) for _ in range(args.dup_k)]
         net.eval()
         t_roll0 = time.time()
-        episodes, results = collect_parallel(net, len(seeds), cfg, args.workers, seeds)
+        if args.engine == "rust":
+            episodes, results = collect_rust(net, len(seeds), cfg, args.workers, seeds, device=args.train_device)
+        else:
+            episodes, results = collect_parallel(net, len(seeds), cfg, args.workers, seeds)
         apply_group_baseline(episodes, args.gamma)
         rollout_s = time.time() - t_roll0
         games += len(results)
@@ -727,14 +736,15 @@ def main():
         # comes from the arena, where different policies actually meet.
         update_s = time.time() - t_upd0
         win = sum(1 for r in results if "荣和" in r or "自摸" in r) / max(len(results), 1)
-        hz = getattr(collect_parallel, "last_hanchan", None)
+        collector = collect_rust if args.engine == "rust" else collect_parallel
+        hz = getattr(collector, "last_hanchan", None)
         if hz:
             with open(f"{exp_dir}/hanchan_stats.jsonl", "a") as f:
                 f.write(json.dumps({"iter": it, "games": games, "roles": hz})
                         + "\n")
             for role, v in hz.items():
                 writer.add_scalar(f"hanchan/uma_{role}", v["mean_uma"], games)
-        lg = getattr(collect_parallel, "last_league", None)
+        lg = getattr(collector, "last_league", None)
         if lg:
             # rollout ratings (exp46-C rev3): learner-vs-pool point-share per
             # opponent, one jsonl row per iteration; chunk drivers aggregate
@@ -767,7 +777,7 @@ def main():
             # mean (genbutsu continuation - executed continuation): the
             # direct, same-wall estimate of what folding was worth here
             row["cf_fold_gain_mean"] = float(np.mean(cf_fold)) if cf_fold else 0.0
-            row["cf_skipped"] = int(getattr(collect_parallel, "last_cf_skipped", 0))
+            row["cf_skipped"] = int(getattr(collector, "last_cf_skipped", 0))
         if hloss:
             row["hazard_bce"] = float(np.mean(hloss))
         if aloss:
@@ -778,7 +788,7 @@ def main():
             if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
                 writer.add_scalar(TB_TAG.get(k, k), float(v), games)
         from src.agents.dnn.style_stats import summarize as _style_sum
-        _sty = getattr(collect_parallel, "last_style", None)
+        _sty = getattr(collector, "last_style", None)
         if _sty:
             for k, v in _style_sum(_sty).items():
                 if k != "games":

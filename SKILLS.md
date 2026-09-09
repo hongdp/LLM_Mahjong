@@ -573,3 +573,12 @@ batch 4096 各占 21GB，推理服务器重启即 OOM——先算显存再并行
   bf16 更新前向在 Q≈0.03 尺度上的分辩率与顶二差同阶，从零 DQN 不开 bf16；③**发射后 15 分钟内必做在轨检查**：里程碑 ckpt 对同局数基线 ckpt
   T=0 配对 n=600（`eval71_quick.py` 模式），并用 `q71_gaps.py` 核对行为熵 vs 均匀熵。价值方法线的"日志健康 ≠ 学习健康"。
 
+## 2026-09-08 Rust 引擎 riichi_rs（PyO3）——用法与规矩
+- 构建：`cd rust/riichi_rs && CONDA_PREFIX=<env> maturin develop --release`（cargo 在 ~/.cargo/bin，非 PATH）；改 Rust 后必须重装再跑 pytest。
+- **契约 = 与 Python 引擎位级一致**：任何规则/编码改动必须同时改两边并通过 `tests/test_rust_*_parity.py` 全套（随机数/发牌/向听/计分/整局/编码/端到端）。
+  差分测试是唯一裁判，不靠阅读；发现不一致先判定哪边是 bug（本轮两处都是 Rust 端：chi 副露红五计数、役列表未按 yaku_id 排序），Python 引擎的 quirk（里宝并入 Dora、
+  副露首张牌位置的红五平面）按现状复现，不"修正"。
+- 训练：`train_dnn_ppo.py --engine rust --games_per_worker 1024 --workers 1`（K=并发桌数；GPU 前向是瓶颈，K 越大批越大；本机 1,500 局/s vs Python 178）。
+  仅支持镜像单局 + native 动作空间 + v1r 编码；联赛/半庄/oracle/反事实分支仍走 Python 引擎。
+- 性能剖析先看每回合分解（observe/h2d/forward/d2h/step/drain），别猜；rayon 并行让 Rust 步进从 16 ms 降到 2.5 ms/回合。
+

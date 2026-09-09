@@ -6,8 +6,15 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
+use rayon::prelude::*;
+
 use crate::encoder::{encode_v1r, legal_mask, potential, ACTION_DIM, N_PLANES, N_SCALARS};
 use crate::table::{resolve_claims, Table};
+
+#[derive(Clone, Copy)]
+struct Cfg {
+    shaping: bool,
+}
 
 struct StepRec {
     planes: Vec<f32>,
@@ -21,7 +28,6 @@ struct StepRec {
 
 #[derive(Clone)]
 struct RowRef {
-    game: usize,
     seat: usize,
     lookup: Vec<(usize, usize)>,   // (slot, action index)
     actions: Vec<String>,
@@ -39,8 +45,8 @@ struct Game {
     traj: [Vec<StepRec>; 4],
     phase: Phase,
     guard: usize,
-    // per-round decision bookkeeping
-    rows: Vec<usize>,               // indices into VecEnv.rows for this game this round
+    // per-round decision bookkeeping (this game's pending rows, in request order)
+    rows: Vec<RowRef>,
     pending_steps: Vec<(usize, StepRec)>,   // (seat, recorded step) awaiting reward
 }
 
@@ -64,150 +70,196 @@ pub struct VecEnv {
     shaping: bool,
     shaping_scale: f64,
     randomize_round: bool,
-    rows: Vec<RowRef>,
     finished: Vec<Finished>,
     n_started: usize,
 }
 
+fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<f32>, [f32; N_SCALARS], f64) {
+    let mut planes = vec![0f32; N_PLANES * 34];
+    let mut scalars = [0f32; N_SCALARS];
+    encode_v1r(table, seat, &mut planes, &mut scalars);
+    let phi = if cfg.shaping { potential(table, seat) } else { 0.0 };
+    (planes, scalars, phi)
+}
+
+fn finish(g: Game) -> Finished {
+    let t = &g.table;
+    let mut traj = g.traj;
+    if let Some(fr) = t.final_rewards {
+        for p in 0..4 {
+            if let Some(last) = traj[p].last_mut() {
+                last.reward += fr[p];
+            }
+        }
+    }
+    let mut episodes = Vec::new();
+    for p in 0..4 {
+        let steps = std::mem::take(&mut traj[p]);
+        if !steps.is_empty() {
+            episodes.push((p, steps));
+        }
+    }
+    Finished {
+        seed: g.seed,
+        episodes,
+        result: t.result_summary.clone(),
+        riichi: t.riichi,
+        n_melds: [t.melds[0].len(), t.melds[1].len(), t.melds[2].len(), t.melds[3].len()],
+        n_discards: t.discard_count.iter().sum(),
+        points: t.points,
+        start_points: t.start_points,
+    }
+}
+
+/// Bring a game to a state with pending decisions; returns true when it finished instead.
+fn settle_to_decision(g: &mut Game, cfg: &Cfg) -> bool {
+    loop {
+        if g.table.finished {
+            return true;
+        }
+        match g.phase {
+            Phase::Turn => {
+                if g.guard >= 600 {
+                    return true;
+                }
+                let pid = g.table.turn;
+                let actions = g.table.get_legal_actions(pid);
+                if actions.is_empty() {
+                    return true;
+                }
+                let (mask, lookup) = legal_mask(&actions);
+                let (planes, scalars, phi) = record(&g.table, pid, cfg);
+                g.guard += 1;
+                g.pending_steps.push((pid, StepRec { planes, scalars, mask: mask.to_vec(), action: 0, logprob: 0.0, reward: 0.0, phi }));
+                g.rows.push(RowRef { seat: pid, lookup, actions, interrupt: false });
+                return false;
+            }
+            Phase::Interrupt => {
+                let pid = g.table.last_discarder.or_else(|| g.table.pending_kan.as_ref().map(|k| k.player)).unwrap_or(g.table.turn);
+                let mut any = false;
+                for off in 1..4 {
+                    let other = (pid + off) % 4;
+                    let opts = g.table.get_interrupt_actions(other);
+                    if opts.len() <= 1 {
+                        continue;
+                    }
+                    any = true;
+                    let (mask, lookup) = legal_mask(&opts);
+                    let (planes, scalars, phi) = record(&g.table, other, cfg);
+                    g.pending_steps.push((other, StepRec { planes, scalars, mask: mask.to_vec(), action: 0, logprob: 0.0, reward: 0.0, phi }));
+                    g.rows.push(RowRef { seat: other, lookup, actions: opts, interrupt: true });
+                }
+                if any {
+                    return false;
+                }
+                if g.table.pending_kan.is_some() {
+                    g.table.resolve_pending_kan();
+                } else if g.table.advance_turn() {
+                    return true;
+                }
+                g.phase = Phase::Turn;
+            }
+        }
+    }
+}
+
+/// Apply this round's answers for one game; returns true when the game finished.
+fn apply_round(g: &mut Game, actions: &[i64], logprobs: &[f32]) -> bool {
+    let rows = std::mem::take(&mut g.rows);
+    if rows.is_empty() {
+        return false;
+    }
+    if !rows[0].interrupt {
+        let r = &rows[0];
+        let slot_idx = actions[0];
+        let xml = r.lookup.iter().find(|(s, _)| *s as i64 == slot_idx)
+            .map(|(_, a)| r.actions[*a].clone())
+            .unwrap_or_else(|| "<action type=\"skip\" />".to_string());
+        let (seat, mut rec) = g.pending_steps.pop().unwrap();
+        rec.action = slot_idx;
+        rec.logprob = logprobs[0];
+        let (rewards, done, info) = g.table.step(seat, &xml);
+        rec.reward = rewards[seat];
+        g.traj[seat].push(rec);
+        if done {
+            return true;
+        }
+        g.phase = if info.discarded || info.chankan.is_some() { Phase::Interrupt } else { Phase::Turn };
+        false
+    } else {
+        let mut cands: Vec<(usize, String)> = Vec::with_capacity(rows.len());
+        let mut recs: Vec<(usize, StepRec)> = std::mem::take(&mut g.pending_steps);
+        for (i, r) in rows.iter().enumerate() {
+            let xml = r.lookup.iter().find(|(s, _)| *s as i64 == actions[i])
+                .map(|(_, a)| r.actions[*a].clone())
+                .unwrap_or_else(|| "<action type=\"skip\" />".to_string());
+            cands.push((r.seat, xml));
+        }
+        let (executed, done, rews) = resolve_claims(&mut g.table, &cands);
+        for (i, _r) in rows.iter().enumerate() {
+            let (seat, mut rec) = recs.remove(0);
+            rec.action = actions[i];
+            rec.logprob = logprobs[i];
+            rec.reward = rews[i];
+            g.traj[seat].push(rec);
+        }
+        if done {
+            return true;
+        }
+        if executed.is_empty() {
+            if g.table.pending_kan.is_some() {
+                g.table.resolve_pending_kan();
+            } else if g.table.advance_turn() {
+                return true;
+            }
+        }
+        g.phase = Phase::Turn;
+        false
+    }
+}
+
 impl VecEnv {
-    fn start_game(&mut self, slot: usize, seed: u64) {
-        let table = Table::new_seeded(seed, self.randomize_round);
-        self.active[slot] = Some(Game {
-            table,
-            seed,
-            traj: Default::default(),
-            phase: Phase::Turn,
-            guard: 0,
-            rows: Vec::new(),
-            pending_steps: Vec::new(),
-        });
-        self.n_started += 1;
+    fn cfg(&self) -> Cfg {
+        Cfg { shaping: self.shaping }
     }
 
     fn fill_slots(&mut self) {
         for slot in 0..self.k {
             if self.active[slot].is_none() {
                 if let Some(seed) = self.queue.pop_front() {
-                    self.start_game(slot, seed);
+                    let table = Table::new_seeded(seed, self.randomize_round);
+                    self.active[slot] = Some(Game {
+                        table, seed, traj: Default::default(), phase: Phase::Turn, guard: 0,
+                        rows: Vec::new(), pending_steps: Vec::new(),
+                    });
+                    self.n_started += 1;
                 }
             }
         }
     }
 
-    fn record(&self, table: &Table, seat: usize) -> (Vec<f32>, [f32; N_SCALARS], f64) {
-        let mut planes = vec![0f32; N_PLANES * 34];
-        let mut scalars = [0f32; N_SCALARS];
-        encode_v1r(table, seat, &mut planes, &mut scalars);
-        let phi = if self.shaping { potential(table, seat) } else { 0.0 };
-        (planes, scalars, phi)
+    /// Settle every active game without pending rows (parallel), collecting finished ones.
+    fn settle_all(&mut self) {
+        let cfg = self.cfg();
+        let finished: Vec<Finished> = self.active.par_iter_mut()
+            .filter_map(|slot| {
+                let g = slot.as_mut()?;
+                if !g.rows.is_empty() {
+                    return None;
+                }
+                if settle_to_decision(g, &cfg) {
+                    let g = slot.take().unwrap();
+                    Some(finish(g))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.finished.extend(finished);
     }
 
-    /// Bring a game to a state with pending decisions (or finish it).
-    fn settle_to_decision(&mut self, slot: usize) {
-        loop {
-            let (finished, is_turn, guard, turn) = {
-                let g = self.active[slot].as_ref().unwrap();
-                (g.table.finished, matches!(g.phase, Phase::Turn), g.guard, g.table.turn)
-            };
-            if finished {
-                self.finish(slot);
-                return;
-            }
-            if is_turn {
-                {
-                    if guard >= 600 {
-                        self.finish(slot);
-                        return;
-                    }
-                    let pid = turn;
-                    let actions = self.active[slot].as_ref().unwrap().table.get_legal_actions(pid);
-                    if actions.is_empty() {
-                        self.finish(slot);
-                        return;
-                    }
-                    let (mask, lookup) = legal_mask(&actions);
-                    let (planes, scalars, phi) = {
-                        let g = self.active[slot].as_ref().unwrap();
-                        self.record(&g.table, pid)
-                    };
-                    let g = self.active[slot].as_mut().unwrap();
-                    g.guard += 1;
-                    g.pending_steps.push((pid, StepRec { planes, scalars, mask: mask.to_vec(), action: 0, logprob: 0.0, reward: 0.0, phi }));
-                    self.rows.push(RowRef { game: slot, seat: pid, lookup, actions, interrupt: false });
-                    let idx = self.rows.len() - 1;
-                    self.active[slot].as_mut().unwrap().rows.push(idx);
-                    return;
-                }
-            } else {
-                {
-                    // build the window's requests: seats with more than one option
-                    let pid = {
-                        let g = self.active[slot].as_ref().unwrap();
-                        g.table.last_discarder.or_else(|| g.table.pending_kan.as_ref().map(|k| k.player)).unwrap_or(g.table.turn)
-                    };
-                    let mut any = false;
-                    for off in 1..4 {
-                        let other = (pid + off) % 4;
-                        let g = self.active[slot].as_ref().unwrap();
-                        let opts = g.table.get_interrupt_actions(other);
-                        if opts.len() <= 1 {
-                            continue;
-                        }
-                        any = true;
-                        let (mask, lookup) = legal_mask(&opts);
-                        let (planes, scalars, phi) = self.record(&g.table, other);
-                        let g = self.active[slot].as_mut().unwrap();
-                        g.pending_steps.push((other, StepRec { planes, scalars, mask: mask.to_vec(), action: 0, logprob: 0.0, reward: 0.0, phi }));
-                        self.rows.push(RowRef { game: slot, seat: other, lookup, actions: opts, interrupt: true });
-                        let idx = self.rows.len() - 1;
-                        self.active[slot].as_mut().unwrap().rows.push(idx);
-                    }
-                    if any {
-                        return;
-                    }
-                    // nobody can act: resolve the empty window like the Python driver
-                    let g = self.active[slot].as_mut().unwrap();
-                    if g.table.pending_kan.is_some() {
-                        g.table.resolve_pending_kan();
-                    } else if g.table.advance_turn() {
-                        self.finish(slot);
-                        return;
-                    }
-                    let g = self.active[slot].as_mut().unwrap();
-                    g.phase = Phase::Turn;
-                }
-            }
-        }
-    }
-
-    fn finish(&mut self, slot: usize) {
-        let g = self.active[slot].take().unwrap();
-        let t = &g.table;
-        let mut episodes = Vec::new();
-        let mut traj = g.traj;
-        if let Some(fr) = t.final_rewards {
-            for p in 0..4 {
-                if let Some(last) = traj[p].last_mut() {
-                    last.reward += fr[p];
-                }
-            }
-        }
-        for p in 0..4 {
-            let steps = std::mem::take(&mut traj[p]);
-            if !steps.is_empty() {
-                episodes.push((p, steps));
-            }
-        }
-        self.finished.push(Finished {
-            seed: g.seed,
-            episodes,
-            result: t.result_summary.clone(),
-            riichi: t.riichi,
-            n_melds: [t.melds[0].len(), t.melds[1].len(), t.melds[2].len(), t.melds[3].len()],
-            n_discards: t.discard_count.iter().sum(),
-            points: t.points,
-            start_points: t.start_points,
-        });
+    fn total_rows(&self) -> usize {
+        self.active.iter().map(|g| g.as_ref().map_or(0, |g| g.rows.len())).sum()
     }
 }
 
@@ -219,20 +271,16 @@ impl VecEnv {
         let mut env = VecEnv {
             queue: seeds.into_iter().collect(),
             active: (0..k).map(|_| None).collect(),
-            k,
-            gamma,
-            shaping,
-            shaping_scale,
-            randomize_round,
-            rows: Vec::new(),
+            k, gamma, shaping, shaping_scale, randomize_round,
             finished: Vec::new(),
             n_started: 0,
         };
         env.fill_slots();
-        for slot in 0..k {
-            if env.active[slot].is_some() {
-                env.settle_to_decision(slot);
-            }
+        env.settle_all();
+        // games that finished instantly leave empty slots: keep filling
+        while env.active.iter().any(|g| g.is_none()) && !env.queue.is_empty() {
+            env.fill_slots();
+            env.settle_all();
         }
         env
     }
@@ -243,21 +291,24 @@ impl VecEnv {
 
     /// Pending decisions: (planes [B, 21*34] f32, scalars [B, 20] f32, mask [B, 374] bool, seats [B], games [B]).
     fn observe<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<bool>>, Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<i32>>)> {
-        let b = self.rows.len();
+        let b = self.total_rows();
         let mut planes = Vec::with_capacity(b * N_PLANES * 34);
         let mut scalars = Vec::with_capacity(b * N_SCALARS);
         let mut mask = Vec::with_capacity(b * ACTION_DIM);
         let mut seats = Vec::with_capacity(b);
         let mut games = Vec::with_capacity(b);
-        for r in &self.rows {
-            let g = self.active[r.game].as_ref().unwrap();
-            // the row's step record is the LAST pending step for that seat
-            let rec = g.pending_steps.iter().rev().find(|(s, _)| *s == r.seat).map(|(_, rec)| rec).unwrap();
-            planes.extend_from_slice(&rec.planes);
-            scalars.extend_from_slice(&rec.scalars);
-            mask.extend_from_slice(&rec.mask);
-            seats.push(r.seat as i32);
-            games.push(r.game as i32);
+        for (slot, g) in self.active.iter().enumerate() {
+            let Some(g) = g else { continue };
+            // pending_steps are in the same order as rows (turn: 1; interrupt: request order)
+            let base = g.pending_steps.len() - g.rows.len();
+            for (i, r) in g.rows.iter().enumerate() {
+                let rec = &g.pending_steps[base + i].1;
+                planes.extend_from_slice(&rec.planes);
+                scalars.extend_from_slice(&rec.scalars);
+                mask.extend_from_slice(&rec.mask);
+                seats.push(r.seat as i32);
+                games.push(slot as i32);
+            }
         }
         let planes = PyArray1::from_vec_bound(py, planes).reshape([b, N_PLANES * 34])?;
         let scalars = PyArray1::from_vec_bound(py, scalars).reshape([b, N_SCALARS])?;
@@ -265,88 +316,44 @@ impl VecEnv {
         Ok((planes, scalars, mask, seats.into_pyarray_bound(py), games.into_pyarray_bound(py)))
     }
 
-    /// Apply one action (slot index) + its logprob per pending row, advance every game.
-    fn step(&mut self, actions: Vec<i64>, logprobs: Vec<f32>) -> PyResult<()> {
-        if actions.len() != self.rows.len() {
+    /// Apply one action (slot index) + its logprob per pending row (row order = observe()), advance every game.
+    fn step(&mut self, py: Python<'_>, actions: Vec<i64>, logprobs: Vec<f32>) -> PyResult<()> {
+        if actions.len() != self.total_rows() {
             return Err(pyo3::exceptions::PyValueError::new_err("actions length != pending rows"));
         }
-        let rows = std::mem::take(&mut self.rows);
-        // group rows by game, preserving order
-        let mut by_game: Vec<Vec<usize>> = vec![Vec::new(); self.k];
-        for (i, r) in rows.iter().enumerate() {
-            by_game[r.game].push(i);
+        // per-slot offsets into the flat action arrays
+        let mut offsets = Vec::with_capacity(self.k);
+        let mut off = 0usize;
+        for g in &self.active {
+            let n = g.as_ref().map_or(0, |g| g.rows.len());
+            offsets.push((off, n));
+            off += n;
         }
-        for slot in 0..self.k {
-            if by_game[slot].is_empty() {
-                continue;
-            }
-            let idxs = &by_game[slot];
-            let g = self.active[slot].as_mut().unwrap();
-            let first = &rows[idxs[0]];
-            if !first.interrupt {
-                // turn decision (exactly one row)
-                let i = idxs[0];
-                let slot_idx = actions[i];
-                let xml = first.lookup.iter().find(|(s, _)| *s as i64 == slot_idx)
-                    .map(|(_, a)| first.actions[*a].clone())
-                    .unwrap_or_else(|| "<action type=\"skip\" />".to_string());
-                let (seat, mut rec) = g.pending_steps.pop().unwrap();
-                rec.action = slot_idx;
-                rec.logprob = logprobs[i];
-                let (rewards, done, info) = g.table.step(seat, &xml);
-                rec.reward = rewards[seat];
-                g.traj[seat].push(rec);
-                g.rows.clear();
-                if done {
-                    self.finish(slot);
-                    continue;
-                }
-                if info.discarded || info.chankan.is_some() {
-                    g.phase = Phase::Interrupt;
-                } else {
-                    g.phase = Phase::Turn;
-                }
-            } else {
-                // interrupt window: all requested seats answered this round
-                let mut cands: Vec<(usize, String)> = Vec::with_capacity(idxs.len());
-                let mut recs: Vec<(usize, StepRec)> = std::mem::take(&mut g.pending_steps);
-                for &i in idxs {
-                    let r = &rows[i];
-                    let xml = r.lookup.iter().find(|(s, _)| *s as i64 == actions[i])
-                        .map(|(_, a)| r.actions[*a].clone())
-                        .unwrap_or_else(|| "<action type=\"skip\" />".to_string());
-                    cands.push((r.seat, xml));
-                }
-                let (executed, done, rews) = resolve_claims(&mut g.table, &cands);
-                for (j, &i) in idxs.iter().enumerate() {
-                    let (seat, mut rec) = recs.remove(0);
-                    debug_assert_eq!(seat, rows[i].seat);
-                    rec.action = actions[i];
-                    rec.logprob = logprobs[i];
-                    rec.reward = rews[j];
-                    g.traj[seat].push(rec);
-                }
-                g.rows.clear();
-                if done {
-                    self.finish(slot);
-                    continue;
-                }
-                if executed.is_empty() {
-                    if g.table.pending_kan.is_some() {
-                        g.table.resolve_pending_kan();
-                    } else if g.table.advance_turn() {
-                        self.finish(slot);
-                        continue;
+        let cfg = self.cfg();
+        let finished: Vec<Finished> = py.allow_threads(|| {
+            self.active.par_iter_mut().zip(offsets.par_iter())
+                .filter_map(|(slot, &(o, n))| {
+                    let g = slot.as_mut()?;
+                    if n == 0 {
+                        return None;
                     }
-                }
-                g.phase = Phase::Turn;
-            }
-        }
+                    let done = apply_round(g, &actions[o..o + n], &logprobs[o..o + n])
+                        || settle_to_decision(g, &cfg);
+                    if done {
+                        let g = slot.take().unwrap();
+                        Some(finish(g))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        });
+        self.finished.extend(finished);
         self.fill_slots();
-        for slot in 0..self.k {
-            if self.active[slot].is_some() {
-                self.settle_to_decision(slot);
-            }
+        self.settle_all();
+        while self.active.iter().any(|g| g.is_none()) && !self.queue.is_empty() {
+            self.fill_slots();
+            self.settle_all();
         }
         Ok(())
     }
@@ -416,6 +423,6 @@ impl VecEnv {
 
     #[getter]
     fn n_pending(&self) -> usize {
-        self.rows.len()
+        self.total_rows()
     }
 }

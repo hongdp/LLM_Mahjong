@@ -45,3 +45,17 @@ tests/test_rust_parity.py        差分测试：随机策略（共享 RNG 选合
 - 计分库细节（分解顺序、fu_details 排序、双役满、kazoe）——用差分测试兜底，不靠阅读。
 - 浮点：randomize_round 的 gauss/log/cos 用同一 libm（Linux glibc），预期位级一致；若个别种子差 1 ulp 导致 round 半整不同，记录为已知偏差（只影响起手点数场景）。
 - 工程量：预计 5–8 个工作日等价；分阶段提交，任何阶段可停且已有价值（P2 的向听/计分即可替换 Python 热点，单独 1.3–1.5×）。
+
+## 4. 进展（2026-09-08）
+| 阶段 | 状态 | 证据 |
+|---|---|---|
+| P0 CPython random 位级 | ✅ | `tests/test_rust_random_parity.py` 13/13 |
+| P1 发牌一致 | ✅ | `test_rust_table_parity.py` 400+ 种子（含 randomize_round 上下文） |
+| P2 向听/待张/计分 | ✅ | `test_rust_shanten_parity.py` 8 万手；`test_rust_score_parity.py` 4 万和牌形（含库 yaku_id 排序、里宝计入 Dora 的引擎 quirk） |
+| P3 整局规则 | ✅ | `test_rust_game_parity.py` 1,500 局随机策略逐步位级一致（动作串/奖励/状态/结果串/final_rewards） |
+| P4 编码器 + VecEnv + collect_rust | ✅ | `test_rust_encoder_parity.py` 2 万状态；`test_rust_rollout_parity.py` T=0 端到端 episode 与 collect_parallel 完全一致（含塑形） |
+| 训练器集成 | ✅ | `train_dnn_ppo.py --engine rust`（games_per_worker × workers = 并发桌数 K） |
+- **吞吐（工作站 24 核 + RTX 4080，cnn_m_r，T=1）**：Python 16 进程 178 局/s → Rust VecEnv（rayon 并行）**1,500 局/s（K=1024）**，每回合 7.9 ms：GPU 前向 3.45（44%）、Rust 步进 2.51、观测/搬运 1.9。
+  GPU 前向已成新瓶颈；下一步可选：双缓冲两套 VecEnv 交替以重叠 GPU 与 CPU（预期 +40%）、前向 bf16/CUDA graph。
+- 待办：exp76 训练级验证（同配方 `--engine rust` 1M 局 vs P3 ≈0.50）+ pod 吞吐/成本实测；半庄层与 v3 编码未移植（P5）。
+
