@@ -24,3 +24,8 @@ exp78 判决：学习率 1e-4→3e-5 续训 32M 局 +1.6 pp（A 0.4453），容�
 - 预算：2 × ≈4.5 h × $0.22 ≈ **$2，上限 $4**（uint8 版预计 ≥1,000 局/s）。
 
 ## Progress
+- [09-10 01:50 PDT] 发射。前两批社区 3090 pod 全是坏宿主（80.15.7.37 SSH 密钥未注入、213.144.200.240 CUDA unknown error，与 exp79 首发同一台），四台共浪费 ≈$0.05，已全部终止；
+  改用社区 **3090 Ti**（$0.27/h，同宿主 174.94.157.109）：C1 pod `1wi1964vau1d8r`（ssh :29411）、C2 pod `e9z2lgsr58mo2i`（ssh :47692），守卫通过。
+  riichi_rs 0.1.1（uint8 平面版）；起步吞吐 C1 ≈1,190 局/s、C2 ≈1,030 局/s（同宿主两 pod 争 CPU）⇒ 16M 局各 ≈4 h ≈ **$1.1**/臂。
+  心跳 ×2、15 min 拉取+GCS（`gs://llm-mahjong-experiments/exp80_C1|C2`）、在轨每 4M（`probes/exp80_track.jsonl`）、TB `exp80_C1/C2_LIVE` 已挂。
+  起点读数（64M）：H ≈0.50、KL 0.002–0.003、win 86–90%，与 A 终点一致（resume 正常）。
