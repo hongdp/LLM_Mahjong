@@ -28,3 +28,5 @@ exp41（1M 局）判"更丰富输入从零更差"，人类先验线却证明 v3r
   发射 `exp79_pod_train.sh`（A1 配方 + `--engine rust`，32M 局，games_per_worker 1024）。起步吞吐 ≈530 局/s（v3r 编码比 v1r 重，≈半速）→ 预计 ≈17 h ≈ **$3.7**（上限 $6 内）。
   心跳 `exp79_watch.sh`（发射 30 min 死线 / 30 min STALL / Traceback）、15 min 拉取+GCS `gs://llm-mahjong-experiments/exp79_V`、在轨每 1M 局 vs P3/bc49 n=600（`experiments/probes/exp79_track.jsonl`）、TB `exp79_V_LIVE` 已挂。
   1 分钟读数：H 1.92→1.64、win 12.6%、EV +0.26，与 X32 同期形态一致。
+- [09-09 21:40 PDT] 吞吐诊断：V 比 X32 同迭代慢 28%（rollout 1.4→2.1 s），全是 f32 平面搬运；已在本地做完 uint8 平面传输优化（v3r 纯 rollout +45%，见 SKILLS 2026-09-09），parity 全过。
+  **本 run 不重发**（已跑 1.2M 局，优化只省 ≈$1），pod 上仍是 f32 路径；下一轮发射起用新版（repo tar 需重打）。

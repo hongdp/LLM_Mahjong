@@ -114,14 +114,17 @@ class MahjongPolicyNet(nn.Module):
         return logits, v
 
     @torch.no_grad()
-    def act(self, planes, scalars, mask, temperature: float = 1.0):
+    def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):
         """Sample one legal action index per row. Returns (idx, logprob).
 
         Every row must have at least one legal action: an all-masked row
         makes softmax return NaN and multinomial raise a device-side
         assert. Callers handle the no-legal-action case themselves.
+        `check=False` skips the on-device legality assert (a host sync) for
+        callers that already verified the mask on the host (collect_rust
+        pipelining, 2026-09-09) — the call then stays fully asynchronous.
         """
-        if not bool(mask.any(dim=1).all()):
+        if check and not bool(mask.any(dim=1).all()):
             raise ValueError("act() got a row with no legal actions; "
                              "the caller must handle empty legal lists")
         logits = self.forward(planes, scalars, mask)

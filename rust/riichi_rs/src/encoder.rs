@@ -6,6 +6,19 @@ use crate::tiles::*;
 pub const N_PLANES: usize = 21;
 pub const N_SCALARS: usize = 20;
 pub const ACTION_DIM: usize = 374;
+/// Plane quantisation step: every plane value the encoders emit lies on the k/20 grid
+/// (binary planes and the v3r river-order plane (j+1)/20 clipped at 1), so planes travel
+/// as u8 = round(v*20) and are widened on the training device with `u8.float() / 20`
+/// (f32 division reproduces the f64-then-f32 encoder values bit-exactly; see
+/// tests/test_rust_encoder_parity.py::test_plane_quantisation_exact).
+pub const PLANE_Q: f32 = 20.0;
+
+pub fn quantize_planes(f: &[f32], out: &mut [u8]) {
+    debug_assert!(f.len() == out.len());
+    for (o, &v) in out.iter_mut().zip(f.iter()) {
+        *o = (v * PLANE_Q).round() as u8;
+    }
+}
 
 fn type_id(kind: &str) -> Option<usize> {
     Some(match kind {

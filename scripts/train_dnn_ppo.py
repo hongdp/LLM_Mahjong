@@ -33,7 +33,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.dnn.net import MahjongPolicyNet                      # noqa: E402
-from src.agents.dnn.rust_rollout import collect_rust   # noqa: E402
+from src.agents.dnn.rust_rollout import collect_rust, widen_planes   # noqa: E402
 from src.agents.dnn.parallel_rollout import (apply_group_baseline,   # noqa: E402
                                              collect_parallel)
 
@@ -493,8 +493,12 @@ def main():
     upd_total = 0
     while next_ms < len(milestones) and milestones[next_ms] <= start_games:
         next_ms += 1
+    t_prev_it = None
     while games < args.total_games:
         it += 1
+        t_it0 = time.time()
+        iter_s = 0.0 if t_prev_it is None else t_it0 - t_prev_it     # full previous-iteration wall (incl. logging/ckpt)
+        t_prev_it = t_it0
         for g_thr, coef in ent_schedule:      # step function on the counter
             if games >= g_thr:
                 ent_alpha = coef
@@ -527,8 +531,9 @@ def main():
             planes = densify([l for e in episodes for l in e["planes_log"]],
                              device=dev)
         else:
-            # episodes ship planes as float16 (see _package_game); widen here
-            planes = torch.from_numpy(cat("planes")).to(dev).float()
+            # episodes ship planes as float16 (_package_game) or uint8 quantised by
+            # PLANE_Q (collect_rust); widen on the device either way
+            planes = widen_planes(torch.from_numpy(cat("planes")).to(dev))
         scal = torch.from_numpy(cat("scalars")).to(dev)
         mask = torch.from_numpy(cat("mask")).to(dev)
         acts = torch.from_numpy(cat("actions")).to(dev)
@@ -610,6 +615,7 @@ def main():
 
         net.train()
         t_upd0 = time.time()
+        pack_s = t_upd0 - t_roll0 - rollout_s      # batch packing + value forward + GAE (perf 2026-09-09)
         stop, passes, kls, closs, vloss, hloss, bkls = False, 0, [], [], [], [], []
         aloss, asep = [], []                  # exp69 aux waits BCE / positive-negative separation
         for ep in range(args.ppo_epochs):
@@ -763,6 +769,7 @@ def main():
         el = time.time() - t0
         row = {"iter": it, "games": games, "wall_s": round(el, 1),
                "rollout_s": round(rollout_s, 1), "update_s": round(update_s, 1),
+               "pack_s": round(pack_s, 2), "iter_s": round(iter_s, 2),
                "pg_loss": float(np.mean(closs)), "value_loss": float(np.mean(vloss)),
                "entropy_before": ent_before, "entropy": ent_after,
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,

@@ -12,6 +12,13 @@ from src.agents.dnn.net import load_compatible
 from src.agents.dnn.parallel_rollout import collect_parallel
 from src.agents.dnn.rust_rollout import collect_rust
 
+
+def _same_planes(py_planes, rs_planes):
+    """Python packer ships float16 of the encoder's f32 values; Rust ships uint8 on the
+    PLANE_Q grid. Both are exact images of the same k/20 values."""
+    assert rs_planes.dtype == np.uint8
+    return np.array_equal(np.rint(py_planes.astype(np.float32) * riichi_rs.PLANE_Q).astype(np.uint8), rs_planes)
+
 P3 = "/home/hongdp/Workspace/LLM_Mahjong/experiments/exp68r3_P/latest.pt"
 
 
@@ -42,7 +49,7 @@ def test_greedy_rollout_episodes_identical(shaping):
         p = by_key[tuple(e["key"])]
         assert np.array_equal(p["actions"], e["actions"]), e["key"]
         assert np.array_equal(p["mask"], e["mask"]), e["key"]
-        assert np.array_equal(p["planes"], e["planes"]), e["key"]
+        assert _same_planes(p["planes"], e["planes"]), e["key"]
         assert np.array_equal(p["scalars"], e["scalars"]), e["key"]
         assert np.allclose(p["rewards"], e["rewards"], atol=1e-6), (e["key"], p["rewards"], e["rewards"])
         assert np.allclose(p["returns"], e["returns"], atol=1e-5), e["key"]
@@ -64,5 +71,5 @@ def test_greedy_rollout_v3r_identical():
     for e in ep_rs:
         p = by_key[tuple(e["key"])]
         assert p["planes"].shape == e["planes"].shape == (len(e["actions"]), 56, 34), e["key"]
-        assert np.array_equal(p["actions"], e["actions"]) and np.array_equal(p["planes"], e["planes"]), e["key"]
+        assert np.array_equal(p["actions"], e["actions"]) and _same_planes(p["planes"], e["planes"]), e["key"]
         assert np.array_equal(p["scalars"], e["scalars"]) and np.allclose(p["returns"], e["returns"], atol=1e-5), e["key"]

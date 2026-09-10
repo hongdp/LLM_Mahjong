@@ -588,3 +588,11 @@ batch 4096 各占 21GB，推理服务器重启即 OOM——先算显存再并行
 - 修法：按 episode 填充成 [E,T] 矩阵，沿 T 做 30 次向量化反向递推（与参考循环差 0.0），每迭代开销 7 s → 0.4 s。
 - 规矩：**任何按步的 Python 循环都不得触碰 GPU 张量**；新旧实现必须做一次数值等价断言再替换。剖析时看 `main` 的 tottime（自身时间）而不只是子函数 cumtime。
 
+
+## 2026-09-09 Rust 引擎观测传输：planes 以 uint8 走（v3r 提速 45%）、流水线是负优化
+- **现象**：v3r（56 平面）在 pod 上比 v1r 慢 28%（rollout 1.4→2.1 s/迭代，update 不变）。分相剖析：多出的全是 observe/h2d/drain 三个**搬字节**阶段（每行 7.6 KB f32），引擎与前向没变慢。
+- **修法**：所有编码平面值都在 k/20 网格上（0/1 + v3r 河序平面 (j+1)/20），VecEnv 以 `u8 = round(v*20)` 传输（`riichi_rs.PLANE_Q`），训练器/rollout 在设备上 `.float() / 20` 还原——**除法位级一致**于编码器的 f64→f32 值（`*= 1/20` 不一致，k=9/13/18 会差 1 ulp，测试 `test_plane_quantisation_exact` 守着）。回放库 `replay_store` 早就用同一 ×20 网格。
+  本机纯 rollout：v1r 1419→1696 局/s（+20%），v3r 1220→1772（+45%）；端到端训练器 v3r 仅比 v1r 慢 11%。
+- **负结果**：把 K 拆成两个 VecEnv 轮转、让一个的 GPU 前向与另一个的 CPU step 重叠——实测慢 20–30%：单次前向批次减半、每轮固定开销翻倍，而前向只占一轮 30%，藏不出多少；逐调用 `pin_memory()` 更慢（cudaHostAlloc 开销）。另 `net.act` 里 `bool(mask.any().all())` 是一次主机同步，rollout 已改为主机侧 numpy 检查 + `check=False`。
+- **训练器分相**（本机 v3r，2048 局/迭代）：rollout 1.2 / pack 0.35（其中价值前向 0.2 是真算量，cat+h2d 0.15）/ update 0.6 / 其余 0.05。`train_log.json` 新增 `pack_s`、`iter_s`，pod 上直接读分相。
+- **规则**：Rust 侧新增/修改编码后，先跑 `tests/test_rust_encoder_parity.py`（含网格断言）再跑 rollout parity；跨引擎比较吞吐要用同一迭代号（早期局短、吞吐虚高）。

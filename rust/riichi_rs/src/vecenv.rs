@@ -8,7 +8,7 @@ use pyo3::types::{PyDict, PyList};
 
 use rayon::prelude::*;
 
-use crate::encoder::{encode, legal_mask, planes_of, potential, scalars_of, ACTION_DIM};
+use crate::encoder::{encode, legal_mask, planes_of, potential, quantize_planes, scalars_of, ACTION_DIM};
 use crate::table::{resolve_claims, Table};
 
 #[derive(Clone)]
@@ -20,7 +20,7 @@ struct Cfg {
 }
 
 struct StepRec {
-    planes: Vec<f32>,
+    planes: Vec<u8>,   // quantised (see encoder::PLANE_Q)
     scalars: Vec<f32>,
     mask: Vec<bool>,
     action: i64,
@@ -78,10 +78,12 @@ pub struct VecEnv {
     n_started: usize,
 }
 
-fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<f32>, Vec<f32>, f64) {
-    let mut planes = vec![0f32; cfg.n_planes * 34];
+fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<u8>, Vec<f32>, f64) {
+    let mut planes_f = vec![0f32; cfg.n_planes * 34];
     let mut scalars = vec![0f32; cfg.n_scalars];
-    encode(table, seat, &cfg.variant, &mut planes, &mut scalars);
+    encode(table, seat, &cfg.variant, &mut planes_f, &mut scalars);
+    let mut planes = vec![0u8; cfg.n_planes * 34];
+    quantize_planes(&planes_f, &mut planes);
     let phi = if cfg.shaping { potential(table, seat) } else { 0.0 };
     (planes, scalars, phi)
 }
@@ -293,8 +295,8 @@ impl VecEnv {
         self.queue.is_empty() && self.active.iter().all(|g| g.is_none())
     }
 
-    /// Pending decisions: (planes [B, 21*34] f32, scalars [B, 20] f32, mask [B, 374] bool, seats [B], games [B]).
-    fn observe<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<bool>>, Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<i32>>)> {
+    /// Pending decisions: (planes [B, np*34] u8 quantised by PLANE_Q, scalars [B, ns] f32, mask [B, 374] bool, seats [B], games [B]).
+    fn observe<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyArray2<u8>>, Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<bool>>, Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<i32>>)> {
         let b = self.total_rows();
         let np = planes_of(&self.variant);
         let ns = scalars_of(&self.variant);
@@ -364,8 +366,8 @@ impl VecEnv {
         Ok(())
     }
 
-    /// Finished games as _package_game-style dicts (planes shipped as float32; the caller
-    /// downcasts to float16 like the Python packer).
+    /// Finished games as _package_game-style dicts (planes shipped as u8 quantised by
+    /// PLANE_Q; the trainer widens them on the device — no float16 hop).
     fn drain_finished<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let out = PyList::empty_bound(py);
         let np = planes_of(&self.variant);
