@@ -24,3 +24,5 @@ exp79 终评 vs bc49 = 0.4394，**未达**本预注册的发射门 0.449。仍�
 0.445–0.46 中性（两线渐近相同）；< 0.445 负。预算不变（≈$2.7，上限 $5）。
 
 ## Progress
+- [09-10 10:05 PDT] 发射受阻：RunPod MCP `create-pod` 对与 1 小时前完全相同的请求体持续返回 `400 Provide imageName, or templateId`（插件后端在 v1/v2 schema 间切换：`delete-pod` 一度要 `podId`、`create-template` 运行时要 `imageName`，而公布的 schema 仍是 v2 `body`）。
+  已试：v2 body、v2 body 加 startSsh、v1 扁平字段（被类型校验拒）、body 内混合 v1/v2 字段、切换 GPU 型号——均失败。exp82 不受影响（已在跑）。计划：exp82 88M 读数到时重试；若仍失败，等插件恢复后再发。
