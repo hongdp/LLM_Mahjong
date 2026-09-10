@@ -122,11 +122,12 @@ impl PyTable {
         resolve_claims(&mut self.t, &cands)
     }
     fn waits(&self, pid: usize) -> Vec<String> { strs(&self.t.waits(pid)) }
-    /// v1r observation for `pid`: (planes [21*34], scalars [20]) as flat lists
-    fn encode(&self, pid: usize) -> (Vec<f32>, Vec<f32>) {
-        let mut planes = vec![0f32; crate::encoder::N_PLANES * 34];
-        let mut scalars = vec![0f32; crate::encoder::N_SCALARS];
-        crate::encoder::encode_v1r(&self.t, pid, &mut planes, &mut scalars);
+    /// observation for `pid` in the given variant ("v1r" | "v3r"): (planes flat, scalars)
+    #[pyo3(signature = (pid, variant="v1r"))]
+    fn encode(&self, pid: usize, variant: &str) -> (Vec<f32>, Vec<f32>) {
+        let mut planes = vec![0f32; crate::encoder::planes_of(variant) * 34];
+        let mut scalars = vec![0f32; crate::encoder::scalars_of(variant)];
+        crate::encoder::encode(&self.t, pid, variant, &mut planes, &mut scalars);
         (planes, scalars)
     }
     fn potential(&self, pid: usize) -> f64 { crate::encoder::potential(&self.t, pid) }

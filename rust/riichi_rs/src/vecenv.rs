@@ -8,17 +8,20 @@ use pyo3::types::{PyDict, PyList};
 
 use rayon::prelude::*;
 
-use crate::encoder::{encode_v1r, legal_mask, potential, ACTION_DIM, N_PLANES, N_SCALARS};
+use crate::encoder::{encode, legal_mask, planes_of, potential, scalars_of, ACTION_DIM};
 use crate::table::{resolve_claims, Table};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Cfg {
     shaping: bool,
+    variant: String,
+    n_planes: usize,
+    n_scalars: usize,
 }
 
 struct StepRec {
     planes: Vec<f32>,
-    scalars: [f32; N_SCALARS],
+    scalars: Vec<f32>,
     mask: Vec<bool>,
     action: i64,
     logprob: f32,
@@ -70,14 +73,15 @@ pub struct VecEnv {
     shaping: bool,
     shaping_scale: f64,
     randomize_round: bool,
+    variant: String,
     finished: Vec<Finished>,
     n_started: usize,
 }
 
-fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<f32>, [f32; N_SCALARS], f64) {
-    let mut planes = vec![0f32; N_PLANES * 34];
-    let mut scalars = [0f32; N_SCALARS];
-    encode_v1r(table, seat, &mut planes, &mut scalars);
+fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<f32>, Vec<f32>, f64) {
+    let mut planes = vec![0f32; cfg.n_planes * 34];
+    let mut scalars = vec![0f32; cfg.n_scalars];
+    encode(table, seat, &cfg.variant, &mut planes, &mut scalars);
     let phi = if cfg.shaping { potential(table, seat) } else { 0.0 };
     (planes, scalars, phi)
 }
@@ -220,7 +224,7 @@ fn apply_round(g: &mut Game, actions: &[i64], logprobs: &[f32]) -> bool {
 
 impl VecEnv {
     fn cfg(&self) -> Cfg {
-        Cfg { shaping: self.shaping }
+        Cfg { shaping: self.shaping, variant: self.variant.clone(), n_planes: planes_of(&self.variant), n_scalars: scalars_of(&self.variant) }
     }
 
     fn fill_slots(&mut self) {
@@ -266,12 +270,12 @@ impl VecEnv {
 #[pymethods]
 impl VecEnv {
     #[new]
-    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true))]
-    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool) -> Self {
+    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true, variant="v1r".to_string()))]
+    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool, variant: String) -> Self {
         let mut env = VecEnv {
             queue: seeds.into_iter().collect(),
             active: (0..k).map(|_| None).collect(),
-            k, gamma, shaping, shaping_scale, randomize_round,
+            k, gamma, shaping, shaping_scale, randomize_round, variant,
             finished: Vec::new(),
             n_started: 0,
         };
@@ -292,8 +296,10 @@ impl VecEnv {
     /// Pending decisions: (planes [B, 21*34] f32, scalars [B, 20] f32, mask [B, 374] bool, seats [B], games [B]).
     fn observe<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<bool>>, Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<i32>>)> {
         let b = self.total_rows();
-        let mut planes = Vec::with_capacity(b * N_PLANES * 34);
-        let mut scalars = Vec::with_capacity(b * N_SCALARS);
+        let np = planes_of(&self.variant);
+        let ns = scalars_of(&self.variant);
+        let mut planes = Vec::with_capacity(b * np * 34);
+        let mut scalars = Vec::with_capacity(b * ns);
         let mut mask = Vec::with_capacity(b * ACTION_DIM);
         let mut seats = Vec::with_capacity(b);
         let mut games = Vec::with_capacity(b);
@@ -310,8 +316,8 @@ impl VecEnv {
                 games.push(slot as i32);
             }
         }
-        let planes = PyArray1::from_vec_bound(py, planes).reshape([b, N_PLANES * 34])?;
-        let scalars = PyArray1::from_vec_bound(py, scalars).reshape([b, N_SCALARS])?;
+        let planes = PyArray1::from_vec_bound(py, planes).reshape([b, np * 34])?;
+        let scalars = PyArray1::from_vec_bound(py, scalars).reshape([b, ns])?;
         let mask = PyArray1::from_vec_bound(py, mask).reshape([b, ACTION_DIM])?;
         Ok((planes, scalars, mask, seats.into_pyarray_bound(py), games.into_pyarray_bound(py)))
     }
@@ -362,6 +368,8 @@ impl VecEnv {
     /// downcasts to float16 like the Python packer).
     fn drain_finished<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let out = PyList::empty_bound(py);
+        let np = planes_of(&self.variant);
+        let ns = scalars_of(&self.variant);
         let finished = std::mem::take(&mut self.finished);
         for f in finished {
             let d = PyDict::new_bound(py);
@@ -381,8 +389,8 @@ impl VecEnv {
                     r = steps[i].reward + self.gamma * r;
                     rets[i] = r as f32;
                 }
-                let mut planes = Vec::with_capacity(n * N_PLANES * 34);
-                let mut scal = Vec::with_capacity(n * N_SCALARS);
+                let mut planes = Vec::with_capacity(n * np * 34);
+                let mut scal = Vec::with_capacity(n * ns);
                 let mut mask = Vec::with_capacity(n * ACTION_DIM);
                 let mut acts = Vec::with_capacity(n);
                 let mut lps = Vec::with_capacity(n);
@@ -396,8 +404,8 @@ impl VecEnv {
                     rews.push(s.reward as f32);
                 }
                 let e = PyDict::new_bound(py);
-                e.set_item("planes", PyArray1::from_vec_bound(py, planes).reshape([n, N_PLANES, 34])?)?;
-                e.set_item("scalars", PyArray1::from_vec_bound(py, scal).reshape([n, N_SCALARS])?)?;
+                e.set_item("planes", PyArray1::from_vec_bound(py, planes).reshape([n, np, 34])?)?;
+                e.set_item("scalars", PyArray1::from_vec_bound(py, scal).reshape([n, ns])?)?;
                 e.set_item("mask", PyArray1::from_vec_bound(py, mask).reshape([n, ACTION_DIM])?)?;
                 e.set_item("actions", acts.into_pyarray_bound(py))?;
                 e.set_item("old_logprobs", lps.into_pyarray_bound(py))?;

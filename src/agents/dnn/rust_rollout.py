@@ -22,9 +22,12 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     if seeds is None:
         seeds = [6_000_000 + i for i in range(n_games)]
     k = max(1, int(cfg.get("games_per_worker", 32)) * max(1, workers))
+    variant = cfg.get("encoder_variant") or getattr(net, "encoder_variant", "v1r")
+    if variant not in ("v1r", "v3r"):
+        raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r only)")
     env = riichi_rs.VecEnv([int(s) for s in seeds], k, float(cfg.get("gamma", 0.995)),
                            bool(cfg.get("shaping", False)), float(cfg.get("shaping_scale", 1.0)),
-                           True)
+                           True, variant)
     temperature = float(cfg.get("temperature", 1.0))
     dev = torch.device(device)
     games = []

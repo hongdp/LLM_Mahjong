@@ -13,10 +13,11 @@ from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
 
 
 def _check_obs(py, rs, pid, seed, step):
-    P, S = encode_state(py, pid, variant="v1r")
-    rp, rsc = rs.encode(pid)
-    assert np.array_equal(P.numpy().reshape(-1), np.asarray(rp, dtype=np.float32)), (seed, step, pid)
-    assert np.array_equal(S.numpy(), np.asarray(rsc, dtype=np.float32)), (seed, step, pid, S.numpy(), rsc)
+    for variant in ("v1r", "v3r"):
+        P, S = encode_state(py, pid, variant=variant)
+        rp, rsc = rs.encode(pid, variant)
+        assert np.array_equal(P.numpy().reshape(-1), np.asarray(rp, dtype=np.float32)), (variant, seed, step, pid)
+        assert np.array_equal(S.numpy(), np.asarray(rsc, dtype=np.float32)), (variant, seed, step, pid, S.numpy(), rsc)
     assert abs(potential(py, pid) - rs.potential(pid)) < 1e-9, (seed, step, pid)
 
 

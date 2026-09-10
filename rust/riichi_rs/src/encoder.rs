@@ -176,3 +176,184 @@ pub fn potential(t: &Table, pid: usize) -> f64 {
     };
     -2.0 * sh as f64
 }
+
+// ======================================================================
+// v3r: the complete public record (50 planes) + 6 red planes = 56, 29 scalars
+// (encoder._encode_v3 + _red_planes), bit-identical to the Python encoder.
+// ======================================================================
+pub const N_PLANES_V3R: usize = 56;
+pub const N_SCALARS_V3: usize = 29;
+
+pub fn planes_of(variant: &str) -> usize {
+    match variant {
+        "v3r" => N_PLANES_V3R,
+        _ => N_PLANES,
+    }
+}
+
+pub fn scalars_of(variant: &str) -> usize {
+    match variant {
+        "v3r" => N_SCALARS_V3,
+        _ => N_SCALARS,
+    }
+}
+
+fn red_planes(t: &Table, pid: usize, planes: &mut [f32], base_plane: usize) {
+    let r = |k: usize| (base_plane + k) * 34;
+    planes[r(5) + 27 + t.round_wind_idx] = 1.0;
+    planes[r(5) + 27 + (pid + 4 - t.dealer) % 4] = 1.0;
+    for i in 31..34 {
+        planes[r(5) + i] = 1.0;
+    }
+    for off in 0..4 {
+        let p = (pid + off) % 4;
+        if off == 0 {
+            for s in 0..3 {
+                if t.red[p][s] > 0 {
+                    planes[r(0) + s * 9 + 4] = 1.0;
+                }
+            }
+        }
+        for &(x, _) in &t.discards[p] {
+            if is_red(x) {
+                planes[r(1 + off) + norm(x) as usize] = 1.0;
+            }
+        }
+        for m in &t.melds[p] {
+            if m.red > 0 {
+                planes[r(1 + off) + norm(m.tiles[0]) as usize] = 1.0;
+            }
+        }
+    }
+}
+
+pub fn encode_v3r(t: &Table, pid: usize, planes: &mut [f32], scalars: &mut [f32]) {
+    debug_assert!(planes.len() == N_PLANES_V3R * 34 && scalars.len() == N_SCALARS_V3);
+    for v in planes.iter_mut() {
+        *v = 0.0;
+    }
+    for v in scalars.iter_mut() {
+        *v = 0.0;
+    }
+    let row = |p: usize| p * 34;
+    let mut counts = [0f32; 34];
+    for &h in &t.hands[pid] {
+        counts[norm(h) as usize] += 1.0;
+    }
+    for k in 0..4 {
+        for i in 0..34 {
+            if counts[i] >= (k + 1) as f32 {
+                planes[row(k) + i] = 1.0;
+            }
+        }
+    }
+    let mut seen = counts;
+    for off in 0..4 {
+        let p = (pid + off) % 4;
+        for m in &t.melds[p] {
+            for &x in &m.tiles {
+                planes[row(4 + off) + norm(x) as usize] = 1.0;
+                seen[norm(x) as usize] += 1.0;
+            }
+        }
+        for &(x, _) in &t.discards[p] {
+            planes[row(8 + off) + norm(x) as usize] = 1.0;
+        }
+        for &x in &t.furiten_river[p] {
+            seen[norm(x) as usize] += 1.0;
+        }
+    }
+    for &ind in &t.dora_indicators {
+        planes[row(12) + dora_from_indicator(ind) as usize] = 1.0;
+        seen[norm(ind) as usize] += 1.0;
+    }
+    if let Some(ld) = t.last_discard {
+        planes[row(13) + norm(ld) as usize] = 1.0;
+    }
+    for &x in &t.furiten_river[pid] {
+        planes[row(14) + norm(x) as usize] = 1.0;
+    }
+    // 15..30: per-seat river facts
+    for off in 0..4 {
+        let p = (pid + off) % 4;
+        let base = 15 + 4 * off;
+        for (j, e) in t.river_events[p].iter().enumerate() {
+            let x = norm(e.tile) as usize;
+            planes[row(base) + x] = (((j + 1) as f64 / 20.0).min(1.0)) as f32;
+            if e.tsumogiri {
+                planes[row(base + 1) + x] = 1.0;
+            }
+            if e.riichi {
+                planes[row(base + 2) + x] = 1.0;
+            }
+            if e.called {
+                planes[row(base + 3) + x] = 1.0;
+            }
+        }
+    }
+    // 31..42 meld types; 43..45 opponents' melds fed by me
+    for off in 0..4 {
+        let p = (pid + off) % 4;
+        for m in &t.melds[p] {
+            let kind = match m.kind {
+                crate::table::MeldKind::Chi => 0,
+                crate::table::MeldKind::Pon => 1,
+                _ => 2,
+            };
+            for &x in &m.tiles {
+                planes[row(31 + 3 * off + kind) + norm(x) as usize] = 1.0;
+            }
+            if off > 0 && m.from == Some(pid) {
+                for &x in &m.tiles {
+                    planes[row(43 + off - 1) + norm(x) as usize] = 1.0;
+                }
+            }
+        }
+    }
+    for k in 0..4 {
+        for i in 0..34 {
+            if seen[i] >= (k + 1) as f32 {
+                planes[row(46 + k) + i] = 1.0;
+            }
+        }
+    }
+    red_planes(t, pid, planes, 50);
+    // scalars
+    for off in 0..4 {
+        let p = (pid + off) % 4;
+        scalars[off] = ((t.points[p] - 25000) as f64 / 25000.0) as f32;
+        scalars[4 + off] = if t.riichi[p] { 1.0 } else { 0.0 };
+    }
+    scalars[8] = (t.wall.len() as f64 / 70.0) as f32;
+    scalars[9] = (t.kyotaku as f64 / 4.0) as f32;
+    scalars[10] = (t.hands[pid].len() as f64 / 14.0) as f32;
+    scalars[11] = (t.melds[pid].len() as f64 / 4.0) as f32;
+    if t.round_wind_idx >= 2 {
+        scalars[12] = 1.0;
+        scalars[13] = 1.0;
+    } else {
+        scalars[12 + t.round_wind_idx] = 1.0;
+    }
+    scalars[14 + (pid + 4 - t.dealer) % 4] = 1.0;
+    scalars[18] = if t.turn == pid { 1.0 } else { 0.0 };
+    scalars[19] = if t.last_discarder == Some((pid + 3) % 4) { 1.0 } else { 0.0 };
+    let mut total = 0usize;
+    for off in 0..4 {
+        let p = (pid + off) % 4;
+        scalars[20 + off] = match t.riichi_turn[p] {
+            None => 0.0,
+            Some(rt) => (((rt + 1) as f64 / 20.0).min(1.0)) as f32,
+        };
+        scalars[24 + off] = ((t.discard_count[p] as f64 / 20.0).min(1.0)) as f32;
+        total += t.discard_count[p];
+    }
+    scalars[28] = ((total as f64 / 70.0).min(1.0)) as f32;
+}
+
+/// Dispatch on the encoder variant name ("v1r" | "v3r").
+pub fn encode(t: &Table, pid: usize, variant: &str, planes: &mut [f32], scalars: &mut [f32]) {
+    match variant {
+        "v3r" => encode_v3r(t, pid, planes, scalars),
+        _ => encode_v1r(t, pid, planes, scalars),
+    }
+}
