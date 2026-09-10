@@ -435,4 +435,10 @@ impl VecEnv {
     fn n_pending(&self) -> usize {
         self.total_rows()
     }
+
+    /// Deal seed per slot (-1 for an empty slot): lets the Python driver map observe()'s
+    /// `games` column back to the deal seed (league seat plans are keyed by seed).
+    fn slot_seeds(&self) -> Vec<i64> {
+        self.active.iter().map(|g| g.as_ref().map_or(-1, |g| g.seed as i64)).collect()
+    }
 }
