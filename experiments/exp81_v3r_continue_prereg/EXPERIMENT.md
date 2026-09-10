@@ -26,3 +26,6 @@ exp79 终评 vs bc49 = 0.4394，**未达**本预注册的发射门 0.449。仍�
 ## Progress
 - [09-10 10:05 PDT] 发射受阻：RunPod MCP `create-pod` 对与 1 小时前完全相同的请求体持续返回 `400 Provide imageName, or templateId`（插件后端在 v1/v2 schema 间切换：`delete-pod` 一度要 `podId`、`create-template` 运行时要 `imageName`，而公布的 schema 仍是 v2 `body`）。
   已试：v2 body、v2 body 加 startSsh、v1 扁平字段（被类型校验拒）、body 内混合 v1/v2 字段、切换 GPU 型号——均失败。exp82 不受影响（已在跑）。计划：exp82 88M 读数到时重试；若仍失败，等插件恢复后再发。
+- [09-10 12:20 PDT] 插件恢复后三次开机全失败：社区 3090 Ti 无货；3090 `cx5sj3w5wn9cip` 落在已知坏宿主（proxy 后缀 644117fb = 213.144.200.240），未等守卫即终止；
+  4090 `64ues1gks5tda9`（38.65.239.57，CUDA 13.2）守卫 `CUDA unknown error`，终止。按 CUDA 12.8/12.9 过滤或 ≥28 vCPU 过滤的 3090/4090 均无货。今日坏宿主共 4 台（浪费 ≈$0.1）。
+  **决定**：不再开新 pod，等 exp82 在 `5cfilaijuszbct`（174.94.157.109，已验证宿主 + 已构建 riichi_rs 0.1.1 含 v3r）跑完归档后，**复用该 pod** 发射 exp81（免 bootstrap，$0.27/h）。
