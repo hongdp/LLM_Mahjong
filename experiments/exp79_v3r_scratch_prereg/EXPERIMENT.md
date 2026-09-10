@@ -23,3 +23,8 @@ exp41（1M 局）判"更丰富输入从零更差"，人类先验线却证明 v3r
 ## Progress
 - [09-09 20:10 PDT] v3r 编码器移植：`encode_v3r`（含 river_events/副露类型/喂牌/可见计数/立直巡目标量），VecEnv 与 collect_rust 按 `net.encoder_variant` 派发；
   parity：编码 2 万状态位级一致（v1r+v3r），cnn_m_v3r 随机初始化贪心 rollout 端到端一致。提交见上。
+- [09-09 20:10 PDT] 首发 pod `ehd75tlm8g18o7` GPU 数值守卫报 `CUDA unknown error`（坏社区宿主），已终止（≈$0.05）。
+- [09-09 20:21 PDT] 重发：pod `si0l9966ezj3si`（community 3090 $0.22/h，32 vCPU，ssh 64.119.209.250:13031），守卫通过（matmul ok，cu12.8），riichi_rs 0.1.0 构建成功，`cnn_m_v3r` 2.00M 参数。
+  发射 `exp79_pod_train.sh`（A1 配方 + `--engine rust`，32M 局，games_per_worker 1024）。起步吞吐 ≈530 局/s（v3r 编码比 v1r 重，≈半速）→ 预计 ≈17 h ≈ **$3.7**（上限 $6 内）。
+  心跳 `exp79_watch.sh`（发射 30 min 死线 / 30 min STALL / Traceback）、15 min 拉取+GCS `gs://llm-mahjong-experiments/exp79_V`、在轨每 1M 局 vs P3/bc49 n=600（`experiments/probes/exp79_track.jsonl`）、TB `exp79_V_LIVE` 已挂。
+  1 分钟读数：H 1.92→1.64、win 12.6%、EV +0.26，与 X32 同期形态一致。
