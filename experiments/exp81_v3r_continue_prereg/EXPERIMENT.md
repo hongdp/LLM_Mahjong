@@ -29,3 +29,6 @@ exp79 终评 vs bc49 = 0.4394，**未达**本预注册的发射门 0.449。仍�
 - [09-10 12:20 PDT] 插件恢复后三次开机全失败：社区 3090 Ti 无货；3090 `cx5sj3w5wn9cip` 落在已知坏宿主（proxy 后缀 644117fb = 213.144.200.240），未等守卫即终止；
   4090 `64ues1gks5tda9`（38.65.239.57，CUDA 13.2）守卫 `CUDA unknown error`，终止。按 CUDA 12.8/12.9 过滤或 ≥28 vCPU 过滤的 3090/4090 均无货。今日坏宿主共 4 台（浪费 ≈$0.1）。
   **决定**：不再开新 pod，等 exp82 在 `5cfilaijuszbct`（174.94.157.109，已验证宿主 + 已构建 riichi_rs 0.1.1 含 v3r）跑完归档后，**复用该 pod** 发射 exp81（免 bootstrap，$0.27/h）。
+- [09-10 13:40 PDT] **发射**（复用 exp82 pod `5cfilaijuszbct`，社区 3090 Ti $0.27/h，宿主 174.94.157.109；V_final.pt 24 MB 上传耗时 ≈40 min——此宿主入向带宽极差，以后避开）。
+  riichi_rs 0.1.1（uint8 平面）；起步 ≈1,130 局/s（exp79 f32 路径 683 局/s ⇒ uint8 优化实测 **+65%**）⇒ 32M 局 ≈8 h ≈ **$2.1**。
+  起点读数（32M）：H ≈0.50、KL 0.002、win 90%，resume 正常。心跳 / 15 min 拉取+GCS（`gs://llm-mahjong-experiments/exp81_W`）/ 在轨每 4M（仅早停用）/ TB `exp81_W_LIVE` 已挂。
