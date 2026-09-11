@@ -117,3 +117,20 @@ def test_claimed_discard_breaks_nagashi():
         H.play_game_mjai = orig
     assert res.deals[0]["points_after"] != [25000] * 4      # nagashi applied
     assert res2.deals[0]["points_after"] == [25000] * 4     # claimed -> no nagashi
+
+
+def test_engine_settled_nagashi_is_not_paid_twice():
+    """The engine now emits '流局满贯 | 玩家[1] | 点数: ...' having already paid the
+    mangan; the driver must not pay it again (2026-09-11 audit)."""
+    class T:
+        result_summary = "流局满贯 | 玩家[1] | 点数: [23000, 31000, 23000, 23000]"
+        points = [23000, 31000, 23000, 23000]
+        kyotaku = 0
+        river_events = {0: [["5m", False, False, False, 1]], 1: [["1z", False, False, False, 1]],
+                        2: [["5p", False, False, False, 1]], 3: [["6s", False, False, False, 1]]}
+    ms = H.MatchState()
+    ms.settle(T)
+    assert ms.points == [23000, 31000, 23000, 23000]
+    assert sum(ms.points) == 100000
+    # a draw without tenpai info on the dealer: rotates with honba +1 (no hands to inspect)
+    assert ms.dealer == 1 and ms.honba == 1

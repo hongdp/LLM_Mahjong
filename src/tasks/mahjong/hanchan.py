@@ -154,7 +154,17 @@ class MatchState:
         is_abort = "途中流局" in r
         dealer_tenpai_at_draw = is_abort
         tenpai_seats: List[int] = []
-        if is_draw and not is_abort:
+        # 2026-09-11: the engine now settles 流し満貫 itself ("流局满贯 | 玩家[..]",
+        # no tenpai payments, no 听牌 list). The driver-side block below is only
+        # for engines that emitted the plain tenpai split; paying again here
+        # double-counted the mangan (found in the exp83 rules audit).
+        engine_paid_nagashi = "流局满贯" in r
+        if is_draw and engine_paid_nagashi:
+            sh = getattr(table, "_shanten", None)
+            hands, melds = getattr(table, "hands", None), getattr(table, "melds", None)
+            if callable(sh) and hands is not None and melds is not None:
+                dealer_tenpai_at_draw = sh(hands[dealer], len(melds[dealer])) <= 0
+        if is_draw and not is_abort and not engine_paid_nagashi:
             m = re.search(r"流局 \| 听牌: \[([^\]]*)\]", r)
             if m:
                 tenpai_seats = [int(x.strip().replace("玩家", ""))
