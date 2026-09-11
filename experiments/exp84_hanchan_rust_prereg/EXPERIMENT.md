@@ -1,0 +1,22 @@
+# exp84 半庄目标微调 ×8：W → 1M 场纯血镜像半庄（Rust 引擎）（2026-09-11）
+
+- **Date**: 2026-09-11 05:30 PDT  **Status**: running（发射）
+- **Git**: a8a5bc1+（riichi_rs P8 半庄，与 Python 驾驭层逐步一致）；社区 RTX 3090 Ti；纯血谱系
+- **Env**: `train_dnn_ppo.py --engine rust --arch cnn_m_v3r --resume W_final.pt --hanchan_pure --hanchan_credit none`
+
+## Purpose & Hypothesis
+exp83（120k 场，Python 引擎）判 H0：半庄 vs bc49 0.332 vs W 0.360（同种子），默听仍为零。样本太少（1.2M 局、470 次更新）不足以区分"目标函数不是杠杆"与"没学够"。
+Rust 半庄把成本降到 ≈$1/百万场，直接放大 8×。**H1**：半庄 vs bc49（同 1,200 种子）≥ **0.41**（W 0.360 + 5 pp）且默听 >3% 或撞立直占比 <0.45；**H0**：≤ 0.37 ⇒ 半庄目标在 lr 3e-5 微调下不是杠杆（连同 exp70/83 一起关闭目标函数杠杆）。
+副判据：单局 vs bc49 20k 对（允许下降）、飞的场数、按东/南场 × 名次的立直/撞立直分解。
+
+## Method
+- 起点 `exp81_W/games_final.pt`；`--engine rust --hanchan_pure --hanchan_credit none --gamma 0.999 --gae_lambda 0.97 --lr 3e-5`，熵 0.01，塑形关；`--games_per_iter 256`（场）、`--games_per_worker 256 --workers 1`（K=256 场并发）；`--total_games 64000000+1000000`；milestones 每 200k 场；ckpt 每 400 迭代。
+- 在轨（早停用）：每 200k 场半庄 vs bc49 n=200 + 单局 n=600；早停：300k 场 < 0.33（低于 W 同牌山组带）。
+- 终评：半庄 n=1,200（seed 59300000，与 exp83 同）、单局 20k、风格/和牌类型/半庄行为探针。
+
+## Success Criteria（预注册）
+1. 半庄 vs bc49 ≥ 0.41 → 目标函数是杠杆（继续放大 / 加顺位势函数信用）；≥ 0.50 = 总目标半庄判据。
+2. ≤ 0.37 → 目标函数杠杆关闭。
+- 预算：1M 场 ≈ 10M 局 / (≈1,000 局/s pod) ≈ 3 h × $0.27 ≈ **$0.8，上限 $3**。
+
+## Progress
