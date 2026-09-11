@@ -616,3 +616,8 @@ batch 4096 各占 21GB，推理服务器重启即 OOM——先算显存再并行
 - 一致性：`tests/test_rust_hanchan_parity.py`——上下文发牌 60 组（含 >2^32 的种子）位级一致；P3 贪心 8 场完整半庄的动作/平面/奖励/回报/顺位/uma 与 `collect_parallel --hanchan_pure` 逐步一致，并验证望远镜不变量。
 - 吞吐（本机 4080，W v3r，K=512）：**129 场/s ≈ 1,349 局/s**，Python 引擎 pod 上 17.4 场/s ⇒ 7×。训练器 `--engine rust --hanchan_pure` 每迭代 256 场 3.6 s。
 - 限制：只支持纯血镜像半庄 + `hanchan_credit none`；塑形跨局无定义（构造即报错）；联赛池 + 半庄未做。
+
+## 2026-09-11 社区 pod 出向带宽差时的 Rust 构建备用路径
+- 现象：宿主 140.82.47.249 下载 rustup-init 停摆、pip 首轮漏装包（`No module named mahjong`），bootstrap 卡在 curl 重试。
+- 备用：`apt-get install cargo rustc`（Ubuntu 24.04 = 1.75，4 min）→ 删 `Cargo.lock`（v4 需 cargo ≥1.78）重生成 → `cargo update -p rayon --precise 1.10.0 && -p rayon-core --precise 1.12.1`（1.13 需 rustc 1.80）→ 代码不得用 1.77+ 才稳定的 API（`round_ties_even` 已换成 MSRV 实现）。maturin 用 pip 装即可。
+- 规则：bootstrap 脚本末尾必须 `python -c "import mahjong, riichi_rs"` 硬校验并打印 BOOTSTRAP_DONE/FAILED，不要用 `| tail -1` 吞掉 pip 错误；等待循环要区分"未完成"与"完成"，别只 `grep -q`。
