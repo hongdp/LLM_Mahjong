@@ -114,9 +114,25 @@ pub struct PendingKan {
 
 /// CPython `round()` (half to even) on x/100 then *100, as in
 /// `int(round(x / 100.0)) * 100`.
+/// f64::round_ties_even is stable only since rustc 1.77; community pods with apt cargo
+/// (1.75) need this equivalent (Python's round(): halves go to the even neighbour).
+fn round_ties_even_msrv(v: f64) -> f64 {
+    let f = v.floor();
+    let d = v - f;
+    if d < 0.5 {
+        f
+    } else if d > 0.5 {
+        f + 1.0
+    } else if (f / 2.0).floor() * 2.0 == f {
+        f
+    } else {
+        f + 1.0
+    }
+}
+
 fn round_hundred(x: f64) -> i64 {
     let v = x / 100.0;
-    let r = v.round_ties_even();
+    let r = round_ties_even_msrv(v);
     (r as i64) * 100
 }
 
