@@ -606,3 +606,7 @@ batch 4096 各占 21GB，推理服务器重启即 OOM——先算显存再并行
 ## 2026-09-10 RunPod MCP 插件 schema 会在会话中途漂移
 - 同一会话内 `delete-pod` 参数名从 `id` 变 `podId` 再变回 `id`；`create-pod` 对一小时前成功的 v2 `body` 请求开始返回 `400 Provide imageName`（v1 字段名），`create-template` 运行时校验要 `name`/`imageName` 扁平字段但公布 schema 仍是 v2。
 - **规则**：发射脚本要能在 pod 创建失败时干等重试而不是重写实验；判决/归档流程不依赖 create-pod；创建失败时先 `list-pods` 确认没有幽灵 pod 计费，再用 `ToolSearch select:` 重载 schema 重试；连续失败就等（记录时间戳），不要花时间凿 API key 走 REST（凭据不在会话内处理）。
+
+## 2026-09-11 半庄奖励审计：credit=none 双重计点 + 引擎 final_rewards 缺本场
+- `play_hanchan_gen` 终局给 `uma_points`（=终点−25000+UMA），而每局末步已给引擎点差 ⇒ 点差算两遍，顺位项权重被稀释一半（exp70 H0 臂即此目标）。引擎 `final_rewards` 也不含驾驭层的本场支付与流局满贯修正。
+- **规则**：多局奖励的不变量是"每席全部奖励之和 = 终点−25000+UMA（+余棒）"，任何信用方案（none / rank / W）都要有脚本化对局的望远镜测试守着（`tests/test_hanchan.py`）；发射前先跑这个不变量，别只看单局引擎测试。

@@ -134,3 +134,39 @@ def test_engine_settled_nagashi_is_not_paid_twice():
     assert sum(ms.points) == 100000
     # a draw without tenpai info on the dealer: rotates with honba +1 (no hands to inspect)
     assert ms.dealer == 1 and ms.honba == 1
+
+
+def test_credit_none_return_telescopes_to_final_margin_plus_uma(monkeypatch):
+    """credit=None: per-deal driver point deltas + terminal UMA (+ leftover sticks) must sum to
+    final_points - 25000 + UMA per seat (2026-09-11: the terminal used to add the whole
+    uma_points, double-counting the point margin)."""
+    import src.agents.dnn.selfplay as SP
+    from src.agents.dnn.selfplay import DnnGame, DnnStep
+    from src.tasks.mahjong.table import PyMahjongTable
+    scale = PyMahjongTable.REWARD_SCALE
+    script = [("玩家1 荣和(放铳:玩家0) | 5番40符 | Riichi | 点数: {p}", lambda p: [p[0] - 8000, p[1] + 8000, p[2], p[3]]),
+              ("流局 | 听牌: [] | 点数: {p}", lambda p: list(p))]
+
+    def fake_gen(shaping=False, table=None):
+        txt, fn = script.pop(0)
+        new = fn(table.points); table.points = new
+        table.result_summary = txt.format(p=new)
+        table.final_rewards = [(new[i] - table.start_points[i]) * scale for i in range(4)]
+        table.finished = True
+        g = DnnGame()
+        for p in range(4):
+            st = DnnStep.__new__(DnnStep); st.reward = table.final_rewards[p]; st.is_terminal = True
+            g.trajectories[p] = [st]
+        g.result = table.result_summary; g.points = list(new); g.start_points = list(table.start_points)
+        g.riichi = [False] * 4; g.n_melds = [0] * 4; g.n_discards = 0
+        return g
+        yield
+    monkeypatch.setattr(SP, "play_game_gen", fake_gen)
+    gen = H.play_hanchan_gen(match_seed=1, max_deals=2)
+    try:
+        next(gen)
+    except StopIteration as e:
+        match = e.value
+    for p in range(4):
+        tot = sum(s.reward for s in match.trajectories[p]) / scale
+        assert abs(tot - match.hanchan["uma_points"][p]) < 1e-6, (p, tot, match.hanchan["uma_points"][p])

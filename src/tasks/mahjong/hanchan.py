@@ -278,6 +278,7 @@ def play_hanchan_gen(match_seed: int, shaping: bool = False,
         if credit is not None:
             w_before = [credit.w(p, points, dealer, rw, ms.honba, kyotaku,
                                  max(1, 9 - ms.n)) for p in range(4)]
+        before = list(points)
         g = yield from play_game_gen(shaping=shaping, table=table)
         ms.settle(table)
         last_deal = ms.done
@@ -286,6 +287,16 @@ def play_hanchan_gen(match_seed: int, shaping: bool = False,
             if not last_deal:
                 for st in steps:
                     st.is_terminal = False
+            if credit is None and steps:
+                # 2026-09-11 (exp83 audit): the per-deal reward is the DRIVER's point
+                # delta (includes honba payments and the nagashi fix, which the
+                # engine's final_rewards lack); the terminal step then adds only
+                # UMA (+ leftover sticks), so the match return telescopes to exactly
+                # final_points - 25000 + UMA. Before this the terminal added the
+                # whole uma_points, double-counting the point margin (exp70 H0).
+                steps[-1].reward -= (table.final_rewards[p]
+                                     if table.final_rewards else 0.0)
+                steps[-1].reward += (ms.points[p] - before[p]) * PyMahjongTable.REWARD_SCALE
             if credit is not None and steps:
                 # exp55-D per-deal credit: replace the engine's raw point
                 # reward on the deal's last step with the placement-weighted
@@ -319,7 +330,8 @@ def play_hanchan_gen(match_seed: int, shaping: bool = False,
             if pend is not None and p in pend:
                 last.reward += (res.uma_points[p] - pend[p]) * scale
             else:
-                last.reward += res.uma_points[p] * scale
+                # UMA + leftover-kyotaku only; the point margin already arrived deal by deal
+                last.reward += (res.uma_points[p] - (ms.points[p] - 25000)) * scale
             last.is_terminal = True
     final = deal_facts[-1] if deal_facts else {}
     match.result = final.get("result", "")

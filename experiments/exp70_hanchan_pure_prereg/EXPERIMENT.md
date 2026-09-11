@@ -92,3 +92,5 @@ exp68/69 证明从零 RL 的防守缺失不是感知问题：看得见暗手、�
 | `experiments/exp70_r1_dead/` | — | r1（余额耗尽夭折）残留 |
 | `experiments/probes/exp70_arms.json` | — | 终评头对头（半庄 + 单局双段） |
 | `experiments/probes/exp70_defense_{30k,90k,final}.json`、`exp70_defense_ctrl_early.json`、`exp70_style.json` | — | 防守探针轨迹 + 同阶段对照 + 风格 |
+
+> **事后注（2026-09-11，exp83 审计）**：`--hanchan_credit none`（H0 臂）的终局奖励加的是 `uma_points = 终点−25000+UMA`，而每局奖励已经给过点差，**点差被计两遍**（实际目标 ≈ 2×点差 + uma）；H 臂（rank 信用）按 W 增量望远镜到 uma，不受影响。因此 H vs H0 的对比不是同一目标下的对比。已修（hanchan.py，回归测试 `test_credit_none_return_telescopes_to_final_margin_plus_uma`）。
