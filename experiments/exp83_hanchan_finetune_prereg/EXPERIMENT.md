@@ -1,6 +1,6 @@
 # exp83 半庄目标微调：W(v3r 64M) 在纯血镜像半庄上续训 120k 场（2026-09-11）
 
-- **Date**: 2026-09-11（预注册）  **Status**: prepared（等基线数字后发射）
+- **Date**: 2026-09-11（预注册）  **Status**: running
 - **Git**: 8a35305+（半庄驾驭流局满贯双重支付修复）；社区 RTX 3090 Ti；Python 引擎（Rust VecEnv 无半庄）；纯血谱系
 - **Env**: `train_dnn_ppo.py --hanchan_pure --hanchan_credit none --resume W_final.pt --arch cnn_m_v3r`
 
@@ -38,3 +38,7 @@ exp70 判负的是**从零**半庄（学成消极不进攻，样本效率 3–5�
 - 预算：120k 场 ≈ 1.2M 局，Python 引擎 ≈5 场/s ⇒ ≈7 h × $0.27 ≈ **$1.9，上限 $5**。
 
 ## Progress
+- [09-11 02:03 PDT] 本机冒烟：`--resume W --hanchan_pure` 3 迭代正常（每迭代 32 场 ≈19k 步）。半庄基线（W vs bc49，300 复式场）在跑。
+- [09-11 02:11 PDT] **发射**：pod `twkzn6dk66d4y2`（社区 3090 Ti $0.27/h，16 vCPU，宿主 64.119.209.250 = exp79 用过的好宿主），守卫通过。
+  起步 **18 场/s**（12 worker × 16 场，GPU 推理服务）⇒ 120k 场 ≈ 1.9 h ≈ **$0.5**（远低于预算）。前 10 迭代：熵 0.41→0.32（比单局的 0.50 低，半庄状态分布不同，观察是否继续坍缩）、KL 0.001–0.005、EV 0.13–0.18、学习者绝对 uma 均值 22.6k（四席对称应 ≈25k−供托，观察）。
+  心跳 / 15 min 拉取+GCS（`gs://llm-mahjong-experiments/exp83_Z`）/ 在轨每 30k 场（半庄 n=200 + 单局 n=600）/ TB `exp83_Z_LIVE` 已挂。
