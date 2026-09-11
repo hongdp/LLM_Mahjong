@@ -83,6 +83,7 @@ pub struct Table {
     pub result_summary: String,
     pub deal_end: Option<DealEnd>,
     pub rank_bonus: bool,      // per-deal RANK_BONUS in final_rewards (off inside a hanchan: TrainHanchanTable)
+    pub houjuu_extra: f64,     // PyMahjongTable.HOUJUU_EXTRA: extra reward to the seat that dealt in (exp85 defender exploiter)
     pub wall: Vec<Tile>,        // spelled (red codes), pop() from the END like Python
     pub dead_wall: Vec<Tile>,   // 14 slots; [0:4] rinshan raw, [4:14] indicators normalized
     pub rinshan_idx: usize,
@@ -219,6 +220,7 @@ impl Table {
             final_rewards: None,
             deal_end: None,
             rank_bonus: true,
+            houjuu_extra: 0.0,
             result_summary: String::new(),
             wall: Vec::with_capacity(136),
             dead_wall: Vec::with_capacity(14),
@@ -1476,10 +1478,13 @@ impl Table {
         self.compute_final_rewards(None);
     }
 
-    fn compute_final_rewards(&mut self, _houjuu: Option<usize>) {
+    fn compute_final_rewards(&mut self, houjuu: Option<usize>) {
         let mut fr = [0.0f64; 4];
         for i in 0..4 {
             fr[i] = (self.points[i] - self.start_points[i]) as f64 * REWARD_SCALE;
+        }
+        if let Some(h) = houjuu {
+            fr[h] += self.houjuu_extra;
         }
         if !self.rank_bonus {
             self.final_rewards = Some(fr);

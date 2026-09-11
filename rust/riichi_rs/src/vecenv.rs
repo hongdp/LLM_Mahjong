@@ -86,6 +86,7 @@ pub struct VecEnv {
     n_started: usize,
     hanchan: bool,
     max_deals: usize,
+    houjuu_extra: f64,
 }
 
 fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<u8>, Vec<f32>, f64) {
@@ -130,7 +131,9 @@ fn deal_done(g: &mut Game) -> bool {
     let (dealer, rw, pts, kyo) = ms.begin_deal();
     let honba = ms.honba;
     let n = ms.n as u64;
+    let hx = g.table.houjuu_extra;
     g.table = Table::new_hanchan(g.seed.wrapping_mul(1_000_003).wrapping_add(n), dealer, rw, pts, kyo, honba);
+    g.table.houjuu_extra = hx;
     g.phase = Phase::Turn;
     g.guard = 0;
     g.rows.clear();
@@ -303,7 +306,7 @@ impl VecEnv {
         for slot in 0..self.k {
             if self.active[slot].is_none() {
                 if let Some(seed) = self.queue.pop_front() {
-                    let (table, ms) = if self.hanchan {
+                    let (mut table, ms) = if self.hanchan {
                         let mut ms = MatchState::new(self.max_deals);
                         let (dealer, rw, pts, kyo) = ms.begin_deal();
                         let honba = ms.honba;
@@ -312,6 +315,7 @@ impl VecEnv {
                     } else {
                         (Table::new_seeded(seed, self.randomize_round), None)
                     };
+                    table.houjuu_extra = self.houjuu_extra;
                     self.active[slot] = Some(Game {
                         table, seed, traj: Default::default(), phase: Phase::Turn, guard: 0,
                         rows: Vec::new(), pending_steps: Vec::new(),
@@ -354,8 +358,8 @@ impl VecEnv {
 #[pymethods]
 impl VecEnv {
     #[new]
-    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true, variant="v1r".to_string(), hanchan=false, max_deals=24))]
-    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool, variant: String, hanchan: bool, max_deals: usize) -> PyResult<Self> {
+    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true, variant="v1r".to_string(), hanchan=false, max_deals=24, houjuu_extra=0.0))]
+    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool, variant: String, hanchan: bool, max_deals: usize, houjuu_extra: f64) -> PyResult<Self> {
         if hanchan && shaping {
             return Err(pyo3::exceptions::PyValueError::new_err("hanchan VecEnv: PBRS shaping is per-deal and not supported across a match"));
         }
@@ -365,7 +369,7 @@ impl VecEnv {
             k, gamma, shaping, shaping_scale, randomize_round, variant,
             finished: Vec::new(),
             n_started: 0,
-            hanchan, max_deals,
+            hanchan, max_deals, houjuu_extra,
         };
         env.fill_slots();
         env.settle_all();

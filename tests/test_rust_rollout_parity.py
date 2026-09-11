@@ -101,3 +101,32 @@ def test_greedy_league_rollout_identical():
         assert sorted(g["learner_seats"]) == sorted(q["learner_seats"]), g["seed"]
         assert {int(k): int(v) for k, v in (g.get("league") or {}).items()} == {int(k): int(v) for k, v in (q.get("league") or {}).items()}, g["seed"]
     assert collect_rust.last_league.get("P3", {}).get("n", 0) > 0
+
+
+@pytest.mark.skipif(not os.path.exists(P3), reason="P3 checkpoint not on this machine")
+def test_houjuu_extra_only_hits_the_dealt_in_seat():
+    """houjuu_extra (exp85): the seat that dealt in gets exactly +extra on its return; everyone else unchanged."""
+    import re
+    torch.manual_seed(0)
+    net = ZOO["cnn_m_r"][0]()
+    load_compatible(net, torch.load(P3, map_location="cpu", weights_only=False)["state_dict"])
+    net.eval()
+    seeds = [7_500_000 + i for i in range(40)]
+    base = _cfg(0.0, False); base["houjuu_extra"] = 0.0
+    pen = dict(base); pen["houjuu_extra"] = -5.0
+    ep0, res0 = collect_rust(net, len(seeds), base, 1, seeds, device="cpu")
+    ep1, res1 = collect_rust(net, len(seeds), pen, 1, seeds, device="cpu")
+    assert res0 == res1
+    d0 = {e["key"]: float(e["rewards"].sum()) for e in ep0}
+    n_hit = 0
+    for e in ep1:
+        seed, seat = e["key"]
+        r = [x for x in res1 if True][0]  # placeholder to keep flake quiet
+        result = next(g["result"] for g in collect_rust.last_games if int(g["seed"]) == int(seed))
+        losers = {int(m) for m in re.findall(r"放铳:玩家(\d)", result)}
+        diff = float(e["rewards"].sum()) - d0[e["key"]]
+        if int(seat) in losers:
+            assert abs(diff + 5.0) < 1e-6, (e["key"], diff); n_hit += 1
+        else:
+            assert abs(diff) < 1e-6, (e["key"], diff)
+    assert n_hit > 0

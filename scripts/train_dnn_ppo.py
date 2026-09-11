@@ -161,6 +161,9 @@ def main():
                          "penalized immediately via gamma*V(s')-V(s), without "
                          "waiting for the settlement). MC advantages reduce "
                          "the critic to variance reduction only.")
+    ap.add_argument("--houjuu_extra", type=float, default=0.0,
+                    help="exp85 defender exploiter: extra reward (normalized units, e.g. -8 = -8000 pts) "
+                         "added to the seat that dealt in, on top of the point delta (Rust engine only)")
     ap.add_argument("--entropy_schedule", default=None,
                     help="step schedule 'games:coef,games:coef' overriding "
                          "--entropy_coef once the games counter passes each "
@@ -476,6 +479,11 @@ def main():
               f"learner seats {args.league_learner_seats or 'rand 1-2'}, "
               f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
               flush=True)
+    cfg["houjuu_extra"] = float(args.houjuu_extra)
+    if args.houjuu_extra and args.engine != "rust":
+        raise SystemExit("--houjuu_extra is implemented on the Rust engine only")
+    if args.houjuu_extra:
+        print(f"🛡 houjuu_extra {args.houjuu_extra:+.2f} (normalized units) added to the dealt-in seat's reward", flush=True)
     if args.hanchan or args.hanchan_pure:
         cfg["hanchan"] = True
         cfg["hanchan_pure"] = bool(args.hanchan_pure)

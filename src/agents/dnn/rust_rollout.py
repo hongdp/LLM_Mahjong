@@ -52,7 +52,8 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
             raise SystemExit("collect_rust: league pool + hanchan not supported")
     env = riichi_rs.VecEnv([int(s) for s in seeds], k, float(cfg.get("gamma", 0.995)),
                            bool(cfg.get("shaping", False)), float(cfg.get("shaping_scale", 1.0)),
-                           True, variant, hanchan=hanchan, max_deals=int(cfg.get("hanchan_max_deals", 24)))
+                           True, variant, hanchan=hanchan, max_deals=int(cfg.get("hanchan_max_deals", 24)),
+                           houjuu_extra=float(cfg.get("houjuu_extra", 0.0) or 0.0))
     temperature = float(cfg.get("temperature", 1.0))
     q = float(riichi_rs.PLANE_Q)
     dev = torch.device(device)
