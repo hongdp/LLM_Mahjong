@@ -10,6 +10,7 @@ pub mod score;
 pub mod encoder;
 pub mod vecenv;
 pub mod table;
+pub mod hanchan;
 pub mod pytable;
 
 fn parse_tiles(tiles: Vec<String>) -> PyResult<Vec<tiles::Tile>> {

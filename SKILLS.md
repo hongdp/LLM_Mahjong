@@ -610,3 +610,9 @@ batch 4096 各占 21GB，推理服务器重启即 OOM——先算显存再并行
 ## 2026-09-11 半庄奖励审计：credit=none 双重计点 + 引擎 final_rewards 缺本场
 - `play_hanchan_gen` 终局给 `uma_points`（=终点−25000+UMA），而每局末步已给引擎点差 ⇒ 点差算两遍，顺位项权重被稀释一半（exp70 H0 臂即此目标）。引擎 `final_rewards` 也不含驾驭层的本场支付与流局满贯修正。
 - **规则**：多局奖励的不变量是"每席全部奖励之和 = 终点−25000+UMA（+余棒）"，任何信用方案（none / rank / W）都要有脚本化对局的望远镜测试守着（`tests/test_hanchan.py`）；发射前先跑这个不变量，别只看单局引擎测试。
+
+## 2026-09-11 Rust 半庄：VecEnv 跨局续打 + MatchState 移植，与 Python 驾驭层逐局一致
+- `Table::new_hanchan(seed, dealer, rw, points, kyotaku, honba)` 复刻 `HanchanTable`（默认上下文发牌后旋转席位状态）；`DealEnd` 结构化终局事实替代正则；`MatchState`（renchan/本场/供托/飞/顺位/uma）1:1 移植；VecEnv 的 Game 在局末结算并换桌续打，每局末步给驾驭层点差、终局给 UMA+余棒。
+- 一致性：`tests/test_rust_hanchan_parity.py`——上下文发牌 60 组（含 >2^32 的种子）位级一致；P3 贪心 8 场完整半庄的动作/平面/奖励/回报/顺位/uma 与 `collect_parallel --hanchan_pure` 逐步一致，并验证望远镜不变量。
+- 吞吐（本机 4080，W v3r，K=512）：**129 场/s ≈ 1,349 局/s**，Python 引擎 pod 上 17.4 场/s ⇒ 7×。训练器 `--engine rust --hanchan_pure` 每迭代 256 场 3.6 s。
+- 限制：只支持纯血镜像半庄 + `hanchan_credit none`；塑形跨局无定义（构造即报错）；联赛池 + 半庄未做。

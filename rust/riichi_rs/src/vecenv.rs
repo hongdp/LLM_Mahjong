@@ -9,7 +9,8 @@ use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
 
 use crate::encoder::{encode, legal_mask, planes_of, potential, quantize_planes, scalars_of, ACTION_DIM};
-use crate::table::{resolve_claims, Table};
+use crate::hanchan::{DealFact, MatchResult, MatchState};
+use crate::table::{resolve_claims, Table, REWARD_SCALE};
 
 #[derive(Clone)]
 struct Cfg {
@@ -51,6 +52,11 @@ struct Game {
     // per-round decision bookkeeping (this game's pending rows, in request order)
     rows: Vec<RowRef>,
     pending_steps: Vec<(usize, StepRec)>,   // (seat, recorded step) awaiting reward
+    // hanchan mode (play_hanchan_gen): match bookkeeping, per-deal facts, and
+    // where each seat's trajectory stood when the current deal began
+    ms: Option<MatchState>,
+    deal_facts: Vec<DealFact>,
+    deal_start_len: [usize; 4],
 }
 
 struct Finished {
@@ -62,6 +68,8 @@ struct Finished {
     n_discards: usize,
     points: [i64; 4],
     start_points: [i64; 4],
+    hanchan: Option<MatchResult>,
+    deals: Vec<DealFact>,
 }
 
 #[pyclass(name = "VecEnv")]
@@ -76,6 +84,8 @@ pub struct VecEnv {
     variant: String,
     finished: Vec<Finished>,
     n_started: usize,
+    hanchan: bool,
+    max_deals: usize,
 }
 
 fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<u8>, Vec<f32>, f64) {
@@ -88,10 +98,68 @@ fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<u8>, Vec<f32>, f64) {
     (planes, scalars, phi)
 }
 
+fn deal_fact(t: &Table) -> DealFact {
+    DealFact {
+        result: t.result_summary.clone(),
+        riichi: t.riichi,
+        n_melds: [t.melds[0].len(), t.melds[1].len(), t.melds[2].len(), t.melds[3].len()],
+        n_discards: t.discard_count.iter().sum(),
+        points: t.points,
+        start_points: t.start_points,
+    }
+}
+
+/// A deal ended. Single deal: the game is over. Hanchan: pay this deal's driver
+/// point delta on each seat's last step of the deal (play_hanchan_gen, credit=None),
+/// advance the match and either start the next deal (returns false) or end (true).
+fn deal_done(g: &mut Game) -> bool {
+    let Some(ms) = g.ms.as_mut() else { return true };
+    let before = ms.points;
+    ms.settle(&g.table);
+    for p in 0..4 {
+        if g.traj[p].len() > g.deal_start_len[p] {
+            if let Some(last) = g.traj[p].last_mut() {
+                last.reward += (ms.points[p] - before[p]) as f64 * REWARD_SCALE;
+            }
+        }
+    }
+    g.deal_facts.push(deal_fact(&g.table));
+    if ms.done {
+        return true;
+    }
+    let (dealer, rw, pts, kyo) = ms.begin_deal();
+    let honba = ms.honba;
+    let n = ms.n as u64;
+    g.table = Table::new_hanchan(g.seed.wrapping_mul(1_000_003).wrapping_add(n), dealer, rw, pts, kyo, honba);
+    g.phase = Phase::Turn;
+    g.guard = 0;
+    g.rows.clear();
+    g.pending_steps.clear();
+    for p in 0..4 {
+        g.deal_start_len[p] = g.traj[p].len();
+    }
+    false
+}
+
 fn finish(g: Game) -> Finished {
     let t = &g.table;
     let mut traj = g.traj;
-    if let Some(fr) = t.final_rewards {
+    let mut hanchan = None;
+    let mut points = t.points;
+    let mut start_points = t.start_points;
+    if let Some(ms) = &g.ms {
+        // terminal placement signal: UMA + leftover sticks only (the point margin
+        // already arrived deal by deal) => per-seat return == final - 25000 + UMA
+        let res = ms.result();
+        for p in 0..4 {
+            if let Some(last) = traj[p].last_mut() {
+                last.reward += (res.uma_points[p] - (ms.points[p] - 25000)) as f64 * REWARD_SCALE;
+            }
+        }
+        points = res.final_points;
+        start_points = [25000; 4];
+        hanchan = Some(res);
+    } else if let Some(fr) = t.final_rewards {
         for p in 0..4 {
             if let Some(last) = traj[p].last_mut() {
                 last.reward += fr[p];
@@ -112,8 +180,10 @@ fn finish(g: Game) -> Finished {
         riichi: t.riichi,
         n_melds: [t.melds[0].len(), t.melds[1].len(), t.melds[2].len(), t.melds[3].len()],
         n_discards: t.discard_count.iter().sum(),
-        points: t.points,
-        start_points: t.start_points,
+        points,
+        start_points,
+        hanchan,
+        deals: g.deal_facts,
     }
 }
 
@@ -233,10 +303,19 @@ impl VecEnv {
         for slot in 0..self.k {
             if self.active[slot].is_none() {
                 if let Some(seed) = self.queue.pop_front() {
-                    let table = Table::new_seeded(seed, self.randomize_round);
+                    let (table, ms) = if self.hanchan {
+                        let mut ms = MatchState::new(self.max_deals);
+                        let (dealer, rw, pts, kyo) = ms.begin_deal();
+                        let honba = ms.honba;
+                        // play_hanchan_gen: random.seed(match_seed * 1000003 + n) per deal
+                        (Table::new_hanchan(seed.wrapping_mul(1_000_003).wrapping_add(ms.n as u64), dealer, rw, pts, kyo, honba), Some(ms))
+                    } else {
+                        (Table::new_seeded(seed, self.randomize_round), None)
+                    };
                     self.active[slot] = Some(Game {
                         table, seed, traj: Default::default(), phase: Phase::Turn, guard: 0,
                         rows: Vec::new(), pending_steps: Vec::new(),
+                        ms, deal_facts: Vec::new(), deal_start_len: [0; 4],
                     });
                     self.n_started += 1;
                 }
@@ -253,12 +332,15 @@ impl VecEnv {
                 if !g.rows.is_empty() {
                     return None;
                 }
-                if settle_to_decision(g, &cfg) {
-                    let g = slot.take().unwrap();
-                    Some(finish(g))
-                } else {
-                    None
+                let mut done = settle_to_decision(g, &cfg);
+                while done {
+                    if deal_done(g) {
+                        let g = slot.take().unwrap();
+                        return Some(finish(g));
+                    }
+                    done = settle_to_decision(g, &cfg);
                 }
+                None
             })
             .collect();
         self.finished.extend(finished);
@@ -272,14 +354,18 @@ impl VecEnv {
 #[pymethods]
 impl VecEnv {
     #[new]
-    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true, variant="v1r".to_string()))]
-    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool, variant: String) -> Self {
+    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true, variant="v1r".to_string(), hanchan=false, max_deals=24))]
+    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool, variant: String, hanchan: bool, max_deals: usize) -> PyResult<Self> {
+        if hanchan && shaping {
+            return Err(pyo3::exceptions::PyValueError::new_err("hanchan VecEnv: PBRS shaping is per-deal and not supported across a match"));
+        }
         let mut env = VecEnv {
             queue: seeds.into_iter().collect(),
             active: (0..k).map(|_| None).collect(),
             k, gamma, shaping, shaping_scale, randomize_round, variant,
             finished: Vec::new(),
             n_started: 0,
+            hanchan, max_deals,
         };
         env.fill_slots();
         env.settle_all();
@@ -288,7 +374,7 @@ impl VecEnv {
             env.fill_slots();
             env.settle_all();
         }
-        env
+        Ok(env)
     }
 
     fn done(&self) -> bool {
@@ -345,14 +431,16 @@ impl VecEnv {
                     if n == 0 {
                         return None;
                     }
-                    let done = apply_round(g, &actions[o..o + n], &logprobs[o..o + n])
+                    let mut done = apply_round(g, &actions[o..o + n], &logprobs[o..o + n])
                         || settle_to_decision(g, &cfg);
-                    if done {
-                        let g = slot.take().unwrap();
-                        Some(finish(g))
-                    } else {
-                        None
+                    while done {
+                        if deal_done(g) {
+                            let g = slot.take().unwrap();
+                            return Some(finish(g));
+                        }
+                        done = settle_to_decision(g, &cfg);
                     }
+                    None
                 })
                 .collect()
         });
@@ -426,6 +514,32 @@ impl VecEnv {
             d.set_item("learner_seats", vec![0usize, 1, 2, 3])?;
             d.set_item("league", PyDict::new_bound(py))?;
             d.set_item("seed", f.seed)?;
+            if let Some(h) = &f.hanchan {
+                let hd = PyDict::new_bound(py);
+                hd.set_item("placements", h.placements.to_vec())?;
+                hd.set_item("uma_points", h.uma_points.to_vec())?;
+                hd.set_item("busted", h.busted)?;
+                hd.set_item("n_deals", h.n_deals)?;
+                d.set_item("hanchan", hd)?;
+                let roles = PyDict::new_bound(py);
+                roles.set_item("pure", true)?;
+                roles.set_item("learner", 0usize)?;
+                d.set_item("roles", roles)?;
+                let deals = PyList::empty_bound(py);
+                for df in &f.deals {
+                    let dd = PyDict::new_bound(py);
+                    dd.set_item("result", &df.result)?;
+                    dd.set_item("riichi", df.riichi.to_vec())?;
+                    dd.set_item("n_melds", df.n_melds.to_vec())?;
+                    dd.set_item("n_discards", df.n_discards)?;
+                    dd.set_item("points", df.points.to_vec())?;
+                    dd.set_item("start_points", df.start_points.to_vec())?;
+                    deals.append(dd)?;
+                }
+                d.set_item("deals", deals)?;
+            } else {
+                d.set_item("hanchan", py.None())?;
+            }
             out.append(d)?;
         }
         Ok(out)

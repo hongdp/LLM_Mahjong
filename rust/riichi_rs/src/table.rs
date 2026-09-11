@@ -81,6 +81,8 @@ pub struct Table {
     pub finished: bool,
     pub final_rewards: Option<[f64; 4]>,
     pub result_summary: String,
+    pub deal_end: Option<DealEnd>,
+    pub rank_bonus: bool,      // per-deal RANK_BONUS in final_rewards (off inside a hanchan: TrainHanchanTable)
     pub wall: Vec<Tile>,        // spelled (red codes), pop() from the END like Python
     pub dead_wall: Vec<Tile>,   // 14 slots; [0:4] rinshan raw, [4:14] indicators normalized
     pub rinshan_idx: usize,
@@ -88,6 +90,17 @@ pub struct Table {
     pub ura_indicators: Vec<Tile>,
     pub hands: [Vec<Tile>; 4],  // normalized, sorted by sort_key
     pub red: [[u8; 3]; 4],      // per seat: m, p, s red fives held
+}
+
+/// Structured end-of-deal facts for the match driver (hanchan.rs) — the same
+/// information the Python driver regex-parses out of result_summary.
+#[derive(Clone, Debug, Default)]
+pub struct DealEnd {
+    pub winners: Vec<usize>,
+    pub houjuu: Option<usize>,
+    pub tenpai: Option<[bool; 4]>,   // exhaustive draw: who was tenpai
+    pub abort: bool,                 // 途中流局
+    pub nagashi: bool,               // 流し満貫 settled by the engine
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +126,45 @@ impl Table {
         rng.seed_u64(seed);
         let mut t = Table::blank(rng, randomize_round);
         t.reset();
+        t
+    }
+
+    /// hanchan.py::HanchanTable — a deal inside a match: reset with the default
+    /// context (dealer 0, same RNG consumption as `random.seed(seed)` + the
+    /// Python deal), then re-impose the match context and rotate every
+    /// seat-indexed piece of dealt state so `dealer` holds the 14-tile hand.
+    /// RANK_BONUS is off (TrainHanchanTable): placement pressure arrives once,
+    /// as uma at match end.
+    pub fn new_hanchan(seed: u64, dealer: usize, round_wind_idx: usize, points: [i64; 4], kyotaku: i64, honba: i64) -> Table {
+        let mut t = Table::new_seeded(seed, false);
+        t.rank_bonus = false;
+        t.dealer = dealer;
+        t.round_wind_idx = round_wind_idx.min(2);
+        t.round_number = dealer + 1;
+        t.points = points;
+        t.kyotaku = kyotaku;
+        t.start_points = points;
+        t.start_kyotaku = kyotaku;
+        t.honba = honba;
+        if dealer != 0 {
+            let hands = std::mem::take(&mut t.hands);
+            let red = t.red;
+            let ld = t.last_drawn;
+            let ldr = t.last_drawn_red;
+            let mut new_hands: [Vec<Tile>; 4] = Default::default();
+            let mut new_red = [[0u8; 3]; 4];
+            for (i, h) in hands.into_iter().enumerate() {
+                new_hands[(i + dealer) % 4] = h;
+                new_red[(i + dealer) % 4] = red[i];
+            }
+            t.hands = new_hands;
+            t.red = new_red;
+            t.last_drawn = [None; 4];
+            t.last_drawn_red = [false; 4];
+            t.last_drawn[dealer] = ld[0];
+            t.last_drawn_red[dealer] = ldr[0];
+        }
+        t.turn = dealer;
         t
     }
 
@@ -165,6 +217,8 @@ impl Table {
             last_drawn_red: [false; 4],
             finished: false,
             final_rewards: None,
+            deal_end: None,
+            rank_bonus: true,
             result_summary: String::new(),
             wall: Vec::with_capacity(136),
             dead_wall: Vec::with_capacity(14),
@@ -1326,6 +1380,7 @@ impl Table {
         self.points[winner] += self.kyotaku;
         self.kyotaku = 0;
         self.finished = true;
+        self.deal_end = Some(DealEnd { winners: vec![winner], ..Default::default() });
         let pao = liable.map(|l| format!(" | 包牌:玩家{l}")).unwrap_or_default();
         self.result_summary = format!("玩家{} 自摸 | {}番{}符 | {}{} | 点数: {}", winner, result.han, result.fu,
                                       Self::yaku_str(result), pao, fmt_points(&self.points));
@@ -1359,6 +1414,7 @@ impl Table {
         self.points[winners[0].0] += self.kyotaku;
         self.kyotaku = 0;
         self.finished = true;
+        self.deal_end = Some(DealEnd { winners: winners.iter().map(|(p, _)| *p).collect(), houjuu: Some(discarder), ..Default::default() });
         self.result_summary = format!("{}{} | 点数: {}", parts.join(" ; "),
                                       if winners.len() > 1 { " | 双响" } else { "" }, fmt_points(&self.points));
         self.compute_final_rewards(Some(discarder));
@@ -1370,6 +1426,7 @@ impl Table {
         }
         self.pending_abort = None;
         self.finished = true;
+        self.deal_end = Some(DealEnd { abort: true, ..Default::default() });
         self.result_summary = format!("途中流局({}) | 点数: {}", reason, fmt_points(&self.points));
         self.compute_final_rewards(None);
     }
@@ -1398,6 +1455,7 @@ impl Table {
                 }
             }
             self.finished = true;
+            self.deal_end = Some(DealEnd { nagashi: true, ..Default::default() });
             self.result_summary = format!("流局满贯 | 玩家{} | 点数: {}", fmt_list(&nagashi), fmt_points(&self.points));
             self.compute_final_rewards(None);
             return;
@@ -1412,6 +1470,7 @@ impl Table {
             }
         }
         self.finished = true;
+        self.deal_end = Some(DealEnd { tenpai: Some([tenpai[0], tenpai[1], tenpai[2], tenpai[3]]), ..Default::default() });
         let tl: Vec<usize> = (0..4).filter(|&i| tenpai[i]).collect();
         self.result_summary = format!("流局 | 听牌: {} | 点数: {}", fmt_list(&tl), fmt_points(&self.points));
         self.compute_final_rewards(None);
@@ -1421,6 +1480,10 @@ impl Table {
         let mut fr = [0.0f64; 4];
         for i in 0..4 {
             fr[i] = (self.points[i] - self.start_points[i]) as f64 * REWARD_SCALE;
+        }
+        if !self.rank_bonus {
+            self.final_rewards = Some(fr);
+            return;
         }
         // placement bonus with ties sharing the average of the spanned positions
         let mut order: Vec<usize> = (0..4).collect();

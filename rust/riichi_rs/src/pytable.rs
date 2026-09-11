@@ -36,6 +36,14 @@ impl PyTable {
     fn new(seed: u64, randomize_round: bool) -> Self {
         PyTable { t: Table::new_seeded(seed, randomize_round) }
     }
+    /// hanchan.py::HanchanTable(dealer, round_wind_idx, points, kyotaku) after random.seed(seed); honba is the v3rh scalar only.
+    #[staticmethod]
+    fn hanchan(seed: u64, dealer: usize, round_wind_idx: usize, points: Vec<i64>, kyotaku: i64, honba: i64) -> PyResult<Self> {
+        if points.len() != 4 {
+            return Err(pyo3::exceptions::PyValueError::new_err("points must have 4 entries"));
+        }
+        Ok(PyTable { t: Table::new_hanchan(seed, dealer, round_wind_idx, [points[0], points[1], points[2], points[3]], kyotaku, honba) })
+    }
     // ---- state ----
     #[getter] fn dealer(&self) -> usize { self.t.dealer }
     #[getter] fn round_wind_idx(&self) -> usize { self.t.round_wind_idx }

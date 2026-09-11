@@ -38,9 +38,21 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     variant = cfg.get("encoder_variant") or getattr(net, "encoder_variant", "v1r")
     if variant not in ("v1r", "v3r"):
         raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r only)")
+    # hanchan (exp83+): four learner copies over a full match (play_hanchan_gen /
+    # --hanchan_pure), credit=none only; `n_games` then counts MATCHES.
+    hanchan = bool(cfg.get("hanchan"))
+    if hanchan:
+        if not cfg.get("hanchan_pure"):
+            raise SystemExit("collect_rust: only --hanchan_pure (mirror) is ported; four-seat league tables need the Python engine")
+        if cfg.get("hanchan_credit", "none") != "none":
+            raise SystemExit("collect_rust: hanchan_credit must be 'none' on the Rust engine (rank/W credits are Python-only)")
+        if cfg.get("shaping"):
+            raise SystemExit("collect_rust: PBRS shaping is per-deal and not supported across a hanchan")
+        if cfg.get("league") and float(cfg.get("league_frac", 0.0) or 0.0) > 0:
+            raise SystemExit("collect_rust: league pool + hanchan not supported")
     env = riichi_rs.VecEnv([int(s) for s in seeds], k, float(cfg.get("gamma", 0.995)),
                            bool(cfg.get("shaping", False)), float(cfg.get("shaping_scale", 1.0)),
-                           True, variant)
+                           True, variant, hanchan=hanchan, max_deals=int(cfg.get("hanchan_max_deals", 24)))
     temperature = float(cfg.get("temperature", 1.0))
     q = float(riichi_rs.PLANE_Q)
     dev = torch.device(device)
@@ -127,7 +139,14 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     collect_rust.last_games = games
     collect_rust.last_league = {k: {"learner_share": round(w / nn, 4), "n": nn, "mean_diff": round(d / nn, 1)}
                                 for k, (w, nn, d) in lg.items()}
-    collect_rust.last_hanchan = {}
+    hz = {}
+    for g in games:
+        h = g.get("hanchan")
+        if h:
+            # exp70/83 pure mirror: placement spread (mean |uma|) is the only meaningful statistic
+            u, nn = hz.get("pure_abs_uma", (0.0, 0))
+            hz["pure_abs_uma"] = (u + sum(abs(x) for x in h["uma_points"]) / 4.0, nn + 1)
+    collect_rust.last_hanchan = {k: {"mean_uma": round(u / nn, 1), "n": nn} for k, (u, nn) in hz.items()}
     collect_rust.last_cf_n = 0
     collect_rust.last_cf_skipped = 0
     return episodes, results
