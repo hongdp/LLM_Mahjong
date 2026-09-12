@@ -1,6 +1,6 @@
 # exp86 推理时搜索探针：PIMC 配对回滚能否在不改权重的情况下提高 W（2026-09-11）
 
-- **Date**: 2026-09-11 23:30 PDT  **Status**: done（D3 附后）
+- **Date**: 2026-09-11 23:30 PDT  **Status**: done
 - **Git**: riichi_rs P10（`Table::determinize` 隐藏信息采样、`VecEnv.from_tables` 批量回滚）；驱动/代理脚本先在 scratchpad（`rust_driver.py`、`search_agent.py`、`search_probe.py`），判正后入库
 - **Env**: 本机 RTX 4080；W = exp81_W（v3r 64M）
 
@@ -56,3 +56,5 @@
 | Path | Description |
 |---|---|
 | scratchpad `rust_driver.py` / `search_agent.py` / `search_probe.py`（判空，不入库；Rust 侧已入库 2d588cf） | 探针脚本 |
+- [09-12 01:50 PDT] 探针 D3 终（策略切换 all 触发，K=64，margin 500，300 对）：见下行——同空。
+  FINAL mode=switch_all M=4 K=64 margin=500.0 pairs=300 share=0.5050 se=0.0289 mean_diff=+849 searches=4741 overrides=679 (1872s)
