@@ -8,17 +8,21 @@ use pyo3::types::{PyDict, PyList};
 
 use rayon::prelude::*;
 
-use crate::encoder::{encode_v1r, legal_mask, potential, ACTION_DIM, N_PLANES, N_SCALARS};
-use crate::table::{resolve_claims, Table};
+use crate::encoder::{encode, legal_mask, planes_of, potential, quantize_planes, scalars_of, ACTION_DIM};
+use crate::hanchan::{DealFact, MatchResult, MatchState};
+use crate::table::{resolve_claims, Table, REWARD_SCALE};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Cfg {
     shaping: bool,
+    variant: String,
+    n_planes: usize,
+    n_scalars: usize,
 }
 
 struct StepRec {
-    planes: Vec<f32>,
-    scalars: [f32; N_SCALARS],
+    planes: Vec<u8>,   // quantised (see encoder::PLANE_Q)
+    scalars: Vec<f32>,
     mask: Vec<bool>,
     action: i64,
     logprob: f32,
@@ -48,6 +52,11 @@ struct Game {
     // per-round decision bookkeeping (this game's pending rows, in request order)
     rows: Vec<RowRef>,
     pending_steps: Vec<(usize, StepRec)>,   // (seat, recorded step) awaiting reward
+    // hanchan mode (play_hanchan_gen): match bookkeeping, per-deal facts, and
+    // where each seat's trajectory stood when the current deal began
+    ms: Option<MatchState>,
+    deal_facts: Vec<DealFact>,
+    deal_start_len: [usize; 4],
 }
 
 struct Finished {
@@ -59,6 +68,8 @@ struct Finished {
     n_discards: usize,
     points: [i64; 4],
     start_points: [i64; 4],
+    hanchan: Option<MatchResult>,
+    deals: Vec<DealFact>,
 }
 
 #[pyclass(name = "VecEnv")]
@@ -70,22 +81,88 @@ pub struct VecEnv {
     shaping: bool,
     shaping_scale: f64,
     randomize_round: bool,
+    variant: String,
     finished: Vec<Finished>,
     n_started: usize,
+    hanchan: bool,
+    max_deals: usize,
+    houjuu_extra: f64,
 }
 
-fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<f32>, [f32; N_SCALARS], f64) {
-    let mut planes = vec![0f32; N_PLANES * 34];
-    let mut scalars = [0f32; N_SCALARS];
-    encode_v1r(table, seat, &mut planes, &mut scalars);
+fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<u8>, Vec<f32>, f64) {
+    let mut planes_f = vec![0f32; cfg.n_planes * 34];
+    let mut scalars = vec![0f32; cfg.n_scalars];
+    encode(table, seat, &cfg.variant, &mut planes_f, &mut scalars);
+    let mut planes = vec![0u8; cfg.n_planes * 34];
+    quantize_planes(&planes_f, &mut planes);
     let phi = if cfg.shaping { potential(table, seat) } else { 0.0 };
     (planes, scalars, phi)
+}
+
+fn deal_fact(t: &Table) -> DealFact {
+    DealFact {
+        result: t.result_summary.clone(),
+        riichi: t.riichi,
+        n_melds: [t.melds[0].len(), t.melds[1].len(), t.melds[2].len(), t.melds[3].len()],
+        n_discards: t.discard_count.iter().sum(),
+        points: t.points,
+        start_points: t.start_points,
+    }
+}
+
+/// A deal ended. Single deal: the game is over. Hanchan: pay this deal's driver
+/// point delta on each seat's last step of the deal (play_hanchan_gen, credit=None),
+/// advance the match and either start the next deal (returns false) or end (true).
+fn deal_done(g: &mut Game) -> bool {
+    let Some(ms) = g.ms.as_mut() else { return true };
+    let before = ms.points;
+    ms.settle(&g.table);
+    for p in 0..4 {
+        if g.traj[p].len() > g.deal_start_len[p] {
+            if let Some(last) = g.traj[p].last_mut() {
+                last.reward += (ms.points[p] - before[p]) as f64 * REWARD_SCALE;
+            }
+        }
+    }
+    g.deal_facts.push(deal_fact(&g.table));
+    if ms.done {
+        return true;
+    }
+    let (dealer, rw, pts, kyo) = ms.begin_deal();
+    let honba = ms.honba;
+    let n = ms.n as u64;
+    let hx = g.table.houjuu_extra;
+    g.table = Table::new_hanchan(g.seed.wrapping_mul(1_000_003).wrapping_add(n), dealer, rw, pts, kyo, honba);
+    g.table.houjuu_extra = hx;
+    g.phase = Phase::Turn;
+    g.guard = 0;
+    g.rows.clear();
+    g.pending_steps.clear();
+    for p in 0..4 {
+        g.deal_start_len[p] = g.traj[p].len();
+    }
+    false
 }
 
 fn finish(g: Game) -> Finished {
     let t = &g.table;
     let mut traj = g.traj;
-    if let Some(fr) = t.final_rewards {
+    let mut hanchan = None;
+    let mut points = t.points;
+    let mut start_points = t.start_points;
+    if let Some(ms) = &g.ms {
+        // terminal placement signal: UMA + leftover sticks only (the point margin
+        // already arrived deal by deal) => per-seat return == final - 25000 + UMA
+        let res = ms.result();
+        for p in 0..4 {
+            if let Some(last) = traj[p].last_mut() {
+                last.reward += (res.uma_points[p] - (ms.points[p] - 25000)) as f64 * REWARD_SCALE;
+            }
+        }
+        points = res.final_points;
+        start_points = [25000; 4];
+        hanchan = Some(res);
+    } else if let Some(fr) = t.final_rewards {
         for p in 0..4 {
             if let Some(last) = traj[p].last_mut() {
                 last.reward += fr[p];
@@ -106,8 +183,10 @@ fn finish(g: Game) -> Finished {
         riichi: t.riichi,
         n_melds: [t.melds[0].len(), t.melds[1].len(), t.melds[2].len(), t.melds[3].len()],
         n_discards: t.discard_count.iter().sum(),
-        points: t.points,
-        start_points: t.start_points,
+        points,
+        start_points,
+        hanchan,
+        deals: g.deal_facts,
     }
 }
 
@@ -220,17 +299,27 @@ fn apply_round(g: &mut Game, actions: &[i64], logprobs: &[f32]) -> bool {
 
 impl VecEnv {
     fn cfg(&self) -> Cfg {
-        Cfg { shaping: self.shaping }
+        Cfg { shaping: self.shaping, variant: self.variant.clone(), n_planes: planes_of(&self.variant), n_scalars: scalars_of(&self.variant) }
     }
 
     fn fill_slots(&mut self) {
         for slot in 0..self.k {
             if self.active[slot].is_none() {
                 if let Some(seed) = self.queue.pop_front() {
-                    let table = Table::new_seeded(seed, self.randomize_round);
+                    let (mut table, ms) = if self.hanchan {
+                        let mut ms = MatchState::new(self.max_deals);
+                        let (dealer, rw, pts, kyo) = ms.begin_deal();
+                        let honba = ms.honba;
+                        // play_hanchan_gen: random.seed(match_seed * 1000003 + n) per deal
+                        (Table::new_hanchan(seed.wrapping_mul(1_000_003).wrapping_add(ms.n as u64), dealer, rw, pts, kyo, honba), Some(ms))
+                    } else {
+                        (Table::new_seeded(seed, self.randomize_round), None)
+                    };
+                    table.houjuu_extra = self.houjuu_extra;
                     self.active[slot] = Some(Game {
                         table, seed, traj: Default::default(), phase: Phase::Turn, guard: 0,
                         rows: Vec::new(), pending_steps: Vec::new(),
+                        ms, deal_facts: Vec::new(), deal_start_len: [0; 4],
                     });
                     self.n_started += 1;
                 }
@@ -247,12 +336,15 @@ impl VecEnv {
                 if !g.rows.is_empty() {
                     return None;
                 }
-                if settle_to_decision(g, &cfg) {
-                    let g = slot.take().unwrap();
-                    Some(finish(g))
-                } else {
-                    None
+                let mut done = settle_to_decision(g, &cfg);
+                while done {
+                    if deal_done(g) {
+                        let g = slot.take().unwrap();
+                        return Some(finish(g));
+                    }
+                    done = settle_to_decision(g, &cfg);
                 }
+                None
             })
             .collect();
         self.finished.extend(finished);
@@ -266,14 +358,18 @@ impl VecEnv {
 #[pymethods]
 impl VecEnv {
     #[new]
-    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true))]
-    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool) -> Self {
+    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true, variant="v1r".to_string(), hanchan=false, max_deals=24, houjuu_extra=0.0))]
+    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool, variant: String, hanchan: bool, max_deals: usize, houjuu_extra: f64) -> PyResult<Self> {
+        if hanchan && shaping {
+            return Err(pyo3::exceptions::PyValueError::new_err("hanchan VecEnv: PBRS shaping is per-deal and not supported across a match"));
+        }
         let mut env = VecEnv {
             queue: seeds.into_iter().collect(),
             active: (0..k).map(|_| None).collect(),
-            k, gamma, shaping, shaping_scale, randomize_round,
+            k, gamma, shaping, shaping_scale, randomize_round, variant,
             finished: Vec::new(),
             n_started: 0,
+            hanchan, max_deals, houjuu_extra,
         };
         env.fill_slots();
         env.settle_all();
@@ -282,18 +378,64 @@ impl VecEnv {
             env.fill_slots();
             env.settle_all();
         }
-        env
+        Ok(env)
+    }
+
+    /// PIMC rollouts: one game per supplied table (all active at once), each forced to
+    /// take `first_actions[i]` for `seats[i]` first (a turn-phase action: discard /
+    /// riichi / tsumo / kan), then played out by the caller's policy to the end of the
+    /// deal. `seed` per game = its index, so drain_finished() keys match the input order.
+    #[staticmethod]
+    #[pyo3(signature = (tables, seats, first_actions, gamma=0.995, variant="v1r".to_string()))]
+    fn from_tables(tables: Vec<PyRef<crate::pytable::PyTable>>, seats: Vec<usize>, first_actions: Vec<String>, gamma: f64, variant: String) -> PyResult<Self> {
+        if tables.len() != seats.len() || tables.len() != first_actions.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err("tables / seats / first_actions length mismatch"));
+        }
+        let k = tables.len().max(1);
+        let mut env = VecEnv {
+            queue: std::collections::VecDeque::new(),
+            active: (0..k).map(|_| None).collect(),
+            k, gamma, shaping: false, shaping_scale: 1.0, randomize_round: true, variant,
+            finished: Vec::new(),
+            n_started: 0,
+            hanchan: false, max_deals: 24, houjuu_extra: 0.0,
+        };
+        for (i, (pt, (seat, xml))) in tables.iter().zip(seats.iter().zip(first_actions.iter())).enumerate() {
+            let mut table = pt.table_clone();
+            if table.finished {
+                continue;
+            }
+            let (_rewards, done, info) = table.step(*seat, xml);
+            let phase = if info.discarded || info.chankan.is_some() { Phase::Interrupt } else { Phase::Turn };
+            let mut g = Game {
+                table, seed: i as u64, traj: Default::default(), phase, guard: 0,
+                rows: Vec::new(), pending_steps: Vec::new(),
+                ms: None, deal_facts: Vec::new(), deal_start_len: [0; 4],
+            };
+            if done {
+                env.finished.push(finish(g));
+                continue;
+            }
+            // make sure the forced step leaves a consistent turn pointer for the loop
+            g.guard = 0;
+            env.active[i] = Some(g);
+            env.n_started += 1;
+        }
+        env.settle_all();
+        Ok(env)
     }
 
     fn done(&self) -> bool {
         self.queue.is_empty() && self.active.iter().all(|g| g.is_none())
     }
 
-    /// Pending decisions: (planes [B, 21*34] f32, scalars [B, 20] f32, mask [B, 374] bool, seats [B], games [B]).
-    fn observe<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<bool>>, Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<i32>>)> {
+    /// Pending decisions: (planes [B, np*34] u8 quantised by PLANE_Q, scalars [B, ns] f32, mask [B, 374] bool, seats [B], games [B]).
+    fn observe<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyArray2<u8>>, Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<bool>>, Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<i32>>)> {
         let b = self.total_rows();
-        let mut planes = Vec::with_capacity(b * N_PLANES * 34);
-        let mut scalars = Vec::with_capacity(b * N_SCALARS);
+        let np = planes_of(&self.variant);
+        let ns = scalars_of(&self.variant);
+        let mut planes = Vec::with_capacity(b * np * 34);
+        let mut scalars = Vec::with_capacity(b * ns);
         let mut mask = Vec::with_capacity(b * ACTION_DIM);
         let mut seats = Vec::with_capacity(b);
         let mut games = Vec::with_capacity(b);
@@ -310,8 +452,8 @@ impl VecEnv {
                 games.push(slot as i32);
             }
         }
-        let planes = PyArray1::from_vec_bound(py, planes).reshape([b, N_PLANES * 34])?;
-        let scalars = PyArray1::from_vec_bound(py, scalars).reshape([b, N_SCALARS])?;
+        let planes = PyArray1::from_vec_bound(py, planes).reshape([b, np * 34])?;
+        let scalars = PyArray1::from_vec_bound(py, scalars).reshape([b, ns])?;
         let mask = PyArray1::from_vec_bound(py, mask).reshape([b, ACTION_DIM])?;
         Ok((planes, scalars, mask, seats.into_pyarray_bound(py), games.into_pyarray_bound(py)))
     }
@@ -337,14 +479,16 @@ impl VecEnv {
                     if n == 0 {
                         return None;
                     }
-                    let done = apply_round(g, &actions[o..o + n], &logprobs[o..o + n])
+                    let mut done = apply_round(g, &actions[o..o + n], &logprobs[o..o + n])
                         || settle_to_decision(g, &cfg);
-                    if done {
-                        let g = slot.take().unwrap();
-                        Some(finish(g))
-                    } else {
-                        None
+                    while done {
+                        if deal_done(g) {
+                            let g = slot.take().unwrap();
+                            return Some(finish(g));
+                        }
+                        done = settle_to_decision(g, &cfg);
                     }
+                    None
                 })
                 .collect()
         });
@@ -358,10 +502,12 @@ impl VecEnv {
         Ok(())
     }
 
-    /// Finished games as _package_game-style dicts (planes shipped as float32; the caller
-    /// downcasts to float16 like the Python packer).
+    /// Finished games as _package_game-style dicts (planes shipped as u8 quantised by
+    /// PLANE_Q; the trainer widens them on the device — no float16 hop).
     fn drain_finished<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let out = PyList::empty_bound(py);
+        let np = planes_of(&self.variant);
+        let ns = scalars_of(&self.variant);
         let finished = std::mem::take(&mut self.finished);
         for f in finished {
             let d = PyDict::new_bound(py);
@@ -381,8 +527,8 @@ impl VecEnv {
                     r = steps[i].reward + self.gamma * r;
                     rets[i] = r as f32;
                 }
-                let mut planes = Vec::with_capacity(n * N_PLANES * 34);
-                let mut scal = Vec::with_capacity(n * N_SCALARS);
+                let mut planes = Vec::with_capacity(n * np * 34);
+                let mut scal = Vec::with_capacity(n * ns);
                 let mut mask = Vec::with_capacity(n * ACTION_DIM);
                 let mut acts = Vec::with_capacity(n);
                 let mut lps = Vec::with_capacity(n);
@@ -396,8 +542,8 @@ impl VecEnv {
                     rews.push(s.reward as f32);
                 }
                 let e = PyDict::new_bound(py);
-                e.set_item("planes", PyArray1::from_vec_bound(py, planes).reshape([n, N_PLANES, 34])?)?;
-                e.set_item("scalars", PyArray1::from_vec_bound(py, scal).reshape([n, N_SCALARS])?)?;
+                e.set_item("planes", PyArray1::from_vec_bound(py, planes).reshape([n, np, 34])?)?;
+                e.set_item("scalars", PyArray1::from_vec_bound(py, scal).reshape([n, ns])?)?;
                 e.set_item("mask", PyArray1::from_vec_bound(py, mask).reshape([n, ACTION_DIM])?)?;
                 e.set_item("actions", acts.into_pyarray_bound(py))?;
                 e.set_item("old_logprobs", lps.into_pyarray_bound(py))?;
@@ -416,6 +562,32 @@ impl VecEnv {
             d.set_item("learner_seats", vec![0usize, 1, 2, 3])?;
             d.set_item("league", PyDict::new_bound(py))?;
             d.set_item("seed", f.seed)?;
+            if let Some(h) = &f.hanchan {
+                let hd = PyDict::new_bound(py);
+                hd.set_item("placements", h.placements.to_vec())?;
+                hd.set_item("uma_points", h.uma_points.to_vec())?;
+                hd.set_item("busted", h.busted)?;
+                hd.set_item("n_deals", h.n_deals)?;
+                d.set_item("hanchan", hd)?;
+                let roles = PyDict::new_bound(py);
+                roles.set_item("pure", true)?;
+                roles.set_item("learner", 0usize)?;
+                d.set_item("roles", roles)?;
+                let deals = PyList::empty_bound(py);
+                for df in &f.deals {
+                    let dd = PyDict::new_bound(py);
+                    dd.set_item("result", &df.result)?;
+                    dd.set_item("riichi", df.riichi.to_vec())?;
+                    dd.set_item("n_melds", df.n_melds.to_vec())?;
+                    dd.set_item("n_discards", df.n_discards)?;
+                    dd.set_item("points", df.points.to_vec())?;
+                    dd.set_item("start_points", df.start_points.to_vec())?;
+                    deals.append(dd)?;
+                }
+                d.set_item("deals", deals)?;
+            } else {
+                d.set_item("hanchan", py.None())?;
+            }
             out.append(d)?;
         }
         Ok(out)
@@ -424,5 +596,11 @@ impl VecEnv {
     #[getter]
     fn n_pending(&self) -> usize {
         self.total_rows()
+    }
+
+    /// Deal seed per slot (-1 for an empty slot): lets the Python driver map observe()'s
+    /// `games` column back to the deal seed (league seat plans are keyed by seed).
+    fn slot_seeds(&self) -> Vec<i64> {
+        self.active.iter().map(|g| g.as_ref().map_or(-1, |g| g.seed as i64)).collect()
     }
 }

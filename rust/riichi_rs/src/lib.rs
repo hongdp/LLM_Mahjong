@@ -10,6 +10,7 @@ pub mod score;
 pub mod encoder;
 pub mod vecenv;
 pub mod table;
+pub mod hanchan;
 pub mod pytable;
 
 fn parse_tiles(tiles: Vec<String>) -> PyResult<Vec<tiles::Tile>> {
@@ -104,6 +105,7 @@ fn riichi_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_tile_only_as_triplet, m)?)?;
     m.add_function(wrap_pyfunction!(py_estimate_hand, m)?)?;
     m.add_function(wrap_pyfunction!(py_legal_mask, m)?)?;
-    m.add("__version__", "0.1.0")?;
+    m.add("__version__", "0.1.1")?;
+    m.add("PLANE_Q", encoder::PLANE_Q)?;
     Ok(())
 }

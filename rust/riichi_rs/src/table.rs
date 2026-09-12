@@ -81,6 +81,9 @@ pub struct Table {
     pub finished: bool,
     pub final_rewards: Option<[f64; 4]>,
     pub result_summary: String,
+    pub deal_end: Option<DealEnd>,
+    pub rank_bonus: bool,      // per-deal RANK_BONUS in final_rewards (off inside a hanchan: TrainHanchanTable)
+    pub houjuu_extra: f64,     // PyMahjongTable.HOUJUU_EXTRA: extra reward to the seat that dealt in (exp85 defender exploiter)
     pub wall: Vec<Tile>,        // spelled (red codes), pop() from the END like Python
     pub dead_wall: Vec<Tile>,   // 14 slots; [0:4] rinshan raw, [4:14] indicators normalized
     pub rinshan_idx: usize,
@@ -88,6 +91,17 @@ pub struct Table {
     pub ura_indicators: Vec<Tile>,
     pub hands: [Vec<Tile>; 4],  // normalized, sorted by sort_key
     pub red: [[u8; 3]; 4],      // per seat: m, p, s red fives held
+}
+
+/// Structured end-of-deal facts for the match driver (hanchan.rs) — the same
+/// information the Python driver regex-parses out of result_summary.
+#[derive(Clone, Debug, Default)]
+pub struct DealEnd {
+    pub winners: Vec<usize>,
+    pub houjuu: Option<usize>,
+    pub tenpai: Option<[bool; 4]>,   // exhaustive draw: who was tenpai
+    pub abort: bool,                 // 途中流局
+    pub nagashi: bool,               // 流し満貫 settled by the engine
 }
 
 #[derive(Clone, Debug)]
@@ -100,9 +114,25 @@ pub struct PendingKan {
 
 /// CPython `round()` (half to even) on x/100 then *100, as in
 /// `int(round(x / 100.0)) * 100`.
+/// f64::round_ties_even is stable only since rustc 1.77; community pods with apt cargo
+/// (1.75) need this equivalent (Python's round(): halves go to the even neighbour).
+fn round_ties_even_msrv(v: f64) -> f64 {
+    let f = v.floor();
+    let d = v - f;
+    if d < 0.5 {
+        f
+    } else if d > 0.5 {
+        f + 1.0
+    } else if (f / 2.0).floor() * 2.0 == f {
+        f
+    } else {
+        f + 1.0
+    }
+}
+
 fn round_hundred(x: f64) -> i64 {
     let v = x / 100.0;
-    let r = v.round_ties_even();
+    let r = round_ties_even_msrv(v);
     (r as i64) * 100
 }
 
@@ -113,6 +143,45 @@ impl Table {
         rng.seed_u64(seed);
         let mut t = Table::blank(rng, randomize_round);
         t.reset();
+        t
+    }
+
+    /// hanchan.py::HanchanTable — a deal inside a match: reset with the default
+    /// context (dealer 0, same RNG consumption as `random.seed(seed)` + the
+    /// Python deal), then re-impose the match context and rotate every
+    /// seat-indexed piece of dealt state so `dealer` holds the 14-tile hand.
+    /// RANK_BONUS is off (TrainHanchanTable): placement pressure arrives once,
+    /// as uma at match end.
+    pub fn new_hanchan(seed: u64, dealer: usize, round_wind_idx: usize, points: [i64; 4], kyotaku: i64, honba: i64) -> Table {
+        let mut t = Table::new_seeded(seed, false);
+        t.rank_bonus = false;
+        t.dealer = dealer;
+        t.round_wind_idx = round_wind_idx.min(2);
+        t.round_number = dealer + 1;
+        t.points = points;
+        t.kyotaku = kyotaku;
+        t.start_points = points;
+        t.start_kyotaku = kyotaku;
+        t.honba = honba;
+        if dealer != 0 {
+            let hands = std::mem::take(&mut t.hands);
+            let red = t.red;
+            let ld = t.last_drawn;
+            let ldr = t.last_drawn_red;
+            let mut new_hands: [Vec<Tile>; 4] = Default::default();
+            let mut new_red = [[0u8; 3]; 4];
+            for (i, h) in hands.into_iter().enumerate() {
+                new_hands[(i + dealer) % 4] = h;
+                new_red[(i + dealer) % 4] = red[i];
+            }
+            t.hands = new_hands;
+            t.red = new_red;
+            t.last_drawn = [None; 4];
+            t.last_drawn_red = [false; 4];
+            t.last_drawn[dealer] = ld[0];
+            t.last_drawn_red[dealer] = ldr[0];
+        }
+        t.turn = dealer;
         t
     }
 
@@ -165,6 +234,9 @@ impl Table {
             last_drawn_red: [false; 4],
             finished: false,
             final_rewards: None,
+            deal_end: None,
+            rank_bonus: true,
+            houjuu_extra: 0.0,
             result_summary: String::new(),
             wall: Vec::with_capacity(136),
             dead_wall: Vec::with_capacity(14),
@@ -309,6 +381,206 @@ impl Table {
         self.last_drawn_red[pid] = is_red(raw);
         t
     }
+}
+
+/// Inference-time search support (PIMC): resample everything `seat` cannot see
+/// (the other three concealed hands, the live wall, the undrawn rinshan tiles,
+/// the unrevealed dora indicators and all ura indicators) from the hidden
+/// multiset, keeping every visible fact (own hand, melds, rivers, revealed
+/// indicators, points, sticks, flags) identical. Seats in riichi get a hand
+/// that is genuinely tenpai (built from random sets + pair minus one tile),
+/// avoiding their own furiten river when a few retries allow it.
+impl Table {
+    pub fn determinize(&self, seat: usize, seed: u64) -> Table {
+        let mut t = self.clone();
+        let mut rng = Mt19937::new();
+        rng.seed_u64(seed);
+        // --- collect the hidden multiset (spelled: red fives restored from counts)
+        let mut pool: Vec<Tile> = Vec::new();
+        let mut sizes = [0usize; 4];
+        for p in 0..4 {
+            if p == seat {
+                continue;
+            }
+            let mut reds = t.red[p];
+            for &h in &t.hands[p] {
+                let mut tile = h;
+                if h == 4 || h == 13 || h == 22 {
+                    let si = (h / 9) as usize;
+                    if reds[si] > 0 {
+                        reds[si] -= 1;
+                        tile = RED_M + si as Tile;
+                    }
+                }
+                pool.push(tile);
+            }
+            sizes[p] = t.hands[p].len();
+        }
+        let wall_len = t.wall.len();
+        pool.extend(t.wall.iter().copied());
+        let mut hidden_slots: Vec<usize> = Vec::new();
+        for i in t.rinshan_idx..4 {
+            hidden_slots.push(i);
+        }
+        for k in t.dora_indicators.len()..5 {
+            hidden_slots.push(4 + k);
+        }
+        for k in 0..5 {
+            hidden_slots.push(9 + k);
+        }
+        for &i in &hidden_slots {
+            pool.push(t.dead_wall[i]);
+        }
+        rng.shuffle(&mut pool);
+        // --- riichi seats first: carve a tenpai hand out of the pool
+        for p in 0..4 {
+            if p == seat || !t.riichi[p] || sizes[p] == 0 {
+                continue;
+            }
+            let n_sets = 4 - t.melds[p].len();
+            let mut best: Option<Vec<Tile>> = None;
+            for _attempt in 0..30 {
+                if let Some(hand) = sample_tenpai_hand(&pool, n_sets, &mut rng) {
+                    // prefer a hand whose waits avoid this seat's own furiten river
+                    let mut probe = hand.clone();
+                    probe.sort_by_key(|&x| sort_key(norm(x)));
+                    let normed: Vec<Tile> = probe.iter().map(|&x| norm(x)).collect();
+                    let ws = crate::shanten::waits_of(&normed, t.melds[p].len());
+                    let furiten = ws.iter().any(|w| t.furiten_river[p].contains(w));
+                    if !furiten || best.is_none() {
+                        best = Some(hand);
+                        if !furiten {
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(hand) = best {
+                // remove the chosen spelled tiles from the pool, one occurrence each
+                for &x in &hand {
+                    if let Some(pos) = pool.iter().position(|&y| y == x) {
+                        pool.swap_remove(pos);
+                    }
+                }
+                t.hands[p].clear();
+                t.red[p] = [0; 3];
+                for &raw in &hand {
+                    t.give(p, raw);
+                }
+                sort_hand(&mut t.hands[p]);
+                sizes[p] = 0;   // done
+                rng.shuffle(&mut pool);
+            }
+        }
+        // indicator slots (>= 4) are stored normalized: a red five landing there
+        // would vanish, so keep reds out of the tail that feeds those slots
+        let n_norm = hidden_slots.iter().filter(|&&i| i >= 4).count();
+        let cut = pool.len().saturating_sub(n_norm);
+        for j in cut..pool.len() {
+            if is_red(pool[j]) {
+                if let Some(k) = (0..cut).find(|&k| !is_red(pool[k])) {
+                    pool.swap(j, k);
+                }
+            }
+        }
+        // --- everyone else: uniform
+        let mut idx = 0usize;
+        for p in 0..4 {
+            if p == seat || sizes[p] == 0 {
+                continue;
+            }
+            t.hands[p].clear();
+            t.red[p] = [0; 3];
+            for _ in 0..sizes[p] {
+                let raw = pool[idx];
+                idx += 1;
+                t.give(p, raw);
+            }
+            sort_hand(&mut t.hands[p]);
+        }
+        // --- live wall, then hidden dead-wall slots
+        t.wall = pool[idx..idx + wall_len].to_vec();
+        idx += wall_len;
+        for &i in &hidden_slots {
+            let raw = pool[idx];
+            idx += 1;
+            t.dead_wall[i] = if i >= 4 { norm(raw) } else { raw };
+        }
+        debug_assert!(idx == pool.len());
+        for k in 0..t.ura_indicators.len() {
+            t.ura_indicators[k] = t.dead_wall[9 + k];
+        }
+        for p in 0..4 {
+            if p != seat {
+                t.last_drawn[p] = None;
+                t.last_drawn_red[p] = false;
+            }
+        }
+        t
+    }
+}
+
+/// Random complete hand (n_sets sets + a pair) drawn from `pool` counts, minus one
+/// random tile => a 13-tile-equivalent tenpai hand. Returns spelled tiles.
+fn sample_tenpai_hand(pool: &[Tile], n_sets: usize, rng: &mut Mt19937) -> Option<Vec<Tile>> {
+    let mut avail: Vec<Tile> = pool.to_vec();
+    let mut counts = [0u8; 34];
+    for &x in &avail {
+        counts[norm(x) as usize] += 1;
+    }
+    let take = |avail: &mut Vec<Tile>, counts: &mut [u8; 34], tile: Tile, out: &mut Vec<Tile>| -> bool {
+        // prefer the plain tile, fall back to the red one
+        let pos = avail.iter().position(|&y| y == tile)
+            .or_else(|| avail.iter().position(|&y| is_red(y) && norm(y) == tile));
+        match pos {
+            Some(i) => {
+                out.push(avail.swap_remove(i));
+                counts[tile as usize] -= 1;
+                true
+            }
+            None => false,
+        }
+    };
+    let mut hand: Vec<Tile> = Vec::new();
+    for _ in 0..n_sets {
+        let mut ok = false;
+        for _try in 0..40 {
+            let x = rng.randrange(34) as Tile;
+            if counts[x as usize] >= 3 && rng.random() < 0.35 {
+                for _ in 0..3 {
+                    take(&mut avail, &mut counts, x, &mut hand);
+                }
+                ok = true;
+                break;
+            }
+            if x < 27 && x % 9 <= 6 && counts[x as usize] >= 1 && counts[x as usize + 1] >= 1 && counts[x as usize + 2] >= 1 {
+                take(&mut avail, &mut counts, x, &mut hand);
+                take(&mut avail, &mut counts, x + 1, &mut hand);
+                take(&mut avail, &mut counts, x + 2, &mut hand);
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            return None;
+        }
+    }
+    let mut ok = false;
+    for _try in 0..60 {
+        let x = rng.randrange(34) as Tile;
+        if counts[x as usize] >= 2 {
+            take(&mut avail, &mut counts, x, &mut hand);
+            take(&mut avail, &mut counts, x, &mut hand);
+            ok = true;
+            break;
+        }
+    }
+    if !ok {
+        return None;
+    }
+    let drop = rng.randrange(hand.len() as u64) as usize;
+    hand.swap_remove(drop);
+    Some(hand)
 }
 
 fn argmax(v: &[i64; 4]) -> usize {
@@ -1326,6 +1598,7 @@ impl Table {
         self.points[winner] += self.kyotaku;
         self.kyotaku = 0;
         self.finished = true;
+        self.deal_end = Some(DealEnd { winners: vec![winner], ..Default::default() });
         let pao = liable.map(|l| format!(" | 包牌:玩家{l}")).unwrap_or_default();
         self.result_summary = format!("玩家{} 自摸 | {}番{}符 | {}{} | 点数: {}", winner, result.han, result.fu,
                                       Self::yaku_str(result), pao, fmt_points(&self.points));
@@ -1359,6 +1632,7 @@ impl Table {
         self.points[winners[0].0] += self.kyotaku;
         self.kyotaku = 0;
         self.finished = true;
+        self.deal_end = Some(DealEnd { winners: winners.iter().map(|(p, _)| *p).collect(), houjuu: Some(discarder), ..Default::default() });
         self.result_summary = format!("{}{} | 点数: {}", parts.join(" ; "),
                                       if winners.len() > 1 { " | 双响" } else { "" }, fmt_points(&self.points));
         self.compute_final_rewards(Some(discarder));
@@ -1370,6 +1644,7 @@ impl Table {
         }
         self.pending_abort = None;
         self.finished = true;
+        self.deal_end = Some(DealEnd { abort: true, ..Default::default() });
         self.result_summary = format!("途中流局({}) | 点数: {}", reason, fmt_points(&self.points));
         self.compute_final_rewards(None);
     }
@@ -1398,6 +1673,7 @@ impl Table {
                 }
             }
             self.finished = true;
+            self.deal_end = Some(DealEnd { nagashi: true, ..Default::default() });
             self.result_summary = format!("流局满贯 | 玩家{} | 点数: {}", fmt_list(&nagashi), fmt_points(&self.points));
             self.compute_final_rewards(None);
             return;
@@ -1412,15 +1688,23 @@ impl Table {
             }
         }
         self.finished = true;
+        self.deal_end = Some(DealEnd { tenpai: Some([tenpai[0], tenpai[1], tenpai[2], tenpai[3]]), ..Default::default() });
         let tl: Vec<usize> = (0..4).filter(|&i| tenpai[i]).collect();
         self.result_summary = format!("流局 | 听牌: {} | 点数: {}", fmt_list(&tl), fmt_points(&self.points));
         self.compute_final_rewards(None);
     }
 
-    fn compute_final_rewards(&mut self, _houjuu: Option<usize>) {
+    fn compute_final_rewards(&mut self, houjuu: Option<usize>) {
         let mut fr = [0.0f64; 4];
         for i in 0..4 {
             fr[i] = (self.points[i] - self.start_points[i]) as f64 * REWARD_SCALE;
+        }
+        if let Some(h) = houjuu {
+            fr[h] += self.houjuu_extra;
+        }
+        if !self.rank_bonus {
+            self.final_rewards = Some(fr);
+            return;
         }
         // placement bonus with ties sharing the average of the spanned positions
         let mut order: Vec<usize> = (0..4).collect();
