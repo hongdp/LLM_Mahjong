@@ -621,3 +621,9 @@ batch 4096 各占 21GB，推理服务器重启即 OOM——先算显存再并行
 - 现象：宿主 140.82.47.249 下载 rustup-init 停摆、pip 首轮漏装包（`No module named mahjong`），bootstrap 卡在 curl 重试。
 - 备用：`apt-get install cargo rustc`（Ubuntu 24.04 = 1.75，4 min）→ 删 `Cargo.lock`（v4 需 cargo ≥1.78）重生成 → `cargo update -p rayon --precise 1.10.0 && -p rayon-core --precise 1.12.1`（1.13 需 rustc 1.80）→ 代码不得用 1.77+ 才稳定的 API（`round_ties_even` 已换成 MSRV 实现）。maturin 用 pip 装即可。
 - 规则：bootstrap 脚本末尾必须 `python -c "import mahjong, riichi_rs"` 硬校验并打印 BOOTSTRAP_DONE/FAILED，不要用 `| tail -1` 吞掉 pip 错误；等待循环要区分"未完成"与"完成"，别只 `grep -q`。
+
+## 不要 scp 覆盖正在运行的 bash 脚本（2026-09-12，exp87 BR2）
+bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我为加 BR3 臂把修改后的 `exp87_pod_train.sh` scp 到同一路径，
+训练正常结束后 bash 从新文件的**旧字节偏移**继续读，执行了半行垃圾（`exp_dir: command not found`，exit 127），
+其中的 `> /workspace/train_BR2.log` 重定向还把训练日志清空了，心跳据此报 TRAIN_FAILED（训练本身 exit 0、ckpt 完好，指标靠 train_log.json/TB 复原）。
+规则：①运行中的脚本只能改副本（新文件名，如 `*_v2.sh`）或等其退出；②发射脚本第一行 `exec bash -c "$(cat "$0")"` 之类的自读全量也可以，但更简单的是**每个臂一个脚本文件**；③心跳的 TRAIN_FAILED 要连同 `games_final.pt` 是否存在一起看再判。
