@@ -29,6 +29,11 @@ fn info_dict(py: Python<'_>, info: &StepInfo) -> PyResult<PyObject> {
     Ok(d.into())
 }
 
+impl PyTable {
+    /// Clone of the inner table for other Rust callers (VecEnv::from_tables).
+    pub fn table_clone(&self) -> Table { self.t.clone() }
+}
+
 #[pymethods]
 impl PyTable {
     #[new]
@@ -44,6 +49,11 @@ impl PyTable {
         }
         Ok(PyTable { t: Table::new_hanchan(seed, dealer, round_wind_idx, [points[0], points[1], points[2], points[3]], kyotaku, honba) })
     }
+    /// PIMC determinization: resample everything `seat` cannot see (see Table::determinize).
+    fn determinize(&self, seat: usize, seed: u64) -> PyTable {
+        PyTable { t: self.t.determinize(seat, seed) }
+    }
+    #[getter] fn rinshan_idx(&self) -> usize { self.t.rinshan_idx }
     // ---- state ----
     #[getter] fn dealer(&self) -> usize { self.t.dealer }
     #[getter] fn round_wind_idx(&self) -> usize { self.t.round_wind_idx }

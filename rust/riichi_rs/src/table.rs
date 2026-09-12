@@ -383,6 +383,206 @@ impl Table {
     }
 }
 
+/// Inference-time search support (PIMC): resample everything `seat` cannot see
+/// (the other three concealed hands, the live wall, the undrawn rinshan tiles,
+/// the unrevealed dora indicators and all ura indicators) from the hidden
+/// multiset, keeping every visible fact (own hand, melds, rivers, revealed
+/// indicators, points, sticks, flags) identical. Seats in riichi get a hand
+/// that is genuinely tenpai (built from random sets + pair minus one tile),
+/// avoiding their own furiten river when a few retries allow it.
+impl Table {
+    pub fn determinize(&self, seat: usize, seed: u64) -> Table {
+        let mut t = self.clone();
+        let mut rng = Mt19937::new();
+        rng.seed_u64(seed);
+        // --- collect the hidden multiset (spelled: red fives restored from counts)
+        let mut pool: Vec<Tile> = Vec::new();
+        let mut sizes = [0usize; 4];
+        for p in 0..4 {
+            if p == seat {
+                continue;
+            }
+            let mut reds = t.red[p];
+            for &h in &t.hands[p] {
+                let mut tile = h;
+                if h == 4 || h == 13 || h == 22 {
+                    let si = (h / 9) as usize;
+                    if reds[si] > 0 {
+                        reds[si] -= 1;
+                        tile = RED_M + si as Tile;
+                    }
+                }
+                pool.push(tile);
+            }
+            sizes[p] = t.hands[p].len();
+        }
+        let wall_len = t.wall.len();
+        pool.extend(t.wall.iter().copied());
+        let mut hidden_slots: Vec<usize> = Vec::new();
+        for i in t.rinshan_idx..4 {
+            hidden_slots.push(i);
+        }
+        for k in t.dora_indicators.len()..5 {
+            hidden_slots.push(4 + k);
+        }
+        for k in 0..5 {
+            hidden_slots.push(9 + k);
+        }
+        for &i in &hidden_slots {
+            pool.push(t.dead_wall[i]);
+        }
+        rng.shuffle(&mut pool);
+        // --- riichi seats first: carve a tenpai hand out of the pool
+        for p in 0..4 {
+            if p == seat || !t.riichi[p] || sizes[p] == 0 {
+                continue;
+            }
+            let n_sets = 4 - t.melds[p].len();
+            let mut best: Option<Vec<Tile>> = None;
+            for _attempt in 0..30 {
+                if let Some(hand) = sample_tenpai_hand(&pool, n_sets, &mut rng) {
+                    // prefer a hand whose waits avoid this seat's own furiten river
+                    let mut probe = hand.clone();
+                    probe.sort_by_key(|&x| sort_key(norm(x)));
+                    let normed: Vec<Tile> = probe.iter().map(|&x| norm(x)).collect();
+                    let ws = crate::shanten::waits_of(&normed, t.melds[p].len());
+                    let furiten = ws.iter().any(|w| t.furiten_river[p].contains(w));
+                    if !furiten || best.is_none() {
+                        best = Some(hand);
+                        if !furiten {
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(hand) = best {
+                // remove the chosen spelled tiles from the pool, one occurrence each
+                for &x in &hand {
+                    if let Some(pos) = pool.iter().position(|&y| y == x) {
+                        pool.swap_remove(pos);
+                    }
+                }
+                t.hands[p].clear();
+                t.red[p] = [0; 3];
+                for &raw in &hand {
+                    t.give(p, raw);
+                }
+                sort_hand(&mut t.hands[p]);
+                sizes[p] = 0;   // done
+                rng.shuffle(&mut pool);
+            }
+        }
+        // indicator slots (>= 4) are stored normalized: a red five landing there
+        // would vanish, so keep reds out of the tail that feeds those slots
+        let n_norm = hidden_slots.iter().filter(|&&i| i >= 4).count();
+        let cut = pool.len().saturating_sub(n_norm);
+        for j in cut..pool.len() {
+            if is_red(pool[j]) {
+                if let Some(k) = (0..cut).find(|&k| !is_red(pool[k])) {
+                    pool.swap(j, k);
+                }
+            }
+        }
+        // --- everyone else: uniform
+        let mut idx = 0usize;
+        for p in 0..4 {
+            if p == seat || sizes[p] == 0 {
+                continue;
+            }
+            t.hands[p].clear();
+            t.red[p] = [0; 3];
+            for _ in 0..sizes[p] {
+                let raw = pool[idx];
+                idx += 1;
+                t.give(p, raw);
+            }
+            sort_hand(&mut t.hands[p]);
+        }
+        // --- live wall, then hidden dead-wall slots
+        t.wall = pool[idx..idx + wall_len].to_vec();
+        idx += wall_len;
+        for &i in &hidden_slots {
+            let raw = pool[idx];
+            idx += 1;
+            t.dead_wall[i] = if i >= 4 { norm(raw) } else { raw };
+        }
+        debug_assert!(idx == pool.len());
+        for k in 0..t.ura_indicators.len() {
+            t.ura_indicators[k] = t.dead_wall[9 + k];
+        }
+        for p in 0..4 {
+            if p != seat {
+                t.last_drawn[p] = None;
+                t.last_drawn_red[p] = false;
+            }
+        }
+        t
+    }
+}
+
+/// Random complete hand (n_sets sets + a pair) drawn from `pool` counts, minus one
+/// random tile => a 13-tile-equivalent tenpai hand. Returns spelled tiles.
+fn sample_tenpai_hand(pool: &[Tile], n_sets: usize, rng: &mut Mt19937) -> Option<Vec<Tile>> {
+    let mut avail: Vec<Tile> = pool.to_vec();
+    let mut counts = [0u8; 34];
+    for &x in &avail {
+        counts[norm(x) as usize] += 1;
+    }
+    let take = |avail: &mut Vec<Tile>, counts: &mut [u8; 34], tile: Tile, out: &mut Vec<Tile>| -> bool {
+        // prefer the plain tile, fall back to the red one
+        let pos = avail.iter().position(|&y| y == tile)
+            .or_else(|| avail.iter().position(|&y| is_red(y) && norm(y) == tile));
+        match pos {
+            Some(i) => {
+                out.push(avail.swap_remove(i));
+                counts[tile as usize] -= 1;
+                true
+            }
+            None => false,
+        }
+    };
+    let mut hand: Vec<Tile> = Vec::new();
+    for _ in 0..n_sets {
+        let mut ok = false;
+        for _try in 0..40 {
+            let x = rng.randrange(34) as Tile;
+            if counts[x as usize] >= 3 && rng.random() < 0.35 {
+                for _ in 0..3 {
+                    take(&mut avail, &mut counts, x, &mut hand);
+                }
+                ok = true;
+                break;
+            }
+            if x < 27 && x % 9 <= 6 && counts[x as usize] >= 1 && counts[x as usize + 1] >= 1 && counts[x as usize + 2] >= 1 {
+                take(&mut avail, &mut counts, x, &mut hand);
+                take(&mut avail, &mut counts, x + 1, &mut hand);
+                take(&mut avail, &mut counts, x + 2, &mut hand);
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            return None;
+        }
+    }
+    let mut ok = false;
+    for _try in 0..60 {
+        let x = rng.randrange(34) as Tile;
+        if counts[x as usize] >= 2 {
+            take(&mut avail, &mut counts, x, &mut hand);
+            take(&mut avail, &mut counts, x, &mut hand);
+            ok = true;
+            break;
+        }
+    }
+    if !ok {
+        return None;
+    }
+    let drop = rng.randrange(hand.len() as u64) as usize;
+    hand.swap_remove(drop);
+    Some(hand)
+}
+
 fn argmax(v: &[i64; 4]) -> usize {
     let mut b = 0;
     for i in 1..4 {

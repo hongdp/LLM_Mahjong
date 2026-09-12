@@ -381,6 +381,50 @@ impl VecEnv {
         Ok(env)
     }
 
+    /// PIMC rollouts: one game per supplied table (all active at once), each forced to
+    /// take `first_actions[i]` for `seats[i]` first (a turn-phase action: discard /
+    /// riichi / tsumo / kan), then played out by the caller's policy to the end of the
+    /// deal. `seed` per game = its index, so drain_finished() keys match the input order.
+    #[staticmethod]
+    #[pyo3(signature = (tables, seats, first_actions, gamma=0.995, variant="v1r".to_string()))]
+    fn from_tables(tables: Vec<PyRef<crate::pytable::PyTable>>, seats: Vec<usize>, first_actions: Vec<String>, gamma: f64, variant: String) -> PyResult<Self> {
+        if tables.len() != seats.len() || tables.len() != first_actions.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err("tables / seats / first_actions length mismatch"));
+        }
+        let k = tables.len().max(1);
+        let mut env = VecEnv {
+            queue: std::collections::VecDeque::new(),
+            active: (0..k).map(|_| None).collect(),
+            k, gamma, shaping: false, shaping_scale: 1.0, randomize_round: true, variant,
+            finished: Vec::new(),
+            n_started: 0,
+            hanchan: false, max_deals: 24, houjuu_extra: 0.0,
+        };
+        for (i, (pt, (seat, xml))) in tables.iter().zip(seats.iter().zip(first_actions.iter())).enumerate() {
+            let mut table = pt.table_clone();
+            if table.finished {
+                continue;
+            }
+            let (_rewards, done, info) = table.step(*seat, xml);
+            let phase = if info.discarded || info.chankan.is_some() { Phase::Interrupt } else { Phase::Turn };
+            let mut g = Game {
+                table, seed: i as u64, traj: Default::default(), phase, guard: 0,
+                rows: Vec::new(), pending_steps: Vec::new(),
+                ms: None, deal_facts: Vec::new(), deal_start_len: [0; 4],
+            };
+            if done {
+                env.finished.push(finish(g));
+                continue;
+            }
+            // make sure the forced step leaves a consistent turn pointer for the loop
+            g.guard = 0;
+            env.active[i] = Some(g);
+            env.n_started += 1;
+        }
+        env.settle_all();
+        Ok(env)
+    }
+
     fn done(&self) -> bool {
         self.queue.is_empty() && self.active.iter().all(|g| g.is_none())
     }
