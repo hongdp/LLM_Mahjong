@@ -1,7 +1,7 @@
-# exp88 高熵 / QRE 正则续训：IIG 文献里唯一没测过的训练侧杠杆（草稿，未发射）
+# exp88 高熵 / QRE 正则续训：IIG 文献里唯一没测过的训练侧杠杆
 
-- **Date**: 2026-09-12（草稿）  **Status**: draft（等 exp87 门 A 判决后定稿发射）
-- **Git**: 待填  **Env**: Secure/社区 24GB 或 RTX 2000 Ada；纯血谱系（锚 = 自家 M，不含人类数据）
+- **Date**: 2026-09-12（草稿）  **Status**: running
+- **Git**: 5692b36（uncommitted: none）  **Env**: Secure/社区 24GB 或 RTX 2000 Ada；纯血谱系（锚 = 自家 M，不含人类数据）
 
 ## Purpose & Hypothesis
 文献（Reevaluating PG for IIGs, ICLR 2026；MMD, Sokota 2022；ACH, ICLR 2022）一致指出：PPO 自对弈在不完全信息博弈里不收敛到 NE，但**熵系数取足够大（QRE 温度）并配 KL-to-magnet 正则**后，通用策略梯度 ≥ NFSP/PSRO/R-NaD。
@@ -16,6 +16,6 @@
 - 终评：vs bc49 20k 对、vs M 20k 对、半庄 n=1,200、行为探针。
 
 ## Success Criteria（预注册）
-1. H1 如上；2. 预算 ≈$2.5（两臂 16M @ 700–900 局/s），上限 $5。
+1. H1 如上；2. 预算：Secure RTX 2000 Ada（6–8 vCPU，$0.24/h）镜像自对弈预计 400–600 局/s ⇒ 每臂 16M ≈ 8 h ≈ $2；两臂 ≈**$4.5，上限 $7**。
 
 ## Progress
