@@ -51,6 +51,9 @@ exp85 的剥削者 E 是在**镜像**里加放铳惩罚训出来的，没有针�
   运维：训练 exit 0、ckpt 完好；但我 scp 覆盖了运行中的脚本 ⇒ 结束后 bash 错位执行、清空了 train_BR2.log 并误报 TRAIN_FAILED（SKILLS 已记）。指标由 train_log.json / TB / 13:35 前的日志副本保全。
   BR2 pod 复用发射 **BR3**（W 起，lr 1e-4，houjuu 0，8M 局）：973 局/s，KL 0.002–0.004，≈2.3 h ≈ $0.55。BR1 ≈14:20 到 72M 终点。
 
+- [09-12 14:50 PDT] **BR1 终点（72M，+8M 局纯最佳响应对冻结 M）门 A**（T=0，4k 对）：**vs M 0.4919 ± 0.008**（起点 W vs M ≈0.498）、vs bc49 0.437（W 0.447）、vs E 0.524（W 0.534）。**门 A 未过**：8M 局纯 BR 对 M 零增益、其余对手各掉 1 pp。BR1 pod 已终止（≈$0.85）；ckpt 在 `experiments/exp87_BR1/` 与 GCS。
+  阶段 A 至此两臂（lr 3e-5）都判：**M 在本谱系 + 本优化器可达范围内近似不可剥削**。最后看 BR3（lr 1e-4）终点；若同样 <0.52 ⇒ H0-A，按预注册跳过阶段 B。
+
 ## Results
 
 ## Conclusion
