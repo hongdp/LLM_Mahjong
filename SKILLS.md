@@ -631,3 +631,8 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
 ## "最佳响应学不出来"是比"胜份平"更强的判决（2026-09-12，exp87）
 对冻结对手训最佳响应（frac 1.0、1 学习者席、贪心对手）时，`league_stats.jsonl` 的学习者胜份按 200 迭代分块（每块 ≈1.2M 席局，SE≈0.0005）若**全程无趋势**，就不必等 8M 局终点——这说明对手在本优化器可达范围内不可剥削，人口机制（PSRO/防守者池/同族池）无梯度，应转向优化器/正则杠杆而不是加数据或加成员。
 另：学习者席 1 时每局只产 1/4 数据但吞吐反升（930 vs 640 局/s），因为更新相变轻；镜像 4 席时同 pod 只有 290–370 局/s。估成本先看学习者席数。
+
+## Secure pod 的 nproc 是宿主核数，训练吞吐看 cgroup 配额与宿主 CPU（2026-09-12，exp88）
+`nproc`/`os.cpu_count()` 报 48–64，`/sys/fs/cgroup/cpu/cpu.cfs_quota_us` 才是真配额（RTX 2000 Ada 档 5.1 CPU）。训练器已改为 `effective_cpus()`（affinity ∩ cgroup 配额）定 torch 线程并设 `RAYON_NUM_THREADS`；
+但实测只 +3–6%：rayon（Rust std `available_parallelism`）本来就读 cgroup 配额，过度订阅主要是 torch 的 16 线程。本机 `taskset` 模拟（强制 RAYON=48）得到的 +58% 不代表 pod 现状——模拟要先确认 pod 上的线程数构成。
+同规格 Secure pod 的 CPU 速度可差 2×（exp88 Q1 rollout 1.3 s vs Q2 2.9 s/迭代）：镜像自对弈（4 学习者席）在 6 vCPU 上只有 380–590 局/s，而 3090/32 vCPU 社区机 925。**开机后先跑 30 s rollout 基准**（scratchpad `bench_threads.py`，随机合法动作、无 GPU），慢宿主直接换。
