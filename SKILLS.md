@@ -638,3 +638,5 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
 同规格 Secure pod 的 CPU 速度可差 2×（exp88 Q1 rollout 1.3 s vs Q2 2.9 s/迭代）：镜像自对弈（4 学习者席）在 6 vCPU 上只有 380–590 局/s，而 3090/32 vCPU 社区机 925。**开机后先跑 30 s rollout 基准**（scratchpad `bench_threads.py`，随机合法动作、无 GPU），慢宿主直接换。
 补（同日）：三台同规格 Secure RTX 2000 Ada 的 rollout 基准 6223（带载）/ 3679（空载）/ 2108（带载）局/s——宿主差 2–3×，且抽到快宿主靠运气；
 开机后先跑基准，低于 ≈5000（空载）就换机再装依赖，比事后迁移便宜。
+补（2026-09-12 晚，第三次）：`P=$(pgrep -f "bin/tensorboar[d] --logdir_spec"); kill $P; ... nohup tensorboard --logdir_spec ...` 放在**同一条** bash -c 里，
+方括号技巧只保护模式本身，而同一命令行里后面那段真实的重启命令文本照样匹配 ⇒ 又杀了自己（exit 144）。规则：pgrep 列 PID 与含目标字串的重启命令必须是**两次独立调用**，kill 只用字面 PID。
