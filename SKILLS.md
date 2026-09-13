@@ -640,3 +640,8 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
 开机后先跑基准，低于 ≈5000（空载）就换机再装依赖，比事后迁移便宜。
 补（2026-09-12 晚，第三次）：`P=$(pgrep -f "bin/tensorboar[d] --logdir_spec"); kill $P; ... nohup tensorboard --logdir_spec ...` 放在**同一条** bash -c 里，
 方括号技巧只保护模式本身，而同一命令行里后面那段真实的重启命令文本照样匹配 ⇒ 又杀了自己（exit 144）。规则：pgrep 列 PID 与含目标字串的重启命令必须是**两次独立调用**，kill 只用字面 PID。
+
+## RunPod 坏宿主名单补充（2026-09-13）
+- 社区 4090 宿主后缀 **64411a5a**：无公网 TCP 口（只给代理 SSH，账号未注册密钥 ⇒ 不可用），两次抽中，建后立刻终止。
+- Secure RTX 2000 Ada EUR-IS-1 宿主后缀 **64411d59**：`error creating container: container create: exit status 1` 无限重试，runtime 永远 null；两次抽中。
+判别：create-pod 响应的 `ssh.proxy.username` 后缀就是宿主标识，落到名单里的直接 delete 再建；Secure 可用 `dataCenterIds` 换机房（EU-RO-1 之前正常）。
