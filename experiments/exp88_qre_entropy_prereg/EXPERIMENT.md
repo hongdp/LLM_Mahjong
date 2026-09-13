@@ -27,4 +27,5 @@
 - [09-12 18:15 PDT] **吞吐优化尝试**：pod `nproc` 报 48 核而 cgroup 配额 5.1 CPU（cfs 510000/100000），训练器按 cpu_count//3=16 开 torch 线程。给训练器加 `effective_cpus()`（affinity ∩ cgroup v1/v2 配额）并设 RAYON_NUM_THREADS（3a1e851），两臂按 PID 杀掉后从 `latest.pt`（83.56M）resume 同 exp_dir（日志 1,737 行、优化器、熵系数 0.03 均续上）。
   实测：Q1 557→**593** 局/s（+6%，rollout 1.4→1.3 s）、Q2 374→**384**（+3%，rollout 2.9 s 不变）。本机 taskset 模拟的 +58% 没有复现——pod 上 rayon 本来就按配额开 6 线程，收益只来自 torch 线程 16→2。分相：Q1 rollout 1.3 / update 1.4 / pack 0.6；Q2 rollout 2.9 / update 1.9 / pack 0.6（同规格宿主，Q2 的 CPU 慢一倍 = 宿主共享/更弱）。
   下一步：开一台新 Secure RTX 2000 Ada 跑 30 s rollout 基准，若 ≥1.5× Q2 宿主则迁移 Q2（resume）。
+- [09-12 18:40 PDT] 宿主基准（`bench_threads.py`，随机合法动作 rollout，无 GPU）：Q1 宿主（带训练负载）**6223** 局/s、Q2 宿主（带负载）**2108**（抖动 1572–2928）、探针新 pod `wgvek0u7gicffg`（EUR-IS-1，8 vCPU，空载）**3679**。探针空载都不到 Q1 带载的一半，与 Q2 同档 ⇒ 迁移无 ≥1.5× 把握，**不迁**；探针已终止（≈$0.1）。Q2 按 384 局/s 到 92M 需 ≈6 h（≈02:00 PDT），Q1 ≈4 h。
 

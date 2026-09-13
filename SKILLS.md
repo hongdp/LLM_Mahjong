@@ -636,3 +636,5 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
 `nproc`/`os.cpu_count()` 报 48–64，`/sys/fs/cgroup/cpu/cpu.cfs_quota_us` 才是真配额（RTX 2000 Ada 档 5.1 CPU）。训练器已改为 `effective_cpus()`（affinity ∩ cgroup 配额）定 torch 线程并设 `RAYON_NUM_THREADS`；
 但实测只 +3–6%：rayon（Rust std `available_parallelism`）本来就读 cgroup 配额，过度订阅主要是 torch 的 16 线程。本机 `taskset` 模拟（强制 RAYON=48）得到的 +58% 不代表 pod 现状——模拟要先确认 pod 上的线程数构成。
 同规格 Secure pod 的 CPU 速度可差 2×（exp88 Q1 rollout 1.3 s vs Q2 2.9 s/迭代）：镜像自对弈（4 学习者席）在 6 vCPU 上只有 380–590 局/s，而 3090/32 vCPU 社区机 925。**开机后先跑 30 s rollout 基准**（scratchpad `bench_threads.py`，随机合法动作、无 GPU），慢宿主直接换。
+补（同日）：三台同规格 Secure RTX 2000 Ada 的 rollout 基准 6223（带载）/ 3679（空载）/ 2108（带载）局/s——宿主差 2–3×，且抽到快宿主靠运气；
+开机后先跑基准，低于 ≈5000（空载）就换机再装依赖，比事后迁移便宜。
