@@ -196,10 +196,12 @@ pub fn potential(t: &Table, pid: usize) -> f64 {
 // ======================================================================
 pub const N_PLANES_V3R: usize = 56;
 pub const N_SCALARS_V3: usize = 29;
+/// v3s (exp89): v3r planes + 2 style scalars (tau_d / 8, tau_a) read from Table::seat_style[pid]
+pub const N_SCALARS_V3S: usize = N_SCALARS_V3 + 2;
 
 pub fn planes_of(variant: &str) -> usize {
     match variant {
-        "v3r" => N_PLANES_V3R,
+        "v3r" | "v3s" => N_PLANES_V3R,
         _ => N_PLANES,
     }
 }
@@ -207,6 +209,7 @@ pub fn planes_of(variant: &str) -> usize {
 pub fn scalars_of(variant: &str) -> usize {
     match variant {
         "v3r" => N_SCALARS_V3,
+        "v3s" => N_SCALARS_V3S,
         _ => N_SCALARS,
     }
 }
@@ -367,6 +370,12 @@ pub fn encode_v3r(t: &Table, pid: usize, planes: &mut [f32], scalars: &mut [f32]
 pub fn encode(t: &Table, pid: usize, variant: &str, planes: &mut [f32], scalars: &mut [f32]) {
     match variant {
         "v3r" => encode_v3r(t, pid, planes, scalars),
+        "v3s" => {
+            debug_assert!(scalars.len() == N_SCALARS_V3S);
+            encode_v3r(t, pid, planes, &mut scalars[..N_SCALARS_V3]);
+            scalars[N_SCALARS_V3] = (t.seat_style[pid][0] / 8.0) as f32;
+            scalars[N_SCALARS_V3 + 1] = t.seat_style[pid][1] as f32;
+        }
         _ => encode_v1r(t, pid, planes, scalars),
     }
 }

@@ -54,6 +54,15 @@ impl PyTable {
         PyTable { t: self.t.determinize(seat, seed) }
     }
     #[getter] fn rinshan_idx(&self) -> usize { self.t.rinshan_idx }
+    /// exp89 style conditioning: per seat [tau_d, tau_a] (deal-in penalty magnitude, win bonus factor)
+    #[getter] fn seat_style(&self) -> Vec<Vec<f64>> { self.t.seat_style.iter().map(|s| s.to_vec()).collect() }
+    #[setter] fn set_seat_style(&mut self, v: Vec<Vec<f64>>) -> PyResult<()> {
+        if v.len() != 4 || v.iter().any(|s| s.len() != 2) {
+            return Err(pyo3::exceptions::PyValueError::new_err("seat_style must be 4 x [tau_d, tau_a]"));
+        }
+        for p in 0..4 { self.t.seat_style[p] = [v[p][0], v[p][1]]; }
+        Ok(())
+    }
     // ---- state ----
     #[getter] fn dealer(&self) -> usize { self.t.dealer }
     #[getter] fn round_wind_idx(&self) -> usize { self.t.round_wind_idx }

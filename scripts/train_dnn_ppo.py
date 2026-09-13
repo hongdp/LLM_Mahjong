@@ -183,6 +183,11 @@ def main():
                          "penalized immediately via gamma*V(s')-V(s), without "
                          "waiting for the settlement). MC advantages reduce "
                          "the critic to variance reduction only.")
+    ap.add_argument("--style_prior", default=None,
+                    help="exp89 style-conditioned population (Rust, arch cnn_m_v3s): 'p_pure,d_max,a_max' — "
+                         "per deal, with prob p_pure all seats play the pure objective, else each seat is pure (1/2) "
+                         "or draws a deal-in penalty tau_d~U(0,d_max) and a win bonus factor tau_a~U(0,a_max); "
+                         "the style is fed to the policy as 2 scalars, so one network holds the whole population")
     ap.add_argument("--houjuu_extra", type=float, default=0.0,
                     help="exp85 defender exploiter: extra reward (normalized units, e.g. -8 = -8000 pts) "
                          "added to the seat that dealt in, on top of the point delta (Rust engine only)")
@@ -511,6 +516,11 @@ def main():
               f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
               flush=True)
     cfg["houjuu_extra"] = float(args.houjuu_extra)
+    if args.style_prior:
+        cfg["style_prior"] = tuple(float(x) for x in args.style_prior.split(","))
+        if len(cfg["style_prior"]) != 3 or args.engine != "rust":
+            raise SystemExit("--style_prior needs 'p_pure,d_max,a_max' and --engine rust")
+        print(f"🎭 style prior p_pure={cfg['style_prior'][0]} d_max={cfg['style_prior'][1]} a_max={cfg['style_prior'][2]}", flush=True)
     if args.houjuu_extra and args.engine != "rust":
         raise SystemExit("--houjuu_extra is implemented on the Rust engine only")
     if args.houjuu_extra:

@@ -23,7 +23,7 @@ from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
 from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
                                     N_PLANES_V1R, N_PLANES_V3R, N_PLANES_V3R2,
                                     N_PLANES_V2, N_PLANES_V3, N_SCALARS,
-                                    N_SCALARS_V3, N_SCALARS_V3H, TILE_TYPES)
+                                    N_SCALARS_V3, N_SCALARS_V3H, N_SCALARS_V3S, TILE_TYPES)
 from src.agents.dnn.net import MahjongPolicyNet, ResBlock
 
 
@@ -262,6 +262,10 @@ ZOO = {
                                           encoder_variant="v1r"), False),
     "cnn_m_v3r": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R,
                                     in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp89: same trunk, +2 style scalars; a v3r checkpoint loads with the new
+    # input columns zero-initialised (net.load_compatible), so tau=0 reproduces it
+    "cnn_m_v3s": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R,
+                                    in_scalars=N_SCALARS_V3S, encoder_variant="v3s"), False),
     "convformer_m_v3r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V3R,
                                             in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
 }

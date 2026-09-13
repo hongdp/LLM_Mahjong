@@ -17,6 +17,23 @@ import torch
 from src.agents.dnn.style_stats import add_game, new_agg
 
 
+def style_draw(seed: int, prior) -> list:
+    """(p_pure, d_max, a_max): with prob p_pure the whole table plays the pure objective;
+    otherwise each seat independently is pure (1/2) or draws tau_d ~ U(0, d_max), tau_a ~ U(0, a_max).
+    Returns [d0, a0, d1, a1, d2, a2, d3, a3]."""
+    p_pure, d_max, a_max = float(prior[0]), float(prior[1]), float(prior[2])
+    rng = np.random.default_rng(seed * 2654435761 % (2 ** 32) + 89)
+    if rng.random() < p_pure:
+        return [0.0] * 8
+    out = []
+    for _ in range(4):
+        if rng.random() < 0.5:
+            out += [0.0, 0.0]
+        else:
+            out += [float(rng.random() * d_max), float(rng.random() * a_max)]
+    return out
+
+
 def widen_planes(t: torch.Tensor) -> torch.Tensor:
     """Episode planes -> float32 on their device: uint8 (collect_rust, PLANE_Q grid)
     are dequantised by division (bit-exact with the encoder); float16/32 pass through."""
@@ -36,8 +53,17 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
         seeds = [6_000_000 + i for i in range(n_games)]
     k = max(1, int(cfg.get("games_per_worker", 32)) * max(1, workers))
     variant = cfg.get("encoder_variant") or getattr(net, "encoder_variant", "v1r")
-    if variant not in ("v1r", "v3r"):
-        raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r only)")
+    if variant not in ("v1r", "v3r", "v3s"):
+        raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s only)")
+    # exp89 style-conditioned population: per seed, each seat draws a reward style
+    # (tau_d deal-in penalty, tau_a win bonus) from the prior; seeds are shared by the
+    # dup_k replicas so the (seed, seat) group baseline still compares like with like.
+    seat_styles = None
+    prior = cfg.get("style_prior")
+    if prior:
+        if variant != "v3s":
+            raise SystemExit("collect_rust: --style_prior needs the v3s encoder (arch cnn_m_v3s)")
+        seat_styles = [style_draw(int(s), prior) for s in seeds]
     # hanchan (exp83+): four learner copies over a full match (play_hanchan_gen /
     # --hanchan_pure), credit=none only; `n_games` then counts MATCHES.
     hanchan = bool(cfg.get("hanchan"))
@@ -53,7 +79,8 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     env = riichi_rs.VecEnv([int(s) for s in seeds], k, float(cfg.get("gamma", 0.995)),
                            bool(cfg.get("shaping", False)), float(cfg.get("shaping_scale", 1.0)),
                            True, variant, hanchan=hanchan, max_deals=int(cfg.get("hanchan_max_deals", 24)),
-                           houjuu_extra=float(cfg.get("houjuu_extra", 0.0) or 0.0))
+                           houjuu_extra=float(cfg.get("houjuu_extra", 0.0) or 0.0),
+                           seat_styles=seat_styles)
     temperature = float(cfg.get("temperature", 1.0))
     q = float(riichi_rs.PLANE_Q)
     dev = torch.device(device)

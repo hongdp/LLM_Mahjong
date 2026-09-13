@@ -87,6 +87,7 @@ pub struct VecEnv {
     hanchan: bool,
     max_deals: usize,
     houjuu_extra: f64,
+    seat_styles: std::collections::HashMap<u64, [[f64; 2]; 4]>,   // exp89: per-seed (tau_d, tau_a) x 4 seats
 }
 
 fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<u8>, Vec<f32>, f64) {
@@ -132,8 +133,10 @@ fn deal_done(g: &mut Game) -> bool {
     let honba = ms.honba;
     let n = ms.n as u64;
     let hx = g.table.houjuu_extra;
+    let st = g.table.seat_style;
     g.table = Table::new_hanchan(g.seed.wrapping_mul(1_000_003).wrapping_add(n), dealer, rw, pts, kyo, honba);
     g.table.houjuu_extra = hx;
+    g.table.seat_style = st;
     g.phase = Phase::Turn;
     g.guard = 0;
     g.rows.clear();
@@ -316,6 +319,9 @@ impl VecEnv {
                         (Table::new_seeded(seed, self.randomize_round), None)
                     };
                     table.houjuu_extra = self.houjuu_extra;
+                    if let Some(st) = self.seat_styles.get(&seed) {
+                        table.seat_style = *st;
+                    }
                     self.active[slot] = Some(Game {
                         table, seed, traj: Default::default(), phase: Phase::Turn, guard: 0,
                         rows: Vec::new(), pending_steps: Vec::new(),
@@ -358,10 +364,22 @@ impl VecEnv {
 #[pymethods]
 impl VecEnv {
     #[new]
-    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true, variant="v1r".to_string(), hanchan=false, max_deals=24, houjuu_extra=0.0))]
-    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool, variant: String, hanchan: bool, max_deals: usize, houjuu_extra: f64) -> PyResult<Self> {
+    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true, variant="v1r".to_string(), hanchan=false, max_deals=24, houjuu_extra=0.0, seat_styles=None))]
+    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool, variant: String, hanchan: bool, max_deals: usize, houjuu_extra: f64, seat_styles: Option<Vec<Vec<f64>>>) -> PyResult<Self> {
         if hanchan && shaping {
             return Err(pyo3::exceptions::PyValueError::new_err("hanchan VecEnv: PBRS shaping is per-deal and not supported across a match"));
+        }
+        let mut style_map = std::collections::HashMap::new();
+        if let Some(st) = seat_styles {
+            if st.len() != seeds.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err("seat_styles must align with seeds (one list of 8 floats per seed)"));
+            }
+            for (s, v) in seeds.iter().zip(st.iter()) {
+                if v.len() != 8 {
+                    return Err(pyo3::exceptions::PyValueError::new_err("each seat_styles entry must be [d0,a0,d1,a1,d2,a2,d3,a3]"));
+                }
+                style_map.insert(*s, [[v[0], v[1]], [v[2], v[3]], [v[4], v[5]], [v[6], v[7]]]);
+            }
         }
         let mut env = VecEnv {
             queue: seeds.into_iter().collect(),
@@ -370,6 +388,7 @@ impl VecEnv {
             finished: Vec::new(),
             n_started: 0,
             hanchan, max_deals, houjuu_extra,
+            seat_styles: style_map,
         };
         env.fill_slots();
         env.settle_all();
@@ -399,6 +418,7 @@ impl VecEnv {
             finished: Vec::new(),
             n_started: 0,
             hanchan: false, max_deals: 24, houjuu_extra: 0.0,
+            seat_styles: std::collections::HashMap::new(),
         };
         for (i, (pt, (seat, xml))) in tables.iter().zip(seats.iter().zip(first_actions.iter())).enumerate() {
             let mut table = pt.table_clone();

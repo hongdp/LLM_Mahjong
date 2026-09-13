@@ -155,6 +155,8 @@ def load_compatible(net: nn.Module, state: dict) -> list:
     model_sd = net.state_dict()
     state = {k: _widen_legacy_head(k, v, model_sd[k]) if k in model_sd else v
              for k, v in state.items()}
+    state = {k: _widen_scalar_input(k, v, model_sd[k]) if k in model_sd else v
+             for k, v in state.items()}
     ok = {k: v for k, v in state.items()
           if k in model_sd and tuple(model_sd[k].shape) == tuple(v.shape)}
     net.load_state_dict(ok, strict=False)
@@ -163,6 +165,18 @@ def load_compatible(net: nn.Module, state: dict) -> list:
     if bad:
         raise RuntimeError(f"policy keys failed to load: {bad[:5]}")
     return [k for k in model_sd if k not in ok]
+
+
+def _widen_scalar_input(k: str, v, target):
+    """exp89: a v3r checkpoint (29 scalars) loading into a v3s net (31): the
+    first scalar Linear gains zero columns for the new inputs, so the loaded
+    net is exactly the old one whenever the style scalars are zero."""
+    if (k.endswith("scalar_fc.0.weight") and v.dim() == 2 and target.dim() == 2
+            and v.shape[0] == target.shape[0] and v.shape[1] < target.shape[1]):
+        out = torch.zeros_like(target)
+        out[:, :v.shape[1]] = v
+        return out
+    return v
 
 
 # Pre-red checkpoints (2026-08-23 Majsoul rules) have 8 action types / 272
