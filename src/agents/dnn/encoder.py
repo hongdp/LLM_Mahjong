@@ -99,6 +99,7 @@ VARIANT_SHAPE = {                            # encoder variant -> (planes, scala
     "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
     "v3r2": (N_PLANES_V3R2, N_SCALARS_V3),
     "v3rh": (N_PLANES_V3R, N_SCALARS_V3H),
+    "v3s": (N_PLANES_V3R, N_SCALARS_V3S),      # exp89 style-conditioned (v3r + 2 style scalars)
     "v4": (N_PLANES_V4, N_SCALARS_V3),
     # exp41: Mortal-aligned observation (934 planes). The two variants share a
     # shape so arm A / arm B checkpoints stay swappable; they differ only in
