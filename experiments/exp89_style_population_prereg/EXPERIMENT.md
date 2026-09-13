@@ -23,4 +23,6 @@ exp82/85/87 证明：人口机制需要"会弃和且进攻不弱"的对手才能
 ## Progress
 - [09-12 21:50 PDT] 地基完成并提交（8291607）：Rust 按席位奖励 + v3s 编码 + VecEnv seat_styles + Python 编码/网络/采集/旗标；`tests/test_rust_style_reward.py` 3 通过，编码/rollout/半庄/table/game 平价回归 11 通过；本机冒烟（M→cnn_m_v3s，style_prior 0.5,8,1）3 迭代 800 局/s、EV 0.095 正常。
   τ=0 平价：v3r ckpt 零列扩宽进 v3s 后，50 局 × 4 席 200 个决策 argmax 全同，logit 最大差 3.8e-6（float32 噪声）。
+- [09-12 22:00 PDT] **发射**：社区 RTX 3090 Ti `96kdznlixpb8fy`（$0.27/h，28 vCPU / cgroup 23.8 CPU，64.228.164.36:62261，宿主基准空载 5,809 局/s 达标）。M（cnn_m_v3r）零列扩宽进 cnn_m_v3s，`--style_prior 0.25,8,1`，80M→112M。
+  首迭代 **1,039 局/s**（镜像 4 席；exp88 在 6 vCPU Secure 机只有 390–590），32M ≈8.5 h ≈ **$2.3**；熵 0.51、KL 0.0007、EV 0.10。心跳 / 拉取+GCS（`exp89_S`）/ 在轨每 4M（τ=0 vs M 1,000 对 + vs bc49 500 对 + 弃和探针 400 局）/ TB `exp89_S_LIVE`。
 
