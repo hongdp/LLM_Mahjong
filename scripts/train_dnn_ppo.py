@@ -38,6 +38,28 @@ from src.agents.dnn.parallel_rollout import (apply_group_baseline,   # noqa: E40
                                              collect_parallel)
 
 
+
+def effective_cpus() -> int:
+    """CPUs this process may actually use: min(affinity, cgroup v2 cpu.max / v1 cfs quota)."""
+    n = os.cpu_count() or 1
+    try:
+        n = min(n, len(os.sched_getaffinity(0)))
+    except Exception:
+        pass
+    for quota_f, period_f in (("/sys/fs/cgroup/cpu.max", None),
+                              ("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "/sys/fs/cgroup/cpu/cpu.cfs_period_us")):
+        try:
+            if period_f is None:
+                q, per = open(quota_f).read().split()[:2]
+            else:
+                q, per = open(quota_f).read().strip(), open(period_f).read().strip()
+            if q not in ("max", "-1"):
+                n = min(n, max(1, int(float(q) / float(per) + 0.999)))
+            break
+        except Exception:
+            continue
+    return max(1, n)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--init", default=None)
@@ -297,7 +319,16 @@ def main():
                 return p0 + (p1 - p0) * (g - g0) / max(1, g1 - g0)
         return oracle_sched[-1][1]
 
-    torch.set_num_threads(max(1, os.cpu_count() // 3))
+    # thread budget from the cgroup CPU quota, not os.cpu_count(): RunPod Secure
+    # pods report the host's 48-64 cores while the cgroup allows 5-8, and rayon /
+    # torch then oversubscribe them (measured 2026-09-12: 6-core rollout 5.2k ->
+    # 8.2k deals/s once RAYON_NUM_THREADS matched the quota). RAYON_NUM_THREADS
+    # must be set before riichi_rs builds its global pool (first VecEnv use).
+    n_cpu = effective_cpus()
+    torch.set_num_threads(max(2, n_cpu // 3))
+    os.environ.setdefault("RAYON_NUM_THREADS", str(n_cpu))
+    print(f"🧵 cpus={n_cpu} (os.cpu_count={os.cpu_count()}) torch threads={torch.get_num_threads()} "
+          f"RAYON_NUM_THREADS={os.environ['RAYON_NUM_THREADS']}", flush=True)
     torch.manual_seed(args.seed); random.seed(args.seed)
     exp_dir_guard = None
     exp_dir = args.exp_dir or f"experiments/dnn_ppo_{time.strftime('%Y%m%d_%H%M%S')}"
