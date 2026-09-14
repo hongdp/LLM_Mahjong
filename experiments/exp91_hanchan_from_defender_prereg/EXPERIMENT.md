@@ -1,6 +1,6 @@
 # exp91 半庄顺位目标 × 防守型起点：人类均衡的两个条件第一次同时出现（2026-09-13）
 
-- **Date**: 2026-09-13 22:00 PDT  **Status**: prereg（P2 完工后在同一 pod 发射）
+- **Date**: 2026-09-13 22:00 PDT  **Status**: running
 - **Git**: 见 Progress；`train_dnn_ppo.py --engine rust --hanchan_pure --hanchan_credit none --resume P4`（exp84 的机制，起点换成会弃和的 P4）；纯血
 - **Env**: 社区 RTX 3090 Ti（$0.27/h，Rust 半庄 ≈85 场/s）；1M 场 ≈3.3 h ≈ $0.9
 
@@ -20,3 +20,5 @@
 1. H1 如上（半庄 ≥0.41 且选择性行为）。2. 对照：P4 本身半庄 0.360 / 南场领先格子放铳待测（探针）。
 
 ## Progress
+- [09-14 02:10 PDT] **发射**：复用社区 3090 Ti `96kdznlixpb8fy`，从 `exp90_P4/games_final.pt`（112M 局计数）起，Rust 半庄镜像 credit none，**66 场/s**（1M 场 ≈4.2 h ≈ $1.1，≈06:30 完工）。首迭代熵 0.52、KL 0.001、EV 0.10。心跳 / 拉取+GCS（`exp91_H`）/ 在轨每 200k 场（半庄 n=200 + 弃和探针）/ TB `exp91_H_LIVE`。
+
