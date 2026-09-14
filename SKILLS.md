@@ -645,3 +645,6 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
 - 社区 4090 宿主后缀 **64411a5a**：无公网 TCP 口（只给代理 SSH，账号未注册密钥 ⇒ 不可用），两次抽中，建后立刻终止。
 - Secure RTX 2000 Ada EUR-IS-1 宿主后缀 **64411d59**：`error creating container: container create: exit status 1` 无限重试，runtime 永远 null；两次抽中。
 判别：create-pod 响应的 `ssh.proxy.username` 后缀就是宿主标识，落到名单里的直接 delete 再建；Secure 可用 `dataCenterIds` 换机房（EU-RO-1 之前正常）。
+
+## 在轨偏差第三次（2026-09-14，exp91）
+半庄在轨 n=200 同 seed 组四点单调上行 0.350→0.415，终评 n=1,200 新 seed 0.364——与 exp79（"九点全部领先"被终评推翻）、exp85 同类。规则不变：在轨只用于早停，任何"趋势"都不进判决；预注册延长规则也只认终评。
