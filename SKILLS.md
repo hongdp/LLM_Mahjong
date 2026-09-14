@@ -588,3 +588,60 @@ batch 4096 各占 21GB，推理服务器重启即 OOM——先算显存再并行
 - 修法：按 episode 填充成 [E,T] 矩阵，沿 T 做 30 次向量化反向递推（与参考循环差 0.0），每迭代开销 7 s → 0.4 s。
 - 规矩：**任何按步的 Python 循环都不得触碰 GPU 张量**；新旧实现必须做一次数值等价断言再替换。剖析时看 `main` 的 tottime（自身时间）而不只是子函数 cumtime。
 
+
+## 2026-09-09 Rust 引擎观测传输：planes 以 uint8 走（v3r 提速 45%）、流水线是负优化
+- **现象**：v3r（56 平面）在 pod 上比 v1r 慢 28%（rollout 1.4→2.1 s/迭代，update 不变）。分相剖析：多出的全是 observe/h2d/drain 三个**搬字节**阶段（每行 7.6 KB f32），引擎与前向没变慢。
+- **修法**：所有编码平面值都在 k/20 网格上（0/1 + v3r 河序平面 (j+1)/20），VecEnv 以 `u8 = round(v*20)` 传输（`riichi_rs.PLANE_Q`），训练器/rollout 在设备上 `.float() / 20` 还原——**除法位级一致**于编码器的 f64→f32 值（`*= 1/20` 不一致，k=9/13/18 会差 1 ulp，测试 `test_plane_quantisation_exact` 守着）。回放库 `replay_store` 早就用同一 ×20 网格。
+  本机纯 rollout：v1r 1419→1696 局/s（+20%），v3r 1220→1772（+45%）；端到端训练器 v3r 仅比 v1r 慢 11%。
+- **负结果**：把 K 拆成两个 VecEnv 轮转、让一个的 GPU 前向与另一个的 CPU step 重叠——实测慢 20–30%：单次前向批次减半、每轮固定开销翻倍，而前向只占一轮 30%，藏不出多少；逐调用 `pin_memory()` 更慢（cudaHostAlloc 开销）。另 `net.act` 里 `bool(mask.any().all())` 是一次主机同步，rollout 已改为主机侧 numpy 检查 + `check=False`。
+- **训练器分相**（本机 v3r，2048 局/迭代）：rollout 1.2 / pack 0.35（其中价值前向 0.2 是真算量，cat+h2d 0.15）/ update 0.6 / 其余 0.05。`train_log.json` 新增 `pack_s`、`iter_s`，pod 上直接读分相。
+- **规则**：Rust 侧新增/修改编码后，先跑 `tests/test_rust_encoder_parity.py`（含网格断言）再跑 rollout parity；跨引擎比较吞吐要用同一迭代号（早期局短、吞吐虚高）。
+
+## 2026-09-10 在轨评测（固定 600 牌山）不能做判决：exp79 九点"全部领先"被 20k 对终评推翻
+- **现象**：exp79（v3r）在轨 1–28M 九个里程碑 vs bc49 全部领先 X32 同期，均值 +2.9 pp、"累计 z≈3.6"；20k 对双段终评只有 **+1.0 pp**，vs X32 头对头 0.503，梯子相同。
+- **原因**：在轨脚本每个里程碑都用同一组 600 牌山（固定 seed）。模型对这组牌山的"运气/偏好"（模型×牌山交互）在里程碑之间**完全相关**，九个点≈一个样本；偏差幅度 ±2 pp 级，恰是我们在找的效应量。
+- **规则**：在轨读数只做早停 / 崩溃 / 方向探测；任何"领先/落后 X pp"的判决只认 20k 对双段（67M+68M 种子）终评。写在轨结论时必须注明"同一牌山组，不独立"。
+  若要在轨也有判决力：每个里程碑换一组新 seed（`seed0 = base + games`），代价是里程碑间不可比但对基线仍可比（基线也按同规则重评）。
+
+## 2026-09-10 RunPod MCP 插件 schema 会在会话中途漂移
+- 同一会话内 `delete-pod` 参数名从 `id` 变 `podId` 再变回 `id`；`create-pod` 对一小时前成功的 v2 `body` 请求开始返回 `400 Provide imageName`（v1 字段名），`create-template` 运行时校验要 `name`/`imageName` 扁平字段但公布 schema 仍是 v2。
+- **规则**：发射脚本要能在 pod 创建失败时干等重试而不是重写实验；判决/归档流程不依赖 create-pod；创建失败时先 `list-pods` 确认没有幽灵 pod 计费，再用 `ToolSearch select:` 重载 schema 重试；连续失败就等（记录时间戳），不要花时间凿 API key 走 REST（凭据不在会话内处理）。
+
+## 2026-09-11 半庄奖励审计：credit=none 双重计点 + 引擎 final_rewards 缺本场
+- `play_hanchan_gen` 终局给 `uma_points`（=终点−25000+UMA），而每局末步已给引擎点差 ⇒ 点差算两遍，顺位项权重被稀释一半（exp70 H0 臂即此目标）。引擎 `final_rewards` 也不含驾驭层的本场支付与流局满贯修正。
+- **规则**：多局奖励的不变量是"每席全部奖励之和 = 终点−25000+UMA（+余棒）"，任何信用方案（none / rank / W）都要有脚本化对局的望远镜测试守着（`tests/test_hanchan.py`）；发射前先跑这个不变量，别只看单局引擎测试。
+
+## 2026-09-11 Rust 半庄：VecEnv 跨局续打 + MatchState 移植，与 Python 驾驭层逐局一致
+- `Table::new_hanchan(seed, dealer, rw, points, kyotaku, honba)` 复刻 `HanchanTable`（默认上下文发牌后旋转席位状态）；`DealEnd` 结构化终局事实替代正则；`MatchState`（renchan/本场/供托/飞/顺位/uma）1:1 移植；VecEnv 的 Game 在局末结算并换桌续打，每局末步给驾驭层点差、终局给 UMA+余棒。
+- 一致性：`tests/test_rust_hanchan_parity.py`——上下文发牌 60 组（含 >2^32 的种子）位级一致；P3 贪心 8 场完整半庄的动作/平面/奖励/回报/顺位/uma 与 `collect_parallel --hanchan_pure` 逐步一致，并验证望远镜不变量。
+- 吞吐（本机 4080，W v3r，K=512）：**129 场/s ≈ 1,349 局/s**，Python 引擎 pod 上 17.4 场/s ⇒ 7×。训练器 `--engine rust --hanchan_pure` 每迭代 256 场 3.6 s。
+- 限制：只支持纯血镜像半庄 + `hanchan_credit none`；塑形跨局无定义（构造即报错）；联赛池 + 半庄未做。
+
+## 2026-09-11 社区 pod 出向带宽差时的 Rust 构建备用路径
+- 现象：宿主 140.82.47.249 下载 rustup-init 停摆、pip 首轮漏装包（`No module named mahjong`），bootstrap 卡在 curl 重试。
+- 备用：`apt-get install cargo rustc`（Ubuntu 24.04 = 1.75，4 min）→ 删 `Cargo.lock`（v4 需 cargo ≥1.78）重生成 → `cargo update -p rayon --precise 1.10.0 && -p rayon-core --precise 1.12.1`（1.13 需 rustc 1.80）→ 代码不得用 1.77+ 才稳定的 API（`round_ties_even` 已换成 MSRV 实现）。maturin 用 pip 装即可。
+- 规则：bootstrap 脚本末尾必须 `python -c "import mahjong, riichi_rs"` 硬校验并打印 BOOTSTRAP_DONE/FAILED，不要用 `| tail -1` 吞掉 pip 错误；等待循环要区分"未完成"与"完成"，别只 `grep -q`。
+
+## 不要 scp 覆盖正在运行的 bash 脚本（2026-09-12，exp87 BR2）
+bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我为加 BR3 臂把修改后的 `exp87_pod_train.sh` scp 到同一路径，
+训练正常结束后 bash 从新文件的**旧字节偏移**继续读，执行了半行垃圾（`exp_dir: command not found`，exit 127），
+其中的 `> /workspace/train_BR2.log` 重定向还把训练日志清空了，心跳据此报 TRAIN_FAILED（训练本身 exit 0、ckpt 完好，指标靠 train_log.json/TB 复原）。
+规则：①运行中的脚本只能改副本（新文件名，如 `*_v2.sh`）或等其退出；②发射脚本第一行 `exec bash -c "$(cat "$0")"` 之类的自读全量也可以，但更简单的是**每个臂一个脚本文件**；③心跳的 TRAIN_FAILED 要连同 `games_final.pt` 是否存在一起看再判。
+
+## "最佳响应学不出来"是比"胜份平"更强的判决（2026-09-12，exp87）
+对冻结对手训最佳响应（frac 1.0、1 学习者席、贪心对手）时，`league_stats.jsonl` 的学习者胜份按 200 迭代分块（每块 ≈1.2M 席局，SE≈0.0005）若**全程无趋势**，就不必等 8M 局终点——这说明对手在本优化器可达范围内不可剥削，人口机制（PSRO/防守者池/同族池）无梯度，应转向优化器/正则杠杆而不是加数据或加成员。
+另：学习者席 1 时每局只产 1/4 数据但吞吐反升（930 vs 640 局/s），因为更新相变轻；镜像 4 席时同 pod 只有 290–370 局/s。估成本先看学习者席数。
+
+## Secure pod 的 nproc 是宿主核数，训练吞吐看 cgroup 配额与宿主 CPU（2026-09-12，exp88）
+`nproc`/`os.cpu_count()` 报 48–64，`/sys/fs/cgroup/cpu/cpu.cfs_quota_us` 才是真配额（RTX 2000 Ada 档 5.1 CPU）。训练器已改为 `effective_cpus()`（affinity ∩ cgroup 配额）定 torch 线程并设 `RAYON_NUM_THREADS`；
+但实测只 +3–6%：rayon（Rust std `available_parallelism`）本来就读 cgroup 配额，过度订阅主要是 torch 的 16 线程。本机 `taskset` 模拟（强制 RAYON=48）得到的 +58% 不代表 pod 现状——模拟要先确认 pod 上的线程数构成。
+同规格 Secure pod 的 CPU 速度可差 2×（exp88 Q1 rollout 1.3 s vs Q2 2.9 s/迭代）：镜像自对弈（4 学习者席）在 6 vCPU 上只有 380–590 局/s，而 3090/32 vCPU 社区机 925。**开机后先跑 30 s rollout 基准**（scratchpad `bench_threads.py`，随机合法动作、无 GPU），慢宿主直接换。
+补（同日）：三台同规格 Secure RTX 2000 Ada 的 rollout 基准 6223（带载）/ 3679（空载）/ 2108（带载）局/s——宿主差 2–3×，且抽到快宿主靠运气；
+开机后先跑基准，低于 ≈5000（空载）就换机再装依赖，比事后迁移便宜。
+补（2026-09-12 晚，第三次）：`P=$(pgrep -f "bin/tensorboar[d] --logdir_spec"); kill $P; ... nohup tensorboard --logdir_spec ...` 放在**同一条** bash -c 里，
+方括号技巧只保护模式本身，而同一命令行里后面那段真实的重启命令文本照样匹配 ⇒ 又杀了自己（exit 144）。规则：pgrep 列 PID 与含目标字串的重启命令必须是**两次独立调用**，kill 只用字面 PID。
+
+## RunPod 坏宿主名单补充（2026-09-13）
+- 社区 4090 宿主后缀 **64411a5a**：无公网 TCP 口（只给代理 SSH，账号未注册密钥 ⇒ 不可用），两次抽中，建后立刻终止。
+- Secure RTX 2000 Ada EUR-IS-1 宿主后缀 **64411d59**：`error creating container: container create: exit status 1` 无限重试，runtime 永远 null；两次抽中。
+判别：create-pod 响应的 `ssh.proxy.username` 后缀就是宿主标识，落到名单里的直接 delete 再建；Secure 可用 `dataCenterIds` 换机房（EU-RO-1 之前正常）。

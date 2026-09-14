@@ -33,10 +33,32 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.dnn.net import MahjongPolicyNet                      # noqa: E402
-from src.agents.dnn.rust_rollout import collect_rust   # noqa: E402
+from src.agents.dnn.rust_rollout import collect_rust, widen_planes   # noqa: E402
 from src.agents.dnn.parallel_rollout import (apply_group_baseline,   # noqa: E402
                                              collect_parallel)
 
+
+
+def effective_cpus() -> int:
+    """CPUs this process may actually use: min(affinity, cgroup v2 cpu.max / v1 cfs quota)."""
+    n = os.cpu_count() or 1
+    try:
+        n = min(n, len(os.sched_getaffinity(0)))
+    except Exception:
+        pass
+    for quota_f, period_f in (("/sys/fs/cgroup/cpu.max", None),
+                              ("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "/sys/fs/cgroup/cpu/cpu.cfs_period_us")):
+        try:
+            if period_f is None:
+                q, per = open(quota_f).read().split()[:2]
+            else:
+                q, per = open(quota_f).read().strip(), open(period_f).read().strip()
+            if q not in ("max", "-1"):
+                n = min(n, max(1, int(float(q) / float(per) + 0.999)))
+            break
+        except Exception:
+            continue
+    return max(1, n)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -161,6 +183,14 @@ def main():
                          "penalized immediately via gamma*V(s')-V(s), without "
                          "waiting for the settlement). MC advantages reduce "
                          "the critic to variance reduction only.")
+    ap.add_argument("--style_prior", default=None,
+                    help="exp89 style-conditioned population (Rust, arch cnn_m_v3s): 'p_pure,d_max,a_max' — "
+                         "per deal, with prob p_pure all seats play the pure objective, else each seat is pure (1/2) "
+                         "or draws a deal-in penalty tau_d~U(0,d_max) and a win bonus factor tau_a~U(0,a_max); "
+                         "the style is fed to the policy as 2 scalars, so one network holds the whole population")
+    ap.add_argument("--houjuu_extra", type=float, default=0.0,
+                    help="exp85 defender exploiter: extra reward (normalized units, e.g. -8 = -8000 pts) "
+                         "added to the seat that dealt in, on top of the point delta (Rust engine only)")
     ap.add_argument("--entropy_schedule", default=None,
                     help="step schedule 'games:coef,games:coef' overriding "
                          "--entropy_coef once the games counter passes each "
@@ -294,7 +324,16 @@ def main():
                 return p0 + (p1 - p0) * (g - g0) / max(1, g1 - g0)
         return oracle_sched[-1][1]
 
-    torch.set_num_threads(max(1, os.cpu_count() // 3))
+    # thread budget from the cgroup CPU quota, not os.cpu_count(): RunPod Secure
+    # pods report the host's 48-64 cores while the cgroup allows 5-8, and rayon /
+    # torch then oversubscribe them (measured 2026-09-12: 6-core rollout 5.2k ->
+    # 8.2k deals/s once RAYON_NUM_THREADS matched the quota). RAYON_NUM_THREADS
+    # must be set before riichi_rs builds its global pool (first VecEnv use).
+    n_cpu = effective_cpus()
+    torch.set_num_threads(max(2, n_cpu // 3))
+    os.environ.setdefault("RAYON_NUM_THREADS", str(n_cpu))
+    print(f"🧵 cpus={n_cpu} (os.cpu_count={os.cpu_count()}) torch threads={torch.get_num_threads()} "
+          f"RAYON_NUM_THREADS={os.environ['RAYON_NUM_THREADS']}", flush=True)
     torch.manual_seed(args.seed); random.seed(args.seed)
     exp_dir_guard = None
     exp_dir = args.exp_dir or f"experiments/dnn_ppo_{time.strftime('%Y%m%d_%H%M%S')}"
@@ -476,6 +515,16 @@ def main():
               f"learner seats {args.league_learner_seats or 'rand 1-2'}, "
               f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
               flush=True)
+    cfg["houjuu_extra"] = float(args.houjuu_extra)
+    if args.style_prior:
+        cfg["style_prior"] = tuple(float(x) for x in args.style_prior.split(","))
+        if len(cfg["style_prior"]) != 3 or args.engine != "rust":
+            raise SystemExit("--style_prior needs 'p_pure,d_max,a_max' and --engine rust")
+        print(f"🎭 style prior p_pure={cfg['style_prior'][0]} d_max={cfg['style_prior'][1]} a_max={cfg['style_prior'][2]}", flush=True)
+    if args.houjuu_extra and args.engine != "rust":
+        raise SystemExit("--houjuu_extra is implemented on the Rust engine only")
+    if args.houjuu_extra:
+        print(f"🛡 houjuu_extra {args.houjuu_extra:+.2f} (normalized units) added to the dealt-in seat's reward", flush=True)
     if args.hanchan or args.hanchan_pure:
         cfg["hanchan"] = True
         cfg["hanchan_pure"] = bool(args.hanchan_pure)
@@ -493,8 +542,12 @@ def main():
     upd_total = 0
     while next_ms < len(milestones) and milestones[next_ms] <= start_games:
         next_ms += 1
+    t_prev_it = None
     while games < args.total_games:
         it += 1
+        t_it0 = time.time()
+        iter_s = 0.0 if t_prev_it is None else t_it0 - t_prev_it     # full previous-iteration wall (incl. logging/ckpt)
+        t_prev_it = t_it0
         for g_thr, coef in ent_schedule:      # step function on the counter
             if games >= g_thr:
                 ent_alpha = coef
@@ -527,8 +580,9 @@ def main():
             planes = densify([l for e in episodes for l in e["planes_log"]],
                              device=dev)
         else:
-            # episodes ship planes as float16 (see _package_game); widen here
-            planes = torch.from_numpy(cat("planes")).to(dev).float()
+            # episodes ship planes as float16 (_package_game) or uint8 quantised by
+            # PLANE_Q (collect_rust); widen on the device either way
+            planes = widen_planes(torch.from_numpy(cat("planes")).to(dev))
         scal = torch.from_numpy(cat("scalars")).to(dev)
         mask = torch.from_numpy(cat("mask")).to(dev)
         acts = torch.from_numpy(cat("actions")).to(dev)
@@ -610,6 +664,7 @@ def main():
 
         net.train()
         t_upd0 = time.time()
+        pack_s = t_upd0 - t_roll0 - rollout_s      # batch packing + value forward + GAE (perf 2026-09-09)
         stop, passes, kls, closs, vloss, hloss, bkls = False, 0, [], [], [], [], []
         aloss, asep = [], []                  # exp69 aux waits BCE / positive-negative separation
         for ep in range(args.ppo_epochs):
@@ -763,6 +818,7 @@ def main():
         el = time.time() - t0
         row = {"iter": it, "games": games, "wall_s": round(el, 1),
                "rollout_s": round(rollout_s, 1), "update_s": round(update_s, 1),
+               "pack_s": round(pack_s, 2), "iter_s": round(iter_s, 2),
                "pg_loss": float(np.mean(closs)), "value_loss": float(np.mean(vloss)),
                "entropy_before": ent_before, "entropy": ent_after,
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,

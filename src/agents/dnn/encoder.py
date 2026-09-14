@@ -51,6 +51,9 @@ N_SCALARS_V3 = N_SCALARS + 4 + 4 + 1        # + riichi turn x4, discard count x4
 # only match context v3 scalars were missing (points/kyotaku/wind/dealer
 # are already in s[0..17]); honba lives driver-side, read via getattr
 N_SCALARS_V3H = N_SCALARS_V3 + 3
+# v3s (exp89 style-conditioned population): v3r + [tau_d / 8, tau_a] of this
+# seat's reward style (Table.seat_style; zeros = the pure objective, used at play)
+N_SCALARS_V3S = N_SCALARS_V3 + 2
 # red-dora variants (2026-08-23): base planes + 6 — own red fives (at the
 # 5x columns), per relative seat red fives visible in river/melds, and the
 # yakuhai plane (round wind, seat wind, dragons: a rule fact placed on the
@@ -96,6 +99,7 @@ VARIANT_SHAPE = {                            # encoder variant -> (planes, scala
     "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
     "v3r2": (N_PLANES_V3R2, N_SCALARS_V3),
     "v3rh": (N_PLANES_V3R, N_SCALARS_V3H),
+    "v3s": (N_PLANES_V3R, N_SCALARS_V3S),      # exp89 style-conditioned (v3r + 2 style scalars)
     "v4": (N_PLANES_V4, N_SCALARS_V3),
     # exp41: Mortal-aligned observation (934 planes). The two variants share a
     # shape so arm A / arm B checkpoints stay swappable; they differ only in
@@ -357,6 +361,15 @@ def encode_state(table, player_id: int,
         P, sc = _encode_v3(table, player_id, as_numpy=True)
         return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
                 torch.from_numpy(sc))
+    if variant == "v3s":
+        P, sc = _encode_v3(table, player_id, as_numpy=True)
+        ex = np.zeros(2, dtype=np.float32)
+        st = getattr(table, "seat_style", None)
+        if st is not None:
+            ex[0] = float(st[player_id][0]) / 8.0
+            ex[1] = float(st[player_id][1])
+        return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
+                torch.from_numpy(np.concatenate([sc, ex])))
     if variant == "v3rh":
         P, sc = _encode_v3(table, player_id, as_numpy=True)
         ex = np.zeros(3, dtype=np.float32)
