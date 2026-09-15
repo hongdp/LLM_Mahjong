@@ -1,6 +1,6 @@
 # exp92 平台模型集成：把 8 个 0.44–0.457 的终点平均掉各自的特异错误（2026-09-14，$0）
 
-- **Date**: 2026-09-14 21:40 PDT  **Status**: running（本机评测）
+- **Date**: 2026-09-14 21:40 PDT  **Status**: done（H0：集成 +0.0–0.3 pp）
 - **Git**: `EnsemblePolicy`（arch_zoo，`ens{3,5,7}_cnn_m_v3r`：成员 masked log-softmax 均值 = 策略几何平均；value 均值），`build_ensemble.py`（scratchpad）；全部成员为纯血 v3r 终点
 - **Env**: 本机 4080；评测协议同 exp88（单局 20k 对两段 67M/68M，半庄 n=1,200 seed 59300000）
 
@@ -21,3 +21,23 @@
 
 ## Progress
 - [09-14 21:45 PDT] ens5/ens7 ckpt 已构建，与探针实现逐决策一致（160/160）。ens5 终评运行中。
+- [09-14 22:20 PDT] **ens5 终评**：单局 vs bc49 **0.4594 ± 0.0035**（Q1x 0.4568 → +0.3 pp 噪声内；M 0.4461 → +1.3 pp）、mean_diff −1,311（Q1x −1,470，+160 分/局，与探针 +105 同量级）、vs M 0.509、vs E 0.546、半庄 **0.371**（纯血最高半庄读数，Q1x 0.358、P2 0.365；SE 0.014）。H1（≥0.47）未达。ens7 终评运行中。
+- [09-14 22:40 PDT] **ens7 终评**：单局 vs bc49 **0.4571 ± 0.0035**（= Q1x）、mean_diff −1,263、vs M 0.510、半庄 0.364。
+
+## Results
+| 模型 | vs bc49（20k 对） | mean_diff | vs M | 半庄（n=1,200） |
+|---|---|---|---|---|
+| Q1x（最强单成员） | 0.4568 | −1,470 | 0.511 | 0.358 |
+| ens5 {Q1x,P2,Q2,M,W} | **0.4594** | −1,311 | 0.509 | 0.371 |
+| ens7 {+Q1,P4,V} | 0.4571 | −1,263 | 0.510 | 0.364 |
+
+## Conclusion
+- **H0**。集成比最强成员 +0.0–0.3 pp（胜份）、+160–210 分/局（点差），与探针一致但远低于 0.47 判据。8 个终点来自同一配方家族与同一谱系（都是 W/M 的后代），错误高度相关，平均掉的只有零头；点差改善比胜份改善大，说明集成主要减少了大输局的方差。
+- 部署价值：推理 ×5 换 +0.3 pp，不值得；不加冕。
+
+## Artifacts
+| Path | Size | Description |
+|---|---|---|
+| `experiments/exp92_ens/ens5.pt`、`ens7.pt` | 120 / 168 MB | `EnsemblePolicy` ckpt（成员 ckpt 路径存于 `members` 字段） |
+| `experiments/probes/exp92_final_eval_ens{5,7}.json`、`ensemble_probe_*.json` | — | 终评 / 探针 |
+
