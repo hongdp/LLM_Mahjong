@@ -233,6 +233,37 @@ class TilesTransformer(nn.Module):
         return idx, lp
 
 
+
+class EnsemblePolicy(MahjongPolicyNet):
+    """exp92 (2026-09-14): logit-level ensemble of K same-variant zoo nets — the
+    policy is the mean of the members' masked log-softmax (geometric mean of the
+    member policies), the value the mean of member values. Members are stored as
+    a ModuleList so a single checkpoint carries the whole ensemble and every
+    loader (play_pair_vector, infer_server, mjai bridge) treats it as one net.
+    Build with scripts: torch.save({"arch": "ens5_cnn_m_v3r", "state_dict": ens.state_dict(), ...})."""
+
+    def __init__(self, members, encoder_variant="v3r"):
+        nn.Module.__init__(self)
+        self.members = nn.ModuleList(members)
+        self.encoder_variant = encoder_variant
+        self.in_planes = members[0].in_planes
+        self.critic_feat_dim = 0
+        self.hazard = False
+        self.hazard_head = None
+
+    def forward(self, planes, scalars, mask):
+        lp = torch.stack([torch.log_softmax(m(planes, scalars, mask), 1) for m in self.members]).mean(0)
+        return lp.masked_fill(~mask, float("-inf"))
+
+    def forward_with_value(self, planes, scalars, mask, cfeats=None):
+        outs = [m.forward_with_value(planes, scalars, mask) for m in self.members]
+        lp = torch.stack([torch.log_softmax(o[0], 1) for o in outs]).mean(0)
+        return lp.masked_fill(~mask, float("-inf")), torch.stack([o[1] for o in outs]).mean(0)
+
+
+def _ens(k, member_arch, variant):
+    return lambda: EnsemblePolicy([ZOO[member_arch][0]() for _ in range(k)], encoder_variant=variant)
+
 ZOO = {
     # name: (factory, needs_order_planes)
     "cnn_s":        (lambda: CnnPolicy(32, 2), False),
@@ -834,3 +865,6 @@ ZOO.update({
     "hrf_xl_notime_v4": (lambda: HandRiverFormer(320, 8, 8, 2, no_temporal_pe=True), False),
     "hrf_xl_freerank_v4": (lambda: HandRiverFormer(320, 8, 8, 2, free_rank_emb=True), False),
 })
+
+ZOO.update({f"ens{k}_cnn_m_v3r": (_ens(k, "cnn_m_v3r", "v3r"), False) for k in (3, 5, 7)})
+
