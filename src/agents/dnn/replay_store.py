@@ -27,7 +27,10 @@ PLANE_SCALE = 20
 
 
 def encode_planes(planes) -> np.ndarray:
-    return np.rint(np.asarray(planes, dtype=np.float32) * PLANE_SCALE).astype(np.uint8)
+    planes = np.asarray(planes)
+    if planes.dtype == np.uint8:      # collect_rust already ships the PLANE_SCALE grid
+        return planes
+    return np.rint(planes.astype(np.float32) * PLANE_SCALE).astype(np.uint8)
 
 
 def decode_planes(u8) -> np.ndarray:

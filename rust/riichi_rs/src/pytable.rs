@@ -29,12 +29,39 @@ fn info_dict(py: Python<'_>, info: &StepInfo) -> PyResult<PyObject> {
     Ok(d.into())
 }
 
+impl PyTable {
+    /// Clone of the inner table for other Rust callers (VecEnv::from_tables).
+    pub fn table_clone(&self) -> Table { self.t.clone() }
+}
+
 #[pymethods]
 impl PyTable {
     #[new]
     #[pyo3(signature = (seed, randomize_round=true))]
     fn new(seed: u64, randomize_round: bool) -> Self {
         PyTable { t: Table::new_seeded(seed, randomize_round) }
+    }
+    /// hanchan.py::HanchanTable(dealer, round_wind_idx, points, kyotaku) after random.seed(seed); honba is the v3rh scalar only.
+    #[staticmethod]
+    fn hanchan(seed: u64, dealer: usize, round_wind_idx: usize, points: Vec<i64>, kyotaku: i64, honba: i64) -> PyResult<Self> {
+        if points.len() != 4 {
+            return Err(pyo3::exceptions::PyValueError::new_err("points must have 4 entries"));
+        }
+        Ok(PyTable { t: Table::new_hanchan(seed, dealer, round_wind_idx, [points[0], points[1], points[2], points[3]], kyotaku, honba) })
+    }
+    /// PIMC determinization: resample everything `seat` cannot see (see Table::determinize).
+    fn determinize(&self, seat: usize, seed: u64) -> PyTable {
+        PyTable { t: self.t.determinize(seat, seed) }
+    }
+    #[getter] fn rinshan_idx(&self) -> usize { self.t.rinshan_idx }
+    /// exp89 style conditioning: per seat [tau_d, tau_a] (deal-in penalty magnitude, win bonus factor)
+    #[getter] fn seat_style(&self) -> Vec<Vec<f64>> { self.t.seat_style.iter().map(|s| s.to_vec()).collect() }
+    #[setter] fn set_seat_style(&mut self, v: Vec<Vec<f64>>) -> PyResult<()> {
+        if v.len() != 4 || v.iter().any(|s| s.len() != 2) {
+            return Err(pyo3::exceptions::PyValueError::new_err("seat_style must be 4 x [tau_d, tau_a]"));
+        }
+        for p in 0..4 { self.t.seat_style[p] = [v[p][0], v[p][1]]; }
+        Ok(())
     }
     // ---- state ----
     #[getter] fn dealer(&self) -> usize { self.t.dealer }
@@ -122,11 +149,12 @@ impl PyTable {
         resolve_claims(&mut self.t, &cands)
     }
     fn waits(&self, pid: usize) -> Vec<String> { strs(&self.t.waits(pid)) }
-    /// v1r observation for `pid`: (planes [21*34], scalars [20]) as flat lists
-    fn encode(&self, pid: usize) -> (Vec<f32>, Vec<f32>) {
-        let mut planes = vec![0f32; crate::encoder::N_PLANES * 34];
-        let mut scalars = vec![0f32; crate::encoder::N_SCALARS];
-        crate::encoder::encode_v1r(&self.t, pid, &mut planes, &mut scalars);
+    /// observation for `pid` in the given variant ("v1r" | "v3r"): (planes flat, scalars)
+    #[pyo3(signature = (pid, variant="v1r"))]
+    fn encode(&self, pid: usize, variant: &str) -> (Vec<f32>, Vec<f32>) {
+        let mut planes = vec![0f32; crate::encoder::planes_of(variant) * 34];
+        let mut scalars = vec![0f32; crate::encoder::scalars_of(variant)];
+        crate::encoder::encode(&self.t, pid, variant, &mut planes, &mut scalars);
         (planes, scalars)
     }
     fn potential(&self, pid: usize) -> f64 { crate::encoder::potential(&self.t, pid) }

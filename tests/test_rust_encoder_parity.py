@@ -13,10 +13,16 @@ from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
 
 
 def _check_obs(py, rs, pid, seed, step):
-    P, S = encode_state(py, pid, variant="v1r")
-    rp, rsc = rs.encode(pid)
-    assert np.array_equal(P.numpy().reshape(-1), np.asarray(rp, dtype=np.float32)), (seed, step, pid)
-    assert np.array_equal(S.numpy(), np.asarray(rsc, dtype=np.float32)), (seed, step, pid, S.numpy(), rsc)
+    for variant in ("v1r", "v3r"):
+        P, S = encode_state(py, pid, variant=variant)
+        rp, rsc = rs.encode(pid, variant)
+        assert np.array_equal(P.numpy().reshape(-1), np.asarray(rp, dtype=np.float32)), (variant, seed, step, pid)
+        # PLANE_Q grid: uint8 = rint(v*20) round-trips to the encoder's f32 values bit-exactly
+        # (this is what lets VecEnv ship planes as u8 and the trainer widen with `.float() / 20`)
+        q = np.rint(P.numpy().reshape(-1) * riichi_rs.PLANE_Q).astype(np.uint8)
+        assert np.array_equal(torch.from_numpy(q).float().div_(float(riichi_rs.PLANE_Q)).numpy(),
+                              P.numpy().reshape(-1)), (variant, seed, step, pid)
+        assert np.array_equal(S.numpy(), np.asarray(rsc, dtype=np.float32)), (variant, seed, step, pid, S.numpy(), rsc)
     assert abs(potential(py, pid) - rs.potential(pid)) < 1e-9, (seed, step, pid)
 
 
