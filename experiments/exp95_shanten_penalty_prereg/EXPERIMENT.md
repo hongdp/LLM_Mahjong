@@ -1,6 +1,6 @@
 # exp95 向听加权放铳惩罚 + 退火：只在"手远还出生牌"的地方制造协同偏移（2026-09-20）
 
-- **Date**: 2026-09-20 02:00 PDT  **Status**: prereg
+- **Date**: 2026-09-20 02:00 PDT  **Status**: running（S26 在跑；S13 待开）
 - **Git**: 本地提交（PR #20 已合并，未推送）；Rust `Table.houjuu_by_shanten`（放铳者弃牌后的向听 0 / 1 / ≥2 → 额外惩罚）、`VecEnv(houjuu_by_shanten=)`、`--houjuu_by_shanten p0,p1,p2`、`--houjuu_shanten_anneal g0,g1`（线性退火到 0）；测试 `tests/test_rust_style_reward.py::test_houjuu_by_shanten_*`
 - **Env**: 社区 RTX 3090 Ti（$0.27/h，≈1,000 局/s）或 Secure RTX 2000 Ada；纯血（向听是规则量，PBRS 塑形已用过；无人类数据）
 
@@ -25,4 +25,5 @@ exp94：bc49 在 M 的暴露状态上接管续打 +258 ± 44 分/决策，**全�
 ## Progress
 - [09-20 02:00 PDT] 引擎改动完成：单测 4 通过（含"同种子同动作，放铳席恰好多扣 p[向听档]"）、编码/rollout/半庄平价回归 8 通过；本机冒烟（Q1x 起，0,2,6，退火）764 局/s，日志 `houjuu_far_penalty` 6.0→4.5→1.5 正确。
 - [09-20 00:45 PDT] 开机：社区 3090 两台坏宿主（64411661 CUDA unknown error；64411ad4 无公网口），已终止（≈$0.03）。改用 Secure RTX 2000 Ada `mv42673p72eio0`（EU-RO-1，6 vCPU，$0.24/h，213.173.110.198:13287）先跑 **S26**；镜像 ≈500 局/s ⇒ 32M ≈18 h ≈ $4.3。S13 等社区卡有货再开（或串行）。bootstrap 中。
+- [09-20 00:50 PDT] **S26 发射**：宿主基准 6,850 局/s（空载，快机）；start.pt md5 = Q1x；首迭代 **574 局/s**、熵 0.95、KL 0.001、EV 0.105；`houjuu_by_shanten [0,2,6]`、退火 136M→144M 生效。32M 局 ≈15.5 h ≈ $3.7（≈16:20 PDT 完工）。心跳 / 拉取+GCS（`exp95_S26`）/ 在轨每 4M（vs M 1,000 对 + vs bc49 500 对 + 弃和探针 400 局）/ TB `exp95_S26_LIVE`。
 
