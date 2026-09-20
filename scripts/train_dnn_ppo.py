@@ -183,6 +183,13 @@ def main():
                          "penalized immediately via gamma*V(s')-V(s), without "
                          "waiting for the settlement). MC advantages reduce "
                          "the critic to variance reduction only.")
+    ap.add_argument("--houjuu_by_shanten", default=None,
+                    help="exp95 (Rust): 'p0,p1,p2' extra deal-in penalty (normalized units, >=0) by the DISCARDER's own shanten "
+                         "after the discard: tenpai / 1-shanten / >=2-shanten. Encodes 'do not deal in from a far hand' "
+                         "without taxing tenpai pushes (exp94: bc49's post-riichi edge is exactly this selectivity).")
+    ap.add_argument("--houjuu_shanten_anneal", default=None,
+                    help="'g_start,g_end' (games counter): the --houjuu_by_shanten penalty is held until g_start, then "
+                         "decays linearly to 0 at g_end (tests whether the behaviour persists without the prior).")
     ap.add_argument("--style_prior", default=None,
                     help="exp89 style-conditioned population (Rust, arch cnn_m_v3s): 'p_pure,d_max,a_max' — "
                          "per deal, with prob p_pure all seats play the pure objective, else each seat is pure (1/2) "
@@ -516,6 +523,15 @@ def main():
               f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
               flush=True)
     cfg["houjuu_extra"] = float(args.houjuu_extra)
+    hbs_base, hbs_anneal = None, None
+    if args.houjuu_by_shanten:
+        hbs_base = [float(x) for x in args.houjuu_by_shanten.split(",")]
+        if len(hbs_base) != 3 or args.engine != "rust":
+            raise SystemExit("--houjuu_by_shanten needs 'p0,p1,p2' and --engine rust")
+        if args.houjuu_shanten_anneal:
+            hbs_anneal = tuple(int(x) for x in args.houjuu_shanten_anneal.split(","))
+        cfg["houjuu_by_shanten"] = list(hbs_base)
+        print(f"🛡 houjuu_by_shanten {hbs_base} (tenpai / 1-shanten / far), anneal {hbs_anneal}", flush=True)
     if args.style_prior:
         cfg["style_prior"] = tuple(float(x) for x in args.style_prior.split(","))
         if len(cfg["style_prior"]) != 3 or args.engine != "rust":
@@ -553,6 +569,12 @@ def main():
                 ent_alpha = coef
         if oracle_sched:
             cfg["oracle_hide_p"] = oracle_hide_p(games)
+        if hbs_base is not None:
+            hs = 1.0
+            if hbs_anneal is not None:
+                g0, g1 = hbs_anneal
+                hs = 1.0 if games <= g0 else 0.0 if games >= g1 else 1.0 - (games - g0) / max(g1 - g0, 1)
+            cfg["houjuu_by_shanten"] = [p * hs for p in hbs_base]
         if shaping_sched:
             sc_now = shaping_scale_at(games)
             cfg["shaping_scale"] = sc_now
@@ -834,6 +856,8 @@ def main():
                "n_effective": n_eff, "n_raw": int(len(acts))}
         if args.shaping:
             row["shaping_scale"] = float(cfg.get("shaping_scale", args.shaping_scale)) if cfg.get("shaping") else 0.0
+            if cfg.get("houjuu_by_shanten"):
+                row["houjuu_far_penalty"] = float(cfg["houjuu_by_shanten"][2])
         if args.cf_p > 0:
             row["cf_n"] = cf_n
             row["cf_adv_mean"] = cf_sum / max(cf_n, 1)

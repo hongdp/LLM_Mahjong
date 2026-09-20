@@ -80,7 +80,8 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                            bool(cfg.get("shaping", False)), float(cfg.get("shaping_scale", 1.0)),
                            True, variant, hanchan=hanchan, max_deals=int(cfg.get("hanchan_max_deals", 24)),
                            houjuu_extra=float(cfg.get("houjuu_extra", 0.0) or 0.0),
-                           seat_styles=seat_styles)
+                           seat_styles=seat_styles,
+                           houjuu_by_shanten=cfg.get("houjuu_by_shanten"))
     temperature = float(cfg.get("temperature", 1.0))
     q = float(riichi_rs.PLANE_Q)
     dev = torch.device(device)
