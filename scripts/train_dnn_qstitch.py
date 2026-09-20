@@ -48,6 +48,8 @@ def parse_args():
     ap.add_argument("--eps", type=float, default=0.003, help="prior floor: any legal action costs <= log(1/eps) nats")
     ap.add_argument("--temperature", type=float, default=1.0, help="sampling temperature of learner/F seats")
     ap.add_argument("--pool_temp", type=float, default=1.0)
+    ap.add_argument("--pool_temps", default="", help="per-pool-net overrides 'name=T,...' (a high-entropy-trained net "
+                    "such as Q1x is sloppy at T=1: debug 09-20, Q1x +3 pts/deal vs M +341 in the same mix)")
     ap.add_argument("--total_games", type=int, default=20000)
     ap.add_argument("--games_per_iter", type=int, default=4096)
     ap.add_argument("--concurrent", type=int, default=1024, help="VecEnv concurrent tables")
@@ -229,7 +231,7 @@ def collect_mixed(net, pool_nets, roles, probs, seeds, args, dev, variant):
                 continue
             t = torch.from_numpy(sel).to(dev)
             idx, _ = pool_nets[name].act(P[t], S[t], torch.from_numpy(mask[sel]).to(dev),
-                                         temperature=args.pool_temp, check=False)
+                                         temperature=args.pool_temp_of.get(name, args.pool_temp), check=False)
             acts[sel] = idx.cpu().numpy()
         env.step(acts.tolist(), [0.0] * n)
         games.extend(env.drain_finished())
@@ -254,6 +256,7 @@ def main():
     os.makedirs(args.exp_dir, exist_ok=True)
     json.dump(vars(args), open(f"{args.exp_dir}/config.json", "w"), indent=2)
     dev = torch.device(args.device)
+    torch.manual_seed(args.seed)
     from src.agents.dnn.arch_zoo import ZOO
     from src.agents.dnn.net import load_compatible
     from src.agents.dnn.parallel_rollout import _load_policy_ckpt
@@ -285,6 +288,7 @@ def main():
         if getattr(pn, "encoder_variant", None) != variant:
             raise SystemExit(f"pool {name}: encoder {pn.encoder_variant!r} != {variant!r}")
         pool_nets[name] = pn
+    args.pool_temp_of = parse_kv(args.pool_temps)
     mix = parse_kv(args.mix)
     roles = list(mix)
     for r in roles:
