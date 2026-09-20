@@ -634,4 +634,54 @@ impl VecEnv {
     fn slot_seeds(&self) -> Vec<i64> {
         self.active.iter().map(|g| g.as_ref().map_or(-1, |g| g.seed as i64)).collect()
     }
+
+    /// exp96: per pending row (observe() order) the genbutsu mask [B, 34] — tiles safe against
+    /// EVERY opponent in riichi (their own river + anything discarded after their riichi) — and
+    /// info [B, 2] = (opponents in riichi, own shanten; -9 when nobody is in riichi, not computed).
+    fn safe_info<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyArray2<bool>>, Bound<'py, PyArray2<i32>>)> {
+        let b = self.total_rows();
+        let mut genb = Vec::with_capacity(b * 34);
+        let mut info = Vec::with_capacity(b * 2);
+        for g in self.active.iter().flatten() {
+            let t = &g.table;
+            for r in g.rows.iter() {
+                let mut safe = [true; 34];
+                let mut n_riichi = 0i32;
+                for o in 0..4 {
+                    if o == r.seat || !t.riichi[o] {
+                        continue;
+                    }
+                    n_riichi += 1;
+                    let ridx = t.river_events[o].iter().find(|e| e.riichi).map(|e| e.idx);
+                    let mut s = [false; 34];
+                    for e in &t.river_events[o] {
+                        s[crate::tiles::norm(e.tile) as usize] = true;
+                    }
+                    if let Some(ri) = ridx {
+                        for p in 0..4 {
+                            if p == o {
+                                continue;
+                            }
+                            for e in t.river_events[p].iter().filter(|e| e.idx > ri) {
+                                s[crate::tiles::norm(e.tile) as usize] = true;
+                            }
+                        }
+                    }
+                    for i in 0..34 {
+                        safe[i] &= s[i];
+                    }
+                }
+                if n_riichi == 0 {
+                    genb.extend_from_slice(&[false; 34]);
+                    info.extend_from_slice(&[0, -9]);
+                } else {
+                    genb.extend_from_slice(&safe);
+                    info.extend_from_slice(&[n_riichi, t.shanten_of(&t.hands[r.seat], t.melds[r.seat].len())]);
+                }
+            }
+        }
+        let genb = PyArray1::from_vec_bound(py, genb).reshape([b, 34])?;
+        let info = PyArray1::from_vec_bound(py, info).reshape([b, 2])?;
+        Ok((genb, info))
+    }
 }
