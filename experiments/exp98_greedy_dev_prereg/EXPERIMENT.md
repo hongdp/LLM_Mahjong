@@ -1,6 +1,6 @@
 # exp98 贪心续打 + 单点偏离 PPO：让已学会的后段防守在采样里可靠执行（用户 2026-09-22 批准系列）
 
-- **Date**: 2026-09-22  **Status**: prereg（工程中，未发射）
+- **Date**: 2026-09-22  **Status**: running（G1，Secure RTX 3090 `ptr3z1kfrgl13l`，≈$3.2，上限 $7）
 - **Git**: 预注册时 9d065bb；代码提交见 Progress
 - **Env**: 纯血线（零人类数据、零外部模型）；起点 exp88_Q1x（112M，对 bc49 0.4568 ± 0.0035）；Rust 引擎镜像自对弈；`train_dnn_ppo.py --dev_only`
 
@@ -32,6 +32,12 @@
 
 ## Progress
 - [09-22 01:40 PDT] 预注册。工程：①`collect_rust` dev_only 采样 + `dev_mask`；②`train_dnn_ppo.py --dev_only/--dev_p` 更新掩码 + TB；③测试（每局每席最多一次偏离、贪心步动作=argmax、掩码对齐）；④本机冒烟；⑤发射。
+- [09-22 02:30 PDT] 工程完成：`collect_rust` dev 路径（每 (槽位, 席) 每局最多一次 T=1 偏离，其余 argmax；贪心步 logprob 带 +1000 标记）、`--dev_p/--dev_only`（更新只取偏离步，V/GAE 仍用全部步）、
+  测试 `test_single_deviation_rollout_marks_and_limits_deviations` 通过。本机冒烟：1,423 局/s、每迭代 8,192 局里偏离步 2.2 万（多选决策的 4.7%），偏离步优势 std ≈4.6k 分；
+  8,192 局/迭代在 4080 上 OOM ⇒ 云上用 4,096（batch 2048）。
+- [09-22 09:32 PDT] **G1 发射**：Secure RTX 3090 EU-CZ-1（`ptr3z1kfrgl13l`，213.192.2.85:40195，$0.50/h），基准 1,226 局/s ⇒ 28M ≈ 6.3 h ≈ **$3.2**。seed 981，里程碑每 4M。
+  心跳/拉取+GCS+TB 镜像/在轨（对 M、bc49、Q1x + 弃和探针）/牌类探针循环已挂；TB 加 `exp98_G1_LIVE`。预计完工 ≈15:50 PDT。
+  与 exp97 教训的关系：偏离步是从 π 自身按 T=1 采的（行为策略 = π），更新只用这些步，IS 比值正确；贪心步不进更新。
 
 ## Results
 （待）
