@@ -2,7 +2,7 @@
 
 > **🤖 AI Agent Directive**: Whenever you start a new session or work on this repository, you MUST read this file first. As the project evolves, if you encounter new bugs, hardware limitations, or make architectural decisions, you are required to **continuously update and append** to this skill file so that the project's context is never lost.
 >
-> **当前状态快照不在本文件**：看 [README「当前状态」](README.md)（冠军/纪元/进行中实验）和
+> **当前状态快照不在本文件**：看 [README「Current status」](README.md)（中文 README.zh.md）（冠军/纪元/进行中实验）和
 > [docs/roadmap_epoch3.md](docs/roadmap_epoch3.md)（队列与路线）。本文件是**追加式教训账本**（时间序）。
 > 早期条目（Phase 1 LLM 时代：A100/QLoRA/文本 rollout）保留为历史，Phase 2 已转 DNN + G4 flex，机型/费用见
 > docs/gcp_compute_cost_and_quota.md §8。
