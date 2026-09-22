@@ -92,6 +92,17 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     # PPO treats the perturbation as the policy's own exploration (NoisyNet reading, no IS).
     noise_sigma = float(cfg.get("param_noise_sigma", 0.0) or 0.0)
     noise = None
+    # exp98 greedy-continuation single deviation: every decision is argmax except, per (table slot, seat),
+    # at most ONE multi-choice decision per deal sampled at T=1 (probability dev_p per candidate step).
+    # The recorded logprob is log pi(a) for both kinds of step; greedy steps carry the marker +1000 so the
+    # trainer can restrict the update to deviation steps (--dev_only) without a new StepRec field.
+    dev_p = float(cfg.get("dev_p", 0.0) or 0.0)
+    sdev = None
+    if dev_p > 0:
+        if noise_sigma > 0 or (cfg.get("league") and float(cfg.get("league_frac", 0.0) or 0.0) > 0):
+            raise SystemExit("collect_rust: dev_p is exclusive with param noise / league pools")
+        sdev = {"used": np.zeros((k, 4), dtype=bool), "prev_seed": np.full(k, -2, dtype=np.int64),
+               "rng": np.random.default_rng(int(cfg.get("seed", 0)) + 98), "n_dev": 0, "n_multi": 0}
     if noise_sigma > 0:
         if cfg.get("league") and float(cfg.get("league_frac", 0.0) or 0.0) > 0:
             raise SystemExit("collect_rust: param_noise_sigma with a league pool is not supported")
@@ -182,6 +193,25 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                         if len(sel):
                             noise["res"].append((P[sel].cpu(), S[sel].cpu(), M[sel].cpu(), torch.from_numpy(genb[sel])))
                     acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
+                elif sdev is not None:
+                    slot_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
+                    fresh = (slot_seed != sdev["prev_seed"]) & (slot_seed >= 0)
+                    sdev["used"][fresh] = False; sdev["prev_seed"] = slot_seed.copy()
+                    g = np.asarray(gids, dtype=np.int64); st = np.asarray(seats, dtype=np.int64)
+                    multi = mask.sum(1) > 1
+                    cand = multi & ~sdev["used"][g, st]
+                    pick = cand & (sdev["rng"].random(n) < dev_p)
+                    sdev["used"][g[pick], st[pick]] = True
+                    sdev["n_dev"] += int(pick.sum()); sdev["n_multi"] += int(multi.sum())
+                    logits = net(P, S, M)
+                    lps = torch.log_softmax(logits, 1)
+                    idx = logits.argmax(1)
+                    pk = torch.from_numpy(pick).to(P.device)
+                    if pick.any():
+                        idx = torch.where(pk, torch.multinomial(torch.softmax(logits / max(temperature, 1e-6), 1), 1).squeeze(1), idx)
+                    lp = lps.gather(1, idx[:, None]).squeeze(1)
+                    lp = torch.where(pk, lp, lp + 1000.0)                 # marker: greedy step
+                    acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
                 elif not pool:
                     idx, lp = net.act(P, S, M, temperature=temperature, check=False)   # legality checked on host
                     acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
@@ -238,6 +268,7 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     collect_rust.last_cf_n = 0
     collect_rust.last_cf_skipped = 0
     collect_rust.last_noise = None
+    collect_rust.last_dev = None if sdev is None else {"n_dev": sdev["n_dev"], "n_multi": sdev["n_multi"]}
     if noise is not None:
         collect_rust.last_noise = {"sigma": noise_sigma, "kl": noise["kl_sum"] / max(noise["rows"], 1),
                                    "greedy_change": noise["chg_sum"] / max(noise["rows"], 1),

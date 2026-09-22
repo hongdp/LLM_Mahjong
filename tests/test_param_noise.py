@@ -114,3 +114,30 @@ def test_full_mode_copies_are_perturbed_and_logprob_is_clean():
         lp = torch.log_softmax(net(Pl, torch.from_numpy(e["scalars"]).to(dev), torch.from_numpy(e["mask"]).to(dev)), 1)
     got = lp.gather(1, torch.from_numpy(np.asarray(e["actions"])).to(dev)[:, None]).squeeze(1).cpu().numpy()
     assert np.allclose(got, e["old_logprobs"], atol=1e-4)
+
+
+def test_single_deviation_rollout_marks_and_limits_deviations():
+    """exp98: at most one T=1 deviation per (deal, seat); every other step is the argmax; greedy steps are
+    marked with +1000 on the recorded logprob and deviation steps carry log pi(a)."""
+    from src.agents.dnn.rust_rollout import collect_rust
+    torch.manual_seed(5)
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    net = ZOO["cnn_m_v3r"][0]().to(dev).eval()
+    seeds = [7_300_000 + i for i in range(32)]
+    cfg = dict(temperature=1.0, gamma=0.995, shaping=False, games_per_worker=8, encoder_variant="v3r", dev_p=0.2, seed=1)
+    eps, _ = collect_rust(net, len(seeds), cfg, 1, seeds, device=dev)
+    q = float(riichi_rs.PLANE_Q)
+    n_dev_total = 0
+    for e in eps:
+        lp = np.asarray(e["old_logprobs"]); acts = np.asarray(e["actions"])
+        is_dev = lp < 500
+        assert is_dev.sum() <= 1
+        n_dev_total += int(is_dev.sum())
+        Pl = torch.from_numpy(e["planes"]).to(dev).float() / q
+        with torch.no_grad():
+            logits = net(Pl, torch.from_numpy(e["scalars"]).to(dev), torch.from_numpy(e["mask"]).to(dev))
+        greedy = logits.argmax(1).cpu().numpy()
+        assert (acts[~is_dev] == greedy[~is_dev]).all()
+        lps = torch.log_softmax(logits, 1).gather(1, torch.from_numpy(acts).to(dev)[:, None]).squeeze(1).cpu().numpy()
+        assert np.allclose(lps[is_dev], lp[is_dev], atol=1e-4) and np.allclose(lps[~is_dev] + 1000.0, lp[~is_dev], atol=1e-3)
+    assert n_dev_total > 0 and collect_rust.last_dev["n_dev"] == n_dev_total

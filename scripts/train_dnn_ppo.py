@@ -198,6 +198,13 @@ def main():
     ap.add_argument("--param_noise_copies", type=int, default=16)
     ap.add_argument("--param_noise_adapt", type=float, default=1.03, help="sigma step per iteration")
     ap.add_argument("--noise_diag_every", type=int, default=4, help="compute the genbutsu/residual diagnostic every N iterations")
+    ap.add_argument("--dev_p", type=float, default=0.0,
+                    help="exp98 greedy-continuation single deviation (rust engine): per (table, seat) at most one "
+                         "multi-choice decision per deal is sampled at T=1 (probability dev_p per candidate step); "
+                         "every other decision is argmax. 0 = off")
+    ap.add_argument("--dev_only", action="store_true",
+                    help="with --dev_p: run the PPO/entropy update on deviation steps only (greedy steps are "
+                         "dropped from the batch; V and GAE still use every step)")
     ap.add_argument("--houjuu_shanten_anneal", default=None,
                     help="'g_start,g_end' (games counter): the --houjuu_by_shanten penalty is held until g_start, then "
                          "decays linearly to 0 at g_end (tests whether the behaviour persists without the prior).")
@@ -601,6 +608,9 @@ def main():
         seeds = [base + d for d in range(n_deals) for _ in range(args.dup_k)]
         net.eval()
         t_roll0 = time.time()
+        if args.dev_p > 0:
+            cfg["dev_p"] = args.dev_p
+            cfg["seed"] = args.seed + it
         if args.param_noise_kl > 0:
             cfg["param_noise_sigma"] = noise_sigma
             cfg["param_noise_mode"] = args.param_noise_mode
@@ -632,6 +642,10 @@ def main():
         acts = torch.from_numpy(cat("actions")).to(dev)
         rets = torch.from_numpy(cat("returns")).to(dev)
         old_lp = torch.from_numpy(cat("old_logprobs")).to(dev)
+        dev_mask = None
+        if args.dev_p > 0:
+            dev_mask = old_lp < 500.0                          # collect_rust marks greedy steps with +1000
+            old_lp = torch.where(dev_mask, old_lp, old_lp - 1000.0)
         cfe = torch.from_numpy(cat("cfeats")).to(dev) if use_cf else None
         if args.critic_feats == "hazard":
             # per-(game,seat) settled-fact label, broadcast over the episode
@@ -644,6 +658,8 @@ def main():
             nz = [bool(np.abs(e["returns"]).max() > 1e-6) for e in episodes]
             idx_keep = torch.nonzero(torch.from_numpy(np.repeat(nz, lens)).to(dev),
                                      as_tuple=True)[0]
+        elif args.dev_only and dev_mask is not None:
+            idx_keep = torch.nonzero(dev_mask, as_tuple=True)[0]
         else:
             idx_keep = torch.arange(len(acts), device=dev)
         n_eff = len(idx_keep)
@@ -889,6 +905,12 @@ def main():
             # direct, same-wall estimate of what folding was worth here
             row["cf_fold_gain_mean"] = float(np.mean(cf_fold)) if cf_fold else 0.0
             row["cf_skipped"] = int(getattr(collector, "last_cf_skipped", 0))
+        _dv = getattr(collector, "last_dev", None)
+        if args.dev_p > 0 and _dv:
+            row["dev_frac"] = _dv["n_dev"] / max(_dv["n_multi"], 1)
+            row["dev_steps"] = int(_dv["n_dev"])
+            if dev_mask is not None and dev_mask.any():
+                row["dev_adv_std"] = float(adv_raw[dev_mask].std())
         _nz = getattr(collector, "last_noise", None)
         if args.param_noise_kl > 0 and _nz:
             row["noise_sigma"] = noise_sigma
