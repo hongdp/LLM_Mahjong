@@ -635,6 +635,30 @@ impl VecEnv {
         self.active.iter().map(|g| g.as_ref().map_or(-1, |g| g.seed as i64)).collect()
     }
 
+    /// exp99: per pending row (observe() order) the ORACLE danger label [B, 34]: tile is a winning tile of at
+    /// least one opponent currently in riichi (rows with no riichi opponent are all false). Training labels for a
+    /// public-information danger head only — never an observation.
+    fn riichi_waits<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<bool>>> {
+        let b = self.total_rows();
+        let mut out = Vec::with_capacity(b * 34);
+        for g in self.active.iter().flatten() {
+            let t = &g.table;
+            for r in g.rows.iter() {
+                let mut lab = [false; 34];
+                for o in 0..4 {
+                    if o == r.seat || !t.riichi[o] {
+                        continue;
+                    }
+                    for w in t.waits(o) {
+                        lab[crate::tiles::norm(w) as usize] = true;
+                    }
+                }
+                out.extend_from_slice(&lab);
+            }
+        }
+        Ok(PyArray1::from_vec_bound(py, out).reshape([b, 34])?)
+    }
+
     /// exp96: per pending row (observe() order) the genbutsu mask [B, 34] — tiles safe against
     /// EVERY opponent in riichi (their own river + anything discarded after their riichi) — and
     /// info [B, 2] = (opponents in riichi, own shanten; -9 when nobody is in riichi, not computed).
