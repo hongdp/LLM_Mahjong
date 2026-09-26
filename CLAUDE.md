@@ -38,6 +38,7 @@
 | 临时文件/脚本草稿 | 会话 scratchpad（/tmp/claude-*），不入库 |
 
 ## 关键规则
+- **纯血线（零人类数据、零外部模型的自我提升）永远是终极目标（用户 2026-09-25）**；人类先验线与一切探针只是它的标尺和诊断，判负只关闭具体杠杆、不关闭目标；每轮汇报须折回"纯血线下一步"。
 - 允许在逻辑里程碑处自动 `git commit`（单一主题、信息清晰）；`git push` 与历史改写须用户确认（已白名单的分支除外）。
 - **任何训练 / 实验 / 评估 run 启动前，必须先走 `ml-experiment-tracking` skill**：EXPERIMENT.md（目的/方法/成功标准）先行，进度随记，收尾补结果与 artifact 清单，并更新 `experiments/INDEX.md`。云上 run 同样记账（prereg 文件 + INDEX 行 + GCS 路径）。
 - 每次新训练 run 新建带时间戳目录（除非 `--resume`）；云 run 用新的 GCS 命名空间。
