@@ -350,6 +350,12 @@ ZOO = {
                                     in_scalars=N_SCALARS_V3S, encoder_variant="v3s"), False),
     "convformer_m_v3r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V3R,
                                             in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp101 (2026-09-25, pure line capacity x scale): wider/deeper CNN trunks on the v3r encoder.
+    # cnn_l_v3r 4.0M params costs ~4% rollout throughput vs cnn_m_v3r on the Rust engine; cnn_xl_v3r 6.6M costs ~40%.
+    "cnn_l_v3r": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R,
+                                    in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    "cnn_xl_v3r": (lambda: CnnPolicy(192, 6, in_planes=N_PLANES_V3R,
+                                     in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
 }
 
 
