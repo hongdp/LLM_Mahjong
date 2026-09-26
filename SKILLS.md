@@ -662,3 +662,9 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
 ### 2026-09-22 探索噪声与 PPO 更新口径
 - 用与采样策略不同的策略（干净网）记录 logprob、比值从 1 起步、不做重要性加权：PPO 的 clip 只约束比值不约束 logit 尺度，噪声采到的 π≈1e-5 动作偶得正优势就被无限抬高，12M 局后 logit 跨度 8→188、策略崩坏（exp97）。任何离策略采样（参数噪声、混合温度、单点偏离）都要记录**实际行为策略**的 logprob，或显式加 KL(π_old‖π_new) 惩罚；在轨必看 approx_kl 与 logit 跨度。
 - σ 自适应（Plappert）在策略变敏感时会把 σ 缩到名存实亡：把 σ 的下限和 logit 尺度一起进健康判据。
+
+### 2026-09-26 大网在弱卡上是 GPU-bound；跨 pod 迁移 runbook
+- cnn_l_v3r（4M）在 RTX 2000 Ada 上 PPO update 4.8 s + rollout 3.5 s / 2,048 局，GPU 100%（188 局/s）；`--amp_update` 把 update 减半（254）；换 RTX 4000 Ada（$0.28）到 408 局/s——$/局减半。
+  发射前先在目标卡上跑 4 min bench 再定预算；GPU util 看 nvidia-smi，别只看 nproc。
+- 迁移 runbook：①确认 latest.pt 刚落盘（ckpt_every 迭代）；②`pgrep` 列 PID → 单独 `kill`；③rsync 到本机镜像 → scp 到新机（md5 核对）；④`--resume` 起新进程，train_log 行保留；
+  ⑤心跳/拉取循环换主机重挂；⑥把旧 `exp*.log` 里操作员 kill 留下的 `TRAIN_FAILED` 改成 STOPPED_BY_OPERATOR，否则心跳误报（09-26 踩过一次）。

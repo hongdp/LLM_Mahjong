@@ -1,6 +1,6 @@
 # exp95 向听加权放铳惩罚 + 退火：只在"手远还出生牌"的地方制造协同偏移（2026-09-20）
 
-- **Date**: 2026-09-20 02:00 PDT  **Status**: running（S26 在跑；S13 待开）
+- **Date**: 2026-09-20 02:00 PDT  **Status**: done（S26 0.4583 / S410 0.4603，两臂 H0；S410 延长规则触发但越 $8 上限，用户未批；pod 已终止，$7.5）
 - **Git**: 本地提交（PR #20 已合并，未推送）；Rust `Table.houjuu_by_shanten`（放铳者弃牌后的向听 0 / 1 / ≥2 → 额外惩罚）、`VecEnv(houjuu_by_shanten=)`、`--houjuu_by_shanten p0,p1,p2`、`--houjuu_shanten_anneal g0,g1`（线性退火到 0）；测试 `tests/test_rust_style_reward.py::test_houjuu_by_shanten_*`
 - **Env**: 社区 RTX 3090 Ti（$0.27/h，≈1,000 局/s）或 Secure RTX 2000 Ada；纯血（向听是规则量，PBRS 塑形已用过；无人类数据）
 

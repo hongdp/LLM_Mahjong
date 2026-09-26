@@ -18,7 +18,7 @@ pitfalls) · [experiments/INDEX.md](experiments/INDEX.md) (one line per run) ·
 **To run the strongest model**: [docs/champion_model.md](docs/champion_model.md) (model card, four ways to run it,
 resources, version history) · [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md) (current board).
 
-## Current status (2026-09-21)
+## Current status (2026-09-26)
 
 **Deployment champion = bc49** (human-prior lineage; ConvFormer × v3r encoder × 46-slot action head, 2.00M params,
 pure BC on 18.5k Phoenix games, holdout accuracy 0.806). Greedy (T=0) in play and in every final verdict.
@@ -48,9 +48,15 @@ What was learned (exp70–exp97):
   change is worth ≈ 0 for either learner at either table. Policy gradient sees only the single-step quantity, so the
   chain never gets climbed. First positive pure macro: "shanten ≥ 2 → discard only genbutsu, chosen by the model's own
   efficiency" = +108–153 pts/decision (z ≈ 3, 18k deals), ≈ +19 ± 9 pts/deal.
-- **Next**: exp97 parameter-space noise (pre-registered; whole-deal-coherent exploration so that a multi-step
-  deviation becomes a sampleable event), then a learned danger head → macro valuation on true-table branches →
-  whole-sequence distillation.
+- **Closed since 09-21** (all H0, pre-registered): parameter-space noise (exp97, trainer failed without IS), greedy-continuation
+  single-deviation PPO (exp98), learned danger-set macro (exp99), mode-sequence PIMC search (exp100), static safe-tile keeping.
+  Game-theoretic defences (opponent pools, PSRO, entropy/QRE, style populations) were measured too: the population sits at an
+  equilibrium that nobody can exploit — a low-quality one, since both sides lack the same multi-step skill; no cycling, no
+  degenerate signal. A stage-by-turn probe shows the model already folds in the last few turns (live-tile rate 96 % below chance)
+  and the gap opens toward the early game.
+- **Running**: **exp101** — the last untested axis, capacity × scale: `cnn_l_v3r` (4.0M params, 2× cnn_m) from scratch toward
+  400M deals on one Secure RTX 4000 Ada ($0.28/h, ≈408 deals/s, cap $100). Decision points 32M / 64M / 112M (≥0.462 vs bc49 =
+  capacity pays; ≤0.452 = switch the budget to pure scale of Q1x); goal ≥0.50 at the end. Spend to date ≈$111 of $200.
 
 **Infrastructure**: the deal engine is ported to Rust (`rust/riichi_rs`, bit-exact parity with the Python engine,
 ≈ 575 deals/s on one RTX 2000 Ada, cost per million deals $3.1 → $0.07). Training runs on RunPod (Secure Cloud
