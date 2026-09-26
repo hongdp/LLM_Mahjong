@@ -183,6 +183,31 @@ def main():
                          "penalized immediately via gamma*V(s')-V(s), without "
                          "waiting for the settlement). MC advantages reduce "
                          "the critic to variance reduction only.")
+    ap.add_argument("--houjuu_by_shanten", default=None,
+                    help="exp95 (Rust): 'p0,p1,p2' extra deal-in penalty (normalized units, >=0) by the DISCARDER's own shanten "
+                         "after the discard: tenpai / 1-shanten / >=2-shanten. Encodes 'do not deal in from a far hand' "
+                         "without taxing tenpai pushes (exp94: bc49's post-riichi edge is exactly this selectivity).")
+    ap.add_argument("--param_noise_kl", type=float, default=0.0,
+                    help="exp97 parameter-space noise: target mean KL(clean||noisy) over rollout decisions; "
+                         "a factorised rank-1 perturbation of the policy head is sampled per table and held "
+                         "for the whole deal (rust engine only); sigma adapts multiplicatively to hit the "
+                         "target (Plappert et al. 2017). 0 = off")
+    ap.add_argument("--param_noise_sigma0", type=float, default=0.02, help="initial sigma (relative to each tensor's std)")
+    ap.add_argument("--param_noise_mode", default="full", choices=["full", "head"],
+                    help="full = E perturbed whole-network copies per rollout (default); head = per-table rank-1 head noise")
+    ap.add_argument("--param_noise_copies", type=int, default=16)
+    ap.add_argument("--param_noise_adapt", type=float, default=1.03, help="sigma step per iteration")
+    ap.add_argument("--noise_diag_every", type=int, default=4, help="compute the genbutsu/residual diagnostic every N iterations")
+    ap.add_argument("--dev_p", type=float, default=0.0,
+                    help="exp98 greedy-continuation single deviation (rust engine): per (table, seat) at most one "
+                         "multi-choice decision per deal is sampled at T=1 (probability dev_p per candidate step); "
+                         "every other decision is argmax. 0 = off")
+    ap.add_argument("--dev_only", action="store_true",
+                    help="with --dev_p: run the PPO/entropy update on deviation steps only (greedy steps are "
+                         "dropped from the batch; V and GAE still use every step)")
+    ap.add_argument("--houjuu_shanten_anneal", default=None,
+                    help="'g_start,g_end' (games counter): the --houjuu_by_shanten penalty is held until g_start, then "
+                         "decays linearly to 0 at g_end (tests whether the behaviour persists without the prior).")
     ap.add_argument("--style_prior", default=None,
                     help="exp89 style-conditioned population (Rust, arch cnn_m_v3s): 'p_pure,d_max,a_max' — "
                          "per deal, with prob p_pure all seats play the pure objective, else each seat is pure (1/2) "
@@ -408,12 +433,16 @@ def main():
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
     n_upd = 0                      # optimizer updates, for --warmup_updates
     ent_alpha = args.entropy_coef      # live coefficient (schedule/auto laws)
+    noise_sigma = args.param_noise_sigma0 if args.param_noise_kl > 0 else 0.0
+    if args.param_noise_kl > 0 and args.engine != "rust":
+        raise SystemExit("--param_noise_kl needs --engine rust")
 
     def save(tag, games, it=0):
         torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                     "channels": args.channels, "blocks": args.blocks,
                     "arch": args.arch, "critic_feats": args.critic_feats,
                     "games": games, "iter": it, "entropy_alpha": ent_alpha,
+                    "param_noise_sigma": noise_sigma,
                     "optimizer": opt.state_dict()}, f"{exp_dir}/{tag}.pt")
 
     from torch.utils.tensorboard import SummaryWriter
@@ -448,6 +477,8 @@ def main():
         start_games = int(blob.get("games", 0))
         start_iter = int(blob.get("iter", 0))
         ent_alpha = float(blob.get("entropy_alpha", ent_alpha) or ent_alpha)
+        if args.param_noise_kl > 0 and blob.get("param_noise_sigma"):
+            noise_sigma = float(blob["param_noise_sigma"])
         old_log = os.path.join(exp_dir, "train_log.json")
         if os.path.exists(old_log):
             try:
@@ -516,6 +547,15 @@ def main():
               f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
               flush=True)
     cfg["houjuu_extra"] = float(args.houjuu_extra)
+    hbs_base, hbs_anneal = None, None
+    if args.houjuu_by_shanten:
+        hbs_base = [float(x) for x in args.houjuu_by_shanten.split(",")]
+        if len(hbs_base) != 3 or args.engine != "rust":
+            raise SystemExit("--houjuu_by_shanten needs 'p0,p1,p2' and --engine rust")
+        if args.houjuu_shanten_anneal:
+            hbs_anneal = tuple(int(x) for x in args.houjuu_shanten_anneal.split(","))
+        cfg["houjuu_by_shanten"] = list(hbs_base)
+        print(f"🛡 houjuu_by_shanten {hbs_base} (tenpai / 1-shanten / far), anneal {hbs_anneal}", flush=True)
     if args.style_prior:
         cfg["style_prior"] = tuple(float(x) for x in args.style_prior.split(","))
         if len(cfg["style_prior"]) != 3 or args.engine != "rust":
@@ -553,6 +593,12 @@ def main():
                 ent_alpha = coef
         if oracle_sched:
             cfg["oracle_hide_p"] = oracle_hide_p(games)
+        if hbs_base is not None:
+            hs = 1.0
+            if hbs_anneal is not None:
+                g0, g1 = hbs_anneal
+                hs = 1.0 if games <= g0 else 0.0 if games >= g1 else 1.0 - (games - g0) / max(g1 - g0, 1)
+            cfg["houjuu_by_shanten"] = [p * hs for p in hbs_base]
         if shaping_sched:
             sc_now = shaping_scale_at(games)
             cfg["shaping_scale"] = sc_now
@@ -562,6 +608,14 @@ def main():
         seeds = [base + d for d in range(n_deals) for _ in range(args.dup_k)]
         net.eval()
         t_roll0 = time.time()
+        if args.dev_p > 0:
+            cfg["dev_p"] = args.dev_p
+            cfg["seed"] = args.seed + it
+        if args.param_noise_kl > 0:
+            cfg["param_noise_sigma"] = noise_sigma
+            cfg["param_noise_mode"] = args.param_noise_mode
+            cfg["param_noise_copies"] = args.param_noise_copies
+            cfg["noise_diag"] = (it % max(args.noise_diag_every, 1) == 0)
         if args.engine == "rust":
             episodes, results = collect_rust(net, len(seeds), cfg, args.workers, seeds, device=args.train_device)
         else:
@@ -588,6 +642,10 @@ def main():
         acts = torch.from_numpy(cat("actions")).to(dev)
         rets = torch.from_numpy(cat("returns")).to(dev)
         old_lp = torch.from_numpy(cat("old_logprobs")).to(dev)
+        dev_mask = None
+        if args.dev_p > 0:
+            dev_mask = old_lp < 500.0                          # collect_rust marks greedy steps with +1000
+            old_lp = torch.where(dev_mask, old_lp, old_lp - 1000.0)
         cfe = torch.from_numpy(cat("cfeats")).to(dev) if use_cf else None
         if args.critic_feats == "hazard":
             # per-(game,seat) settled-fact label, broadcast over the episode
@@ -600,6 +658,8 @@ def main():
             nz = [bool(np.abs(e["returns"]).max() > 1e-6) for e in episodes]
             idx_keep = torch.nonzero(torch.from_numpy(np.repeat(nz, lens)).to(dev),
                                      as_tuple=True)[0]
+        elif args.dev_only and dev_mask is not None:
+            idx_keep = torch.nonzero(dev_mask, as_tuple=True)[0]
         else:
             idx_keep = torch.arange(len(acts), device=dev)
         n_eff = len(idx_keep)
@@ -834,6 +894,8 @@ def main():
                "n_effective": n_eff, "n_raw": int(len(acts))}
         if args.shaping:
             row["shaping_scale"] = float(cfg.get("shaping_scale", args.shaping_scale)) if cfg.get("shaping") else 0.0
+            if cfg.get("houjuu_by_shanten"):
+                row["houjuu_far_penalty"] = float(cfg["houjuu_by_shanten"][2])
         if args.cf_p > 0:
             row["cf_n"] = cf_n
             row["cf_adv_mean"] = cf_sum / max(cf_n, 1)
@@ -843,6 +905,23 @@ def main():
             # direct, same-wall estimate of what folding was worth here
             row["cf_fold_gain_mean"] = float(np.mean(cf_fold)) if cf_fold else 0.0
             row["cf_skipped"] = int(getattr(collector, "last_cf_skipped", 0))
+        _dv = getattr(collector, "last_dev", None)
+        if args.dev_p > 0 and _dv:
+            row["dev_frac"] = _dv["n_dev"] / max(_dv["n_multi"], 1)
+            row["dev_steps"] = int(_dv["n_dev"])
+            if dev_mask is not None and dev_mask.any():
+                row["dev_adv_std"] = float(adv_raw[dev_mask].std())
+        _nz = getattr(collector, "last_noise", None)
+        if args.param_noise_kl > 0 and _nz:
+            row["noise_sigma"] = noise_sigma
+            row["noise_kl"] = float(_nz["kl"]); row["noise_greedy_change"] = float(_nz["greedy_change"])
+            for k in ("diag_corr", "diag_exposed_far_rate", "diag_n", "diag_between_var", "diag_within_group_var",
+                      "lean_clean", "lean_noisy_mean", "lean_spread", "lean_states"):
+                if k in _nz:
+                    row["noise_" + k] = float(_nz[k])
+            # Plappert-style adaptation: keep KL(clean || noisy) at the target
+            noise_sigma = noise_sigma / args.param_noise_adapt if _nz["kl"] > args.param_noise_kl else noise_sigma * args.param_noise_adapt
+            noise_sigma = float(min(max(noise_sigma, 1e-3), 30.0))
         if hloss:
             row["hazard_bce"] = float(np.mean(hloss))
         if aloss:

@@ -54,6 +54,12 @@ impl PyTable {
         PyTable { t: self.t.determinize(seat, seed) }
     }
     #[getter] fn rinshan_idx(&self) -> usize { self.t.rinshan_idx }
+    /// exp95: extra deal-in penalty by the discarder's shanten after the discard [tenpai, 1-shanten, far]
+    #[getter] fn houjuu_by_shanten(&self) -> Vec<f64> { self.t.houjuu_by_shanten.to_vec() }
+    #[setter] fn set_houjuu_by_shanten(&mut self, v: Vec<f64>) -> PyResult<()> {
+        if v.len() != 3 { return Err(pyo3::exceptions::PyValueError::new_err("houjuu_by_shanten must have 3 entries")); }
+        self.t.houjuu_by_shanten = [v[0], v[1], v[2]]; Ok(())
+    }
     /// exp89 style conditioning: per seat [tau_d, tau_a] (deal-in penalty magnitude, win bonus factor)
     #[getter] fn seat_style(&self) -> Vec<Vec<f64>> { self.t.seat_style.iter().map(|s| s.to_vec()).collect() }
     #[setter] fn set_seat_style(&mut self, v: Vec<Vec<f64>>) -> PyResult<()> {

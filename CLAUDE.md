@@ -14,7 +14,7 @@
 | `tools/` | 外围工具（majsoul_bridge、tenhou 下载器、webui） | ✅ |
 | `paper/` | 论文素材（`.git/info/exclude` 屏蔽，发布前不入库） | ❌ |
 | `checkpoints/`、`logs/` | LLM 时代遗留工件目录，已冻结，勿新增 | ❌ |
-| 顶层文件 | 仅限：CLAUDE/SKILLS/TASKS/README(.en)/Dockerfile/requirements.txt；**禁止把输出文件丢在顶层** | ✅ |
+| 顶层文件 | 仅限：CLAUDE/SKILLS/TASKS/README(.zh)/Dockerfile/requirements.txt；**禁止把输出文件丢在顶层** | ✅ |
 
 ## 写入规则（什么内容写到哪里）
 | 内容 | 位置 |
@@ -38,6 +38,7 @@
 | 临时文件/脚本草稿 | 会话 scratchpad（/tmp/claude-*），不入库 |
 
 ## 关键规则
+- **纯血线（零人类数据、零外部模型的自我提升）永远是终极目标（用户 2026-09-25）**；人类先验线与一切探针只是它的标尺和诊断，判负只关闭具体杠杆、不关闭目标；每轮汇报须折回"纯血线下一步"。
 - 允许在逻辑里程碑处自动 `git commit`（单一主题、信息清晰）；`git push` 与历史改写须用户确认（已白名单的分支除外）。
 - **任何训练 / 实验 / 评估 run 启动前，必须先走 `ml-experiment-tracking` skill**：EXPERIMENT.md（目的/方法/成功标准）先行，进度随记，收尾补结果与 artifact 清单，并更新 `experiments/INDEX.md`。云上 run 同样记账（prereg 文件 + INDEX 行 + GCS 路径）。
 - 每次新训练 run 新建带时间戳目录（除非 `--resume`）；云 run 用新的 GCS 命名空间。
@@ -45,7 +46,7 @@
 - **心跳分相报警**：发射相 15 分钟死线（GCS 无日志对象即 ALERT）、训练相 30 分钟 STALL、终止标记即时报；触发标记必须取被监控日志实际会出现的行。
 - 本地 GPU（RTX 4080 16GB）只做冒烟/debug/benchmark；小时级训练一律上云。LLM 验证仅 Qwen2.5-0.5B + QLoRA，Gemma 会 OOM。
 - 评测协议：终审一律 T=0 + 族外梯子 + 半庄 n≥300；T=1 族内曲线不得单独下结论。
-- **冠军易主 / 纪元重校 / 部署形态变更 ⇒ 同一 PR 内更新 [docs/champion_model.md](docs/champion_model.md)**（§1 速览、§2 ckpt 路径、§5 配方、§8 历史）+ LEADERBOARD + README(.en) 状态行 + 桥接 runbook 的 ckpt 行，并把新权重上传 `gs://llm-mahjong-experiments/checkpoints/<谱系>/`；加冕判据=双方 T=0 头对头显著为正，梯子分只排名不加冕（T=0 候选对 T=1 锚有系统性高估）。
+- **冠军易主 / 纪元重校 / 部署形态变更 ⇒ 同一 PR 内更新 [docs/champion_model.md](docs/champion_model.md)**（§1 速览、§2 ckpt 路径、§5 配方、§8 历史）+ LEADERBOARD + README(.zh) 状态行 + 桥接 runbook 的 ckpt 行，并把新权重上传 `gs://llm-mahjong-experiments/checkpoints/<谱系>/`；加冕判据=双方 T=0 头对头显著为正，梯子分只排名不加冕（T=0 候选对 T=1 锚有系统性高估）。
 - 奖励逻辑必须模块化（registry + BaseRewardModel），不得硬编码进训练循环。
 - kill 命令必须单独成调用且不含目标字符串明文（pkill 自匹配史）；生成代码后必须**独立**跑一次 ast/语法校验。
 - 有新教训/架构决策 → 追加 SKILLS.md（带日期）；有新结果 → FINDINGS.md / 对应 EXPERIMENT.md，不进 SKILLS。

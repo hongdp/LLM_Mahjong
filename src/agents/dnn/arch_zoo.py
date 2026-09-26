@@ -261,6 +261,57 @@ class EnsemblePolicy(MahjongPolicyNet):
         return lp.masked_fill(~mask, float("-inf")), torch.stack([o[1] for o in outs]).mean(0)
 
 
+class AnchoredQPolicy(MahjongPolicyNet):
+    """exp96 (2026-09-20): prior-anchored Q network. `prior` is a frozen policy net pi0;
+    `q` is a same-arch net whose policy head is reread as the advantage A(s,a) (last layer
+    zero-initialised by the trainer) and whose value head is V(s). Q = V + A - E_pi0[A].
+    The ACTING logits are log(pi0 + eps) + A/tau, so with A = 0 the net is pi0 bit for bit,
+    a 30-point Q error is a 0.3-nat nudge and only a large advantage overrules the prior
+    (exp59: raw Q regression erodes the near-tie tile-efficiency ordering). One checkpoint
+    carries both members, so every loader treats it as an ordinary policy net."""
+
+    def __init__(self, prior, q, tau=0.05, eps=0.02, encoder_variant="v3r"):
+        nn.Module.__init__(self)
+        self.prior, self.q = prior, q
+        for p in self.prior.parameters():
+            p.requires_grad_(False)
+        self.register_buffer("tau", torch.tensor(float(tau)))
+        self.register_buffer("eps", torch.tensor(float(eps)))
+        self.encoder_variant = encoder_variant
+        self.in_planes = prior.in_planes
+        self.critic_feat_dim = 0
+        self.hazard = False
+        self.hazard_head = None
+
+    def train(self, mode=True):
+        super().train(mode)
+        self.prior.eval()
+        return self
+
+    def parts(self, planes, scalars, mask):
+        """(log(pi0+eps) masked to -inf, centred advantage A [illegal = 0], V)."""
+        with torch.no_grad():
+            p0 = torch.softmax(self.prior(planes, scalars, mask).float(), 1)
+        h = self.q.trunk(planes, scalars)
+        a = self.q.head(h).float().masked_fill(~mask, 0.0)
+        a = (a - (p0 * a).sum(1, keepdim=True)).masked_fill(~mask, 0.0)
+        v = self.q.value(h).squeeze(-1).float()
+        lp0 = torch.log(p0 + self.eps).masked_fill(~mask, float("-inf"))
+        return lp0, a, v
+
+    def forward(self, planes, scalars, mask):
+        lp0, a, _ = self.parts(planes, scalars, mask)
+        return lp0 + a / self.tau
+
+    def forward_with_value(self, planes, scalars, mask, cfeats=None):
+        lp0, a, v = self.parts(planes, scalars, mask)
+        return lp0 + a / self.tau, v
+
+
+def _aq(member_arch, variant):
+    return lambda: AnchoredQPolicy(ZOO[member_arch][0](), ZOO[member_arch][0](), encoder_variant=variant)
+
+
 def _ens(k, member_arch, variant):
     return lambda: EnsemblePolicy([ZOO[member_arch][0]() for _ in range(k)], encoder_variant=variant)
 
@@ -299,6 +350,12 @@ ZOO = {
                                     in_scalars=N_SCALARS_V3S, encoder_variant="v3s"), False),
     "convformer_m_v3r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V3R,
                                             in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp101 (2026-09-25, pure line capacity x scale): wider/deeper CNN trunks on the v3r encoder.
+    # cnn_l_v3r 4.0M params costs ~4% rollout throughput vs cnn_m_v3r on the Rust engine; cnn_xl_v3r 6.6M costs ~40%.
+    "cnn_l_v3r": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R,
+                                    in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    "cnn_xl_v3r": (lambda: CnnPolicy(192, 6, in_planes=N_PLANES_V3R,
+                                     in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
 }
 
 
@@ -867,4 +924,5 @@ ZOO.update({
 })
 
 ZOO.update({f"ens{k}_cnn_m_v3r": (_ens(k, "cnn_m_v3r", "v3r"), False) for k in (3, 5, 7)})
+ZOO["aq_cnn_m_v3r"] = (_aq("cnn_m_v3r", "v3r"), False)
 
