@@ -84,6 +84,7 @@ pub struct Table {
     pub deal_end: Option<DealEnd>,
     pub rank_bonus: bool,      // per-deal RANK_BONUS in final_rewards (off inside a hanchan: TrainHanchanTable)
     pub houjuu_extra: f64,     // PyMahjongTable.HOUJUU_EXTRA: extra reward to the seat that dealt in (exp85 defender exploiter)
+    pub houjuu_by_shanten: [f64; 3], // exp95: extra deal-in penalty by the discarder's own shanten after the discard (0 / 1 / >=2)
     pub seat_style: [[f64; 2]; 4], // exp89 style-conditioned population: per seat (tau_d, tau_a) — deal-in penalty magnitude, win bonus factor
     pub wall: Vec<Tile>,        // spelled (red codes), pop() from the END like Python
     pub dead_wall: Vec<Tile>,   // 14 slots; [0:4] rinshan raw, [4:14] indicators normalized
@@ -238,6 +239,7 @@ impl Table {
             deal_end: None,
             rank_bonus: true,
             houjuu_extra: 0.0,
+            houjuu_by_shanten: [0.0; 3],
             seat_style: [[0.0; 2]; 4],
             result_summary: String::new(),
             wall: Vec::with_capacity(136),
@@ -1704,6 +1706,12 @@ impl Table {
         if let Some(h) = houjuu {
             fr[h] += self.houjuu_extra;
             fr[h] -= self.seat_style[h][0];
+            if self.houjuu_by_shanten.iter().any(|&p| p != 0.0) {
+                // exp95: "don't deal in from a far hand" — tenpai pushes stay unpenalised, far hands pay
+                let sh = self.shanten_of(&self.hands[h], self.melds[h].len());
+                let idx = if sh <= 0 { 0 } else if sh == 1 { 1 } else { 2 };
+                fr[h] -= self.houjuu_by_shanten[idx];
+            }
         }
         // exp89: per-seat win bonus tau_a * (own positive point delta, normalized)
         if let Some(de) = &self.deal_end {

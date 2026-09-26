@@ -96,3 +96,60 @@ def test_vecenv_seat_styles_reach_the_observation():
         assert scalars[row, -2] == pytest.approx(st[2 * seat] / 8.0) and scalars[row, -1] == pytest.approx(st[2 * seat + 1])
     with pytest.raises(ValueError):
         riichi_rs.VecEnv(seeds, 2, 0.995, False, 1.0, True, "v3s", False, 24, 0.0, seat_styles=[[0.0] * 8])
+
+
+def test_houjuu_by_shanten_penalises_far_hand_dealins():
+    """exp95: same seed + same actions; the dealt-in seat loses p[idx] where idx = its own shanten after the discard (0 / 1 / >=2)."""
+    pen = [0.5, 2.0, 6.0]
+    seen = {0: 0, 1: 0, 2: 0}
+    for seed in range(1, 4000):
+        t0 = _random_play(seed)
+        if "荣和" not in t0.result_summary or "抢杠" in t0.result_summary:
+            continue
+        t1 = _random_play_with(seed, pen)
+        assert t0.result_summary == t1.result_summary
+        h = t0.last_discarder
+        sh = riichi_rs.shanten(t0.hands[h], len(t0.melds[h]))
+        idx = 0 if sh <= 0 else 1 if sh == 1 else 2
+        exp = list(t0.final_rewards); exp[h] -= pen[idx]
+        assert t1.final_rewards == pytest.approx(exp, abs=1e-9), (seed, sh, t0.result_summary)
+        seen[idx] += 1
+        if seen[2] >= 10 and seen[1] >= 3:
+            break
+    assert seen[2] >= 10 and seen[1] >= 3, seen
+
+
+def _random_play_with(seed, pen):
+    import random as _r
+    rng = _r.Random(seed)
+    t = riichi_rs.Table(seed, True)
+    t.houjuu_by_shanten = pen
+    guard = 0
+    while not t.finished and guard < 600:
+        guard += 1
+        pid = t.turn
+        acts = t.get_legal_actions(pid)
+        if not acts:
+            break
+        win = [a for a in acts if 'type="tsumo"' in a or 'type="ron"' in a]
+        _, done, info = t.step(pid, win[0] if win else rng.choice(acts))
+        if done:
+            break
+        if not (info.get("discarded") or info.get("chankan")):
+            continue
+        cands = []
+        for off in range(1, 4):
+            o = (pid + off) % 4
+            opts = t.get_interrupt_actions(o)
+            if len(opts) > 1:
+                ron = [a for a in opts if 'type="ron"' in a]
+                cands.append((o, ron[0] if ron else rng.choice(opts)))
+        executed, done = t.resolve_claims(cands)[:2]
+        if done:
+            break
+        if not executed:
+            if t.pending_kan is not None:
+                t.resolve_pending_kan()
+            elif t.advance_turn():
+                break
+    return t

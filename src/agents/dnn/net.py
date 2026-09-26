@@ -9,6 +9,7 @@ consumer GPU, which is the whole point of the comparison.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.agents.dnn.encoder import (ACTION_DIM, LEGACY_ACTION_DIM, LEGACY_ACTION_TYPES,  # noqa: F401
                                     ACTION_TYPES, N_PLANES, N_SCALARS, TILE_TYPES)
@@ -112,6 +113,50 @@ class MahjongPolicyNet(nn.Module):
         else:
             v = self.value(h).squeeze(-1)
         return logits, v
+
+    # ---- exp97 parameter-space noise (NoisyNet factorised, per-row) -------
+    # Perturb the policy head's Linear layers with rank-1 noise
+    # W + s * f(e_out) f(e_in)^T, b + s * f(e_out), s = sigma / sqrt(fan_in),
+    # f(x) = sign(x) sqrt|x| (Fortunato et al. 2017). Each ROW of a batch may
+    # carry its own (e_in, e_out), so 1,024 tables can each act under their own
+    # perturbed head without materialising 1,024 weight copies: the perturbed
+    # product is W x + s * f(e_out) * (f(e_in) . x). The noise is sampled once
+    # per deal and held for the whole deal (rollout side), which turns a
+    # multi-step, deal-coherent deviation into a sampleable event — the thing
+    # per-step action noise cannot produce (exp97 prereg).
+    def noise_dims(self):
+        """[(fan_in, fan_out)] of the head's Linear layers, in forward order."""
+        return [(m.in_features, m.out_features) for m in self.head if isinstance(m, nn.Linear)]
+
+    @staticmethod
+    def sample_noise(n, dims, device, generator=None):
+        """Per-row factorised noise: list of (f(e_in) [n, in], f(e_out) [n, out]) per Linear."""
+        out = []
+        for fi, fo in dims:
+            ei = torch.randn(n, fi, device=device, generator=generator)
+            eo = torch.randn(n, fo, device=device, generator=generator)
+            out.append((ei.sign() * ei.abs().sqrt(), eo.sign() * eo.abs().sqrt()))
+        return out
+
+    def head_noisy(self, h, eps, sigma: float):
+        """Policy head with per-row rank-1 noise (eps from sample_noise, rows aligned with h)."""
+        x, k = h, 0
+        for m in self.head:
+            if isinstance(m, nn.Linear):
+                fi, fo = eps[k]
+                s = float(sigma) / (m.in_features ** 0.5)
+                x = F.linear(x, m.weight, m.bias) + s * fo * ((fi * x).sum(1, keepdim=True) + 1.0)
+                k += 1
+            else:
+                x = m(x)
+        return x
+
+    def forward_clean_and_noisy(self, planes, scalars, mask, eps, sigma: float):
+        """(clean masked logits, noisy masked logits) from one trunk pass."""
+        h = self.trunk(planes, scalars)
+        clean = self.head(h).masked_fill(~mask, float("-inf"))
+        noisy = self.head_noisy(h, eps, sigma).masked_fill(~mask, float("-inf"))
+        return clean, noisy
 
     @torch.no_grad()
     def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):

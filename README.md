@@ -1,167 +1,203 @@
-# LLM Mahjong — 日麻 RL（双谱系）
+# LLM Mahjong — Riichi Mahjong RL (two lineages)
 
-[English](README.en.md) | 中文
+English | [中文](README.zh.md)
 
-**两条并行主线（2026-08-27 起）**：
-- **人类先验谱系（当前架构迭代主载体）**：北极星 = 用人类牌谱先验迭代出**简单输入平面**模型，综合实力超过 Mortal。
-  路径：凤凰卓 BC（两万局 ≥ 两百万局自对弈，exp45）→ RL 增益（exp46 系列已修好训练器四病因）→ 半庄排位训练（exp55-D）。
-- **纯血谱系（AlphaZero 式）**：零人类/教师知识，从随机初始化自己发现技能栈；规则不变——教师/人类系模型只做标尺，
-  永不进其冠军谱系或对手池；情景课程永久否决；联赛（对手=自身冻结历史）与 EMA 自锚算纯。
+Riichi mahjong agents trained by self-play RL, in two parallel lineages (since 2026-08-27):
 
-**必读**：[CLAUDE.md](CLAUDE.md)（规则+项目地图）· [SKILLS.md](SKILLS.md)（教训/硬件）·
-[experiments/INDEX.md](experiments/INDEX.md)（总账）· [experiments/FINDINGS.md](experiments/FINDINGS.md)（结果台账）
-**要跑最强模型**：[docs/champion_model.md](docs/champion_model.md)（冠军模型卡：配置 / 四种跑法 / 资源需求 / 版本历史）·
-[experiments/LEADERBOARD.md](experiments/LEADERBOARD.md)（现行榜单）
+- **Human-prior lineage** (current architecture carrier). North star: iterate a *simple-input-plane* model from a
+  human-game prior until it surpasses Mortal. Path: Tenhou Phoenix behaviour cloning (bc49) → RL on the prior
+  (exp46 fixed four trainer pathologies) → hanchan placement training (exp55-D).
+- **Pure lineage** (AlphaZero-style). Zero human data, zero external models as training signal; the model must
+  discover the whole skill stack from random init. Human/teacher models are yardsticks only — never champions,
+  never opponents in its pool; scenario curricula are permanently rejected; leagues of its own frozen snapshots
+  and EMA self-anchors count as pure.
 
-## 两个阶段
+**Required reading**: [CLAUDE.md](CLAUDE.md) (rules + project map) · [SKILLS.md](SKILLS.md) (lessons / hardware /
+pitfalls) · [experiments/INDEX.md](experiments/INDEX.md) (one line per run) ·
+[experiments/FINDINGS.md](experiments/FINDINGS.md) (results ledger).
+**To run the strongest model**: [docs/champion_model.md](docs/champion_model.md) (model card, four ways to run it,
+resources, version history) · [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md) (current board).
 
-- **Phase 1（2026-05~08-14，已归档）**：LLM（Qwen + LoRA）+ 文本 rollout + PBRS/PPO。
-  结论：竞技场全 null、回报不可解码 → 路线退役，遗产 = 引擎、奖励 registry、竞技场协议、GCP 工作流。
-  档案：experiments/reports/report_exp1..exp5、`src/core/`、`scripts/phase1_ce/`。
-- **Phase 2（当前）**：小型专用网络（2–23M）+ 张量编码 + 纯自对弈 PPO。一条 1.0M 局训练 =
-  g4-standard-48 flex 上 ~85 分钟、~$3。
+## Current status (2026-09-26)
 
-## 架构（Phase 2 活跃部分）
+**Deployment champion = bc49** (human-prior lineage; ConvFormer × v3r encoder × 46-slot action head, 2.00M params,
+pure BC on 18.5k Phoenix games, holdout accuracy 0.806). Greedy (T=0) in play and in every final verdict.
+On the hanchan all-greedy ladder (the cleanest scale, 13 anchors, 200 duplicate pairs each): Mortal 298k 1465 ± 12,
+exp46-I 1457 ± 11, **bc49 1443 ± 11**. Mortal head-to-head over 1,200 hanchan: 0.477 ± 0.014 vs bc49 — tied, i.e.
+"match Mortal" reached, "surpass" not. Majsoul maka S+ twice. Details and ckpt paths in
+[docs/champion_model.md](docs/champion_model.md); numbers in [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md).
+
+**Pure lineage — the $200 program (2026-09-06 → 09-21, ≈$92 spent)**. Goal: a from-scratch model at bc49/Mortal
+level (T=0 single-deal share ≥ 0.50 vs bc49 over ≥ 20k paired walls, and hanchan ≥ 0.50 over ≥ 1,200 matches).
+Best so far: **exp88_Q1x, 0.4568 ± 0.0035 single-deal vs bc49**; hanchan 0.37–0.39. Every terminal number lives in
+[experiments/INDEX.md](experiments/INDEX.md); the program design and verdicts in
+[experiments/designs/design_pure_line_200usd_program.md](experiments/designs/design_pure_line_200usd_program.md).
+What was learned (exp70–exp97):
+
+- **Scaling is log-linear**, ≈ +1.5–2 pp per doubling, and continued training of the same recipe asymptotes at
+  0.45–0.46 (lr/entropy anneals exhausted, exp78/80; +1 pp from high-entropy regularisation, exp88).
+- **Closed levers** (each pre-registered, each judged on 20k-pair T=0 evals): hanchan/placement objectives
+  (exp70/83/84/91), value-based methods ×4 (exp59/60/71/96), PBRS (exp73/74), counterfactual-rollout advantages
+  (exp72), PSRO best response (exp87), QRE/KL magnets (exp88), style-conditioned populations (exp89), global and
+  shanten-weighted deal-in penalties with anneal (exp85/90/95 — the induced defence snaps back when the penalty is
+  removed), ensembles (exp92), run-time adaptation (exp93), oracle guiding and auxiliary wait heads (exp68/69),
+  same-lineage opponent pools (exp82), inference-time search (exp86).
+- **Diagnosis** (exp94 counterfactual takeover probes, true-table clones, all greedy, deal-clustered SEs): the gap to
+  bc49 is one skill — *multi-step* play when a far hand faces a riichi. bc49 taking over from an exposed decision is
+  worth **+258 ± 94 pts/decision**, all from deal-ins 16.5 % → 11.5 % with win rate unchanged; any *single-step*
+  change is worth ≈ 0 for either learner at either table. Policy gradient sees only the single-step quantity, so the
+  chain never gets climbed. First positive pure macro: "shanten ≥ 2 → discard only genbutsu, chosen by the model's own
+  efficiency" = +108–153 pts/decision (z ≈ 3, 18k deals), ≈ +19 ± 9 pts/deal.
+- **Closed since 09-21** (all H0, pre-registered): parameter-space noise (exp97, trainer failed without IS), greedy-continuation
+  single-deviation PPO (exp98), learned danger-set macro (exp99), mode-sequence PIMC search (exp100), static safe-tile keeping.
+  Game-theoretic defences (opponent pools, PSRO, entropy/QRE, style populations) were measured too: the population sits at an
+  equilibrium that nobody can exploit — a low-quality one, since both sides lack the same multi-step skill; no cycling, no
+  degenerate signal. A stage-by-turn probe shows the model already folds in the last few turns (live-tile rate 96 % below chance)
+  and the gap opens toward the early game.
+- **Running**: **exp101** — the last untested axis, capacity × scale: `cnn_l_v3r` (4.0M params, 2× cnn_m) from scratch toward
+  400M deals on one Secure RTX 4000 Ada ($0.28/h, ≈408 deals/s, cap $100). Decision points 32M / 64M / 112M (≥0.462 vs bc49 =
+  capacity pays; ≤0.452 = switch the budget to pure scale of Q1x); goal ≥0.50 at the end. Spend to date ≈$111 of $200.
+
+**Infrastructure**: the deal engine is ported to Rust (`rust/riichi_rs`, bit-exact parity with the Python engine,
+≈ 575 deals/s on one RTX 2000 Ada, cost per million deals $3.1 → $0.07). Training runs on RunPod (Secure Cloud
+whenever champion weights are on the pod); the local RTX 4080 is for smoke tests, probes and evaluation only.
+
+## Two phases
+
+- **Phase 1 (2026-05 → 08-14, archived)**: LLM (Qwen + LoRA) + text rollouts + PBRS/PPO. All arena results null,
+  returns not decodable from hidden states → retired. Legacy: the engine, the reward registry, the arena protocol,
+  the GCP workflow. Archives: `experiments/reports/report_exp1..exp5`, `src/core/`, `scripts/phase1_ce/`.
+- **Phase 2 (current)**: small dedicated networks (2–23M params) + tensor encodings + self-play PPO / BC / DQN.
+
+## Architecture (Phase 2, active parts)
 
 ```
 src/tasks/mahjong/
-├── table.py            # 136 张牌桌引擎；纪元 4 规则 = 雀魂单局对齐（赤宝牌/途中流局/双倍役满/
-│                       #   流局满贯/明杠宝牌时机/国士抢暗杠/抢杠振听）+ 场因素随机化
-│                       #   （东1 恒等起点，点差 σ=4500√k 随局数增长，供托/西场，奖励=起点差分+顺位奖）
-├── claims.py           # 响应窗口裁决（和>碰杠>吃、双响、三响流局）
-├── arena.py            # 复式牌竞技场（A−B 对称配对分差；同 seed 同场上下文）
-└── shanten.py          # 向听/受入/宝牌映射
+├── table.py            # 136-tile deal engine; epoch-4 rules = Majsoul single-deal (red fives, abortive draws,
+│                       #   double yakuman, nagashi mangan, kan-dora timing, kokushi ankan-chankan, chankan furiten)
+│                       #   + round-context randomisation; reward = start-point delta (+ placement bonus)
+├── claims.py           # call-window arbitration (ron > pon/kan > chi, double/triple ron)
+├── hanchan.py          # full hanchan: renchan / honba / nagashi / uma — the verdict scale
+├── arena.py            # duplicate-wall arena (A−B symmetric pairing)
+└── shanten.py          # shanten / acceptance / dora mapping
+rust/riichi_rs/         # Rust port of the engine + encoders + VecEnv (vectorised self-play, hanchan, league seat
+│                       #   routing, per-seat reward styles, genbutsu masks); bit-exact with the Python engine
 src/agents/dnn/
-├── encoder.py          # 观测编码 v1/v1r(+赤/役牌平面)/v3(完整公开记录)/v4(事件缓冲)；
-│                       #   374 动作空间（11 类型×34 关键牌，老 checkpoint 自动加宽）
-├── arch_zoo.py         # cnn_m_r(冠军 2M) / cnn_xl_r / handset_*(实例集合注意力) /
-│                       #   HandRiverFormer(exp30：手牌 token cross-attend 牌河事件序列) / ConvFormer / vit
-├── net.py              # 基类 + load_compatible（跨动作空间/变体的 checkpoint 加载）
-├── selfplay.py         # 自对弈（play_game / 生成器版 play_game_gen）、DnnGame 风格事实
-├── parallel_rollout.py # 多进程 rollout；向量化 worker（每进程 K 局一次批量 RPC，cnn 204 局/s 本机）
-├── infer_server.py     # GPU 批推理服务（共享内存槽位/CUDA graph 分桶/多模型托管）
-├── style_stats.py      # 能力指标聚合（和牌/放铳率与巡目、立直/副露率）——训练 TB 与评估共用
-└── mjai_bridge.py      # 雀魂实战桥接（MJAI 影子桌，编码器/合法动作零改动复用）
+├── encoder.py          # observation encodings v1/v1r/v3/v3r(+red)/v3s/v4; 374-slot and 46-slot action spaces
+├── arch_zoo.py         # cnn_m_r / cnn_m_v3r (pure line) / convformer_m_v3r_m46 (bc49) / ensembles /
+│                       #   AnchoredQPolicy (prior-anchored Q head, exp96) / handset / HandRiverFormer / vit
+├── net.py              # base net + load_compatible (cross action-space / variant checkpoint loading)
+├── selfplay.py         # Python-engine self-play (play_game / generator play_game_gen) — probes and bc49 tables
+├── rust_rollout.py     # Rust-engine rollout (collect_rust): league seats, reward styles, uint8 planes
+├── parallel_rollout.py # multi-process Python rollout + GPU batch inference (infer_server.py)
+├── style_stats.py      # capability metrics (win / deal-in / riichi / call rates, turns) for TB and evals
+└── mjai_bridge.py      # Majsoul live bridge (MJAI shadow table; encoder + legal actions reused unchanged)
 scripts/
-├── train_dnn_ppo.py    # PPO 训练器（GAE λ=0.95、dup_k=8 复式牌 leave-one-out 基线、熵时间表/
-│                       #   目标熵对偶控制、混合温度行为策略 logprob、--gpu_infer、style/* TB 指标）
-├── run_elo_league.py   # Elo 锚点池（纪元 6 = 13 员，混动作空间同池，含引擎指纹守卫、--temperature 贪心评分）
-├── elo_ladder_watcher.py / watch_run.sh   # 训练中阶梯评分 + 心跳（每个长跑任务必挂）
-├── probe_defense.py / probe_decomposition.py / probe_conditional_entropy.py / eval_style_profile.py
-│                       # 探针族：防守 IQ / 牌效拆分 / 条件熵曲线 / 风格（--vs_anchors 生态无关读数）
-├── run_arena_dnn.py    # 复式竞技场（--override_* 诊断包装、每边独立温度）
-└── phase2_dnn/         # 云工作流：launch_g4_git.sh（G4 flex + git 固定 SHA 门）、run_dnn_cloud.sh
-tools/webui/            # 检视台：训练曲线 + 自对弈看板（逐步概率/V）+ 雀魂式复盘
-tools/majsoul_bridge/   # MahjongCopilot 插件（实战 = 冠军贪心；maka/顺位/放铳三把尺之一）
+├── train_dnn_ppo.py    # PPO trainer: --engine rust, dup_k=8 duplicate-wall group baseline, GAE, entropy
+│                       #   schedules / target-entropy dual control, KL anchors, league pools, PBRS shaping,
+│                       #   deal-in penalties (global / shanten-weighted / annealed), counterfactual advantages
+├── train_dnn_bc.py     # behaviour cloning on Tenhou logs (bc49 recipe)
+├── train_dnn_dqn.py / train_dnn_qstitch.py   # value-method line (Double DQN on a prior; prior-anchored Q-stitch)
+├── run_elo_league.py   # anchor pool Elo (single-deal and --hanchan, vectorised GPU, engine-fingerprint guard)
+├── rating.py           # rating system v2 (append-only ledger, four-entity tables, pt board) — epoch 7 pending
+├── probe_*.py / eval_style_profile.py         # probe family: defence IQ, decomposition, conditional entropy, style
+├── serve_mjai_bot.py   # HTTP agent service for the Majsoul bridge
+└── phase2_dnn/         # cloud launch scripts (GCP G4 flex; RunPod runbooks live in SKILLS.md)
+tools/webui/            # inspector: training curves, self-play viewer (per-step probabilities / V), replay
+tools/majsoul_bridge/   # MahjongCopilot plugin (live play = champion greedy; one of the three human yardsticks)
 ```
 
-## 评估体系
+## Evaluation
 
-> **重设计进行中（2026-08-30）**：评分体系 v2 见
-> [experiments/designs/design_rating_system_v2.md](experiments/designs/design_rating_system_v2.md)。
-> 实体 =（checkpoint, 条件）、只追加对局账本、四实体同桌、信息驱动排程、pt 主榜。
-> 入口 `scripts/rating.py`（register / import / schedule / play / fit / board）。
-> **纪元 6 已作废，纪元 7 = v2 首个刻度**。下列为 v1 现役体系（v2 上线前仍是权威数字来源）。
+Three scales, never mixed in one table (see the notes at the top of
+[experiments/LEADERBOARD.md](experiments/LEADERBOARD.md)):
 
-### v1（现役，三把尺）
+1. **Anchor-pool Elo** (`experiments/elo_league/`): 13 anchors, sign-MLE, `bc_cnn` pinned at 1000. Engine changes
+   invalidate history (engine-fingerprint guard; a new epoch = full recalibration). Anchors play under the
+   temperature they were calibrated at (stored in the pool file).
+2. **Hanchan scale** (`hanchan.py`, own anchor pool under `experiments/elo_league/hanchan/`): the verdict scale.
+   Vectorised GPU evaluation ≈ 967 hanchan/min; Mortal is rated with `rate_mortal_hanchan.py`.
+3. **Probes and human yardsticks**: defence IQ, style profile (human reference: agari .212 / houjuu .125 /
+   riichi .182 / call .338), counterfactual takeover probes (exp94), Majsoul maka grades.
 
-1. **Elo 锚点池**（`experiments/elo_league/`）：**13 锚点** sign-MLE，bc_cnn 钉 1000；**纪元 6 现役**
-   （2026-08-30 重标，含 bc49/bc51/exp46Cb/exp46I 四个现代 46 槽里程碑，现代评分自此是内插而非外推）。
-   **纪元规则**：引擎变更 ⇒ 历史作废、整池重校（引擎指纹守卫）。
-   **池的标定条件写在池文件里**（`temperature` 字段），`rate` 从池读锚温度——锚必须在自己被标定的
-   条件下应战，否则评分尺子失效（exp56 起结构性保证）。
-   **评测协议（2026-08-30 定）**：终审一律候选 T=0 + 族外梯子 + 半庄 n≥300；T=1 族内曲线禁止单独下结论
-   （快路径 `play_pair` 同空间 ~23×）。
-2. **半庄刻度**（`src/tasks/mahjong/hanchan.py`）：连庄/本场/流满/uma 全套，**这是裁决刻度**。
-   自己的锚池在 `experiments/elo_league/hanchan/`，自己的规则指纹（`hanchan_fingerprint`）——
-   半庄规则住在 `hanchan.py`，引擎指纹管不着它（exp56 教训）。
-   评测走向量化 GPU（`run_elo_league --hanchan`，967 半庄/分，对 batch-1 的 27/分 = 36×）；
-   `run_hanchan_arena` 保留为 batch-1 参照与 Mortal 桥路径，Mortal 评分用
-   `rate_mortal_hanchan.py`（分片并行 + 只打有信息量的锚）。
-   放大系数：like-for-like（同为复式对计分）单局→半庄 **≈2.5×**；exp53 的"1.8×"是跨计分口径的
-   比较产物，已作废。训练侧 = exp55-D 四席桌 + 排位价值 W 逐局归因。
-3. **探针族**：defense_iq、风格剖面（对人类精确参照：agari .212/houjuu .125/riichi .182/call .338）。
-4. **人类刻度**：雀魂实战（贪心）——maka 档位：纯血冠军 C+ → **人类 BC 旗舰 bc49 两轮 S+**。
+**Verdict protocol** (CLAUDE.md): candidates at T=0, out-of-family ladders, hanchan n ≥ 300 for finals; single-deal
+finals are 20k paired walls in two seed segments (SE ≈ 0.0035); in-family T=1 curves never decide anything on their
+own. Probes that take several decisions per deal report **deal-clustered** standard errors (per-decision SEs
+understate by ≈ 2×). A champion changes only on a significantly positive T=0 head-to-head; ladder scores rank, they
+do not crown.
 
-## 当前状态（2026-08-30）
-
-- **部署冠军 = bc49**（人类先验谱系，conv×v3r×46 全量 BC，2.00M 参数 / 56 平面 / 46 动作）：
-  纪元 6 单局刻度 **T=0 1189.0±7.9**，雀魂 maka 两轮 S+；真 Mortal 298k 参照 1199.6±8.0（同协议）。
-  半庄裁决刻度上 Mortal 头对头已被追平（见下）。怎么配置、怎么跑、要多少机器 →
-  [docs/champion_model.md](docs/champion_model.md)。（重锚前的 1210.6 / 1218.6 是 12 锚外推刻度，已作废。）
-- **纯血谱系冠军 = exp27-A**（不变，纪元 6 池内 1064.5）。
-- **exp46 C~J 收官**：定位并修复训练器四病因（价值梯度扰乱 trunk→`--value_detach`、熵扩散→KL 锚、
-  优势尾部审查→去 clamp、T=1 族内度量失真→换协议）；最强 RL 产物 **exp46-I**（锚×detach）
-  纪元 6 单局 T=0 **1198.0±8.0**，对 bc49 双 T=0 头对头 n=1000 = **0.5005±0.0158（完全打平）**。详见
-  [experiments/exp46_rl_on_prior_prereg/EXPERIMENT.md](experiments/exp46_rl_on_prior_prereg/EXPERIMENT.md)。
-- **纪元 6 已开闸并完成重校**（引擎动作缺口修复合并 + T=0 协议 + 13 锚全体重锚 + 混动作空间原生托管）。
-- **半庄裁决刻度已就位**（exp56，2026-08-30）：向量化 GPU 半庄 **967 场/分**（batch-1 的 36×），
-  全 T=0 部署形态锚池建成。**RL vs BC 终审：exp46I 对 bc49 双 T=0 4000 场 = 0.5141±0.0079，
-  pt +0.85±0.47/人/半庄——打平，非增益。Mortal 头对头 n=1200/对：vs bc49 0.4771±0.0144、
-  vs exp46I 0.5083±0.0144——双双打平，北极星「平 Mortal」达成、「超」未达成。** 权威数字见
-  [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md)。
-- **exp55-D 就绪**：半庄排位训练管线全冒烟（残差 W 信用 + v3rh 编码器 + 四席 rollout），待发射。
-- **待决**：纪元 7（评分体系 v2 首个刻度）；exp54 离线 RL 立项；数据扩容（10 万局级，当前最高期望值杠杆）。
-
-## 快速开始
+## Quick start
 
 ```bash
 conda activate rlhf_mahjong
-python -m pytest tests -q                        # ~196 项
-# 跑现役冠军 bc49（雀魂实战服务，T=0 贪心）——完整手册见 docs/champion_model.md
+python -m pytest tests -q                              # engine parity, encoders, trainers, Rust ↔ Python
+# build the Rust engine (after any change under rust/riichi_rs)
+cd rust/riichi_rs && maturin build --release -i "$(which python)" && pip install --force-reinstall target/wheels/riichi_rs-*.whl && cd -
+# serve the champion (bc49, greedy) for the Majsoul bridge — full manual in docs/champion_model.md
 PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_anchors_epoch6/bc49.pt --temperature 0
-# 本地训练（4080 实测 cnn_m_r ~100 局/s 训练口径）
-python scripts/train_dnn_ppo.py --arch cnn_m_r --total_games 1000000 --gpu_infer \
-  --games_per_worker 32 --infer_max_batch 512 --exp_dir experiments/my_run_$(date +%Y%m%d_%H%M%S)
-# 云端（G4 flex，先 push 再发射——脚本会校验 SHA 已在 origin/master）
-bash scripts/phase2_dnn/launch_g4_git.sh my-vm us-central1-b my_run $(git rev-parse HEAD) -- \
-  scripts/train_dnn_ppo.py --arch cnn_m_r ... --exp_dir experiments/my_run
-conda run -n rlhf_mahjong python tools/webui/server.py --port 8642   # 检视台
+# pure-line PPO smoke on the Rust engine (long runs go to the cloud — see SKILLS.md for the RunPod runbook)
+python scripts/train_dnn_ppo.py --engine rust --arch cnn_m_v3r --total_games 200000 --games_per_iter 2048 \
+  --dup_k 8 --games_per_worker 1024 --workers 1 --exp_dir experiments/my_run_$(date +%Y%m%d_%H%M%S)
+# T=0 paired evaluation of a checkpoint against bc49 (single deal / hanchan)
+python -c "from scripts.run_elo_league import play_pair_vector as p; sc,_,_=p('CAND.pt','experiments/_anchors_epoch6/bc49.pt',4000,67000000,20,'cuda',temp_a=0.0,temp_b=0.0,hanchan=False); print(sum(sc)/len(sc))"
+conda run -n rlhf_mahjong python tools/webui/server.py --port 8642   # inspector
 ```
 
-## 雀魂实战测试（Windows 打牌机）
+Every run needs an `EXPERIMENT.md` (purpose / method / success criteria) *before* launch, a heartbeat monitor and
+TensorBoard mirror once launched, and a row in `experiments/INDEX.md` when it ends — see CLAUDE.md.
 
-人类刻度（maka 档位 / 顺位 / 放铳）只能在真实对局上读出来。标准拓扑是**两台机**——模型机跑本仓库与
-checkpoint，打牌机（Windows）跑 [MahjongCopilot](https://github.com/latorc/MahjongCopilot)（MC）+ Chrome，
-两者用 SSH 隧道连起来；单机部署（两者同一台）也完全可行。
+## Live play on Majsoul (Windows client machine)
+
+The human yardsticks (maka grade, placements, deal-in rate) can only be read from real games. Standard topology is
+two machines — the model machine runs this repo and the checkpoint, the client machine (Windows) runs
+[MahjongCopilot](https://github.com/latorc/MahjongCopilot) (MC) + Chrome — joined by an SSH tunnel. A single-machine
+setup works too.
 
 ```
-打牌机 Windows 11: MC + 插件 ── mitmproxy:10999 ──► Chrome(雀魂)
-                       └─ bot_llmmahjong ──► 127.0.0.1:8765 ──ssh -L 隧道──► 模型机: serve_mjai_bot.py
+client Windows 11: MC + plugin ── mitmproxy:10999 ──► Chrome (Majsoul)
+                      └─ bot_llmmahjong ──► 127.0.0.1:8765 ──ssh -L tunnel──► model machine: serve_mjai_bot.py
 ```
 
-1. **模型机**（Linux，本仓库根目录）启动 agent 服务，冠军 + 贪心：
+1. **Model machine** (Linux, repo root): start the agent service with the champion, greedy:
    ```bash
    PYTHONPATH=. python scripts/serve_mjai_bot.py --ckpt experiments/_anchors_epoch6/bc49.pt \
      --temperature 0 --log experiments/exp24_majsoul_live_$(date +%Y%m%d_%H%M%S)/mjai_session.jsonl
    ```
-   `curl localhost:8765/health` 返回 ok 即就绪。服务**无鉴权、只监听 127.0.0.1**，不要暴露到公网。
-2. **打牌机装 MC**（PowerShell；机器上的老 conda 不要用）：
+   `curl localhost:8765/health` returns ok when ready. The service has **no auth and listens on 127.0.0.1 only**;
+   never expose it.
+2. **Install MC on the client** (PowerShell; do not use an old conda on that machine):
    ```powershell
    winget install Python.Python.3.12 --scope user
    git clone https://github.com/latorc/MahjongCopilot $env:USERPROFILE\MahjongCopilot
    cd $env:USERPROFILE\MahjongCopilot; python -m venv venv; .\venv\Scripts\pip install -r requirements.txt; .\venv\Scripts\playwright install chromium
    ```
-3. **打三处 Windows 补丁 + 装我们的 bot 插件**（补丁基于 MC `31be3de` 验证过）：
+3. **Apply the three Windows patches and install our bot plugin** (patches verified against MC `31be3de`):
    ```powershell
-   git apply <本仓库>\tools\majsoul_bridge\mahjongcopilot_windows.patch
-   python <本仓库>\tools\majsoul_bridge\install.py $env:USERPROFILE\MahjongCopilot
+   git apply <this repo>\tools\majsoul_bridge\mahjongcopilot_windows.patch
+   python <this repo>\tools\majsoul_bridge\install.py $env:USERPROFILE\MahjongCopilot
    ```
-   三处补丁分别解决 Windows 上必踩的三个坑：Playwright 自带 Chromium 的 SxS 报错（改用系统 Chrome）、
-   雀魂 46 MB wasm 被 mitmproxy 缓冲导致黑屏（大响应流式透传）、mitm 根证书要管理员（改装当前用户存储）。
-4. **开隧道**（打牌机，常驻）：`ssh -N -L 8765:127.0.0.1:8765 <模型机>`；MC 侧 URL 保持 `http://127.0.0.1:8765`。
-5. **配置并启动 MC**：`settings.json` 里 `"model_type": "LLM_Mahjong"`、`"llmmahjong_url": "http://127.0.0.1:8765"`、
-   `"ai_randomize_choice": 0`；`enable_automation` = `false` 辅助模式（自己点，面板看概率/V）、`true` 自动打牌（正式计分）。
-   启动：`cd $env:USERPROFILE\MahjongCopilot; .\venv\Scripts\python.exe main.py` → 启动浏览器 → 登录雀魂。
-6. **验收 + 计分**：先在友人房跑一局，确认 MC 日志里每个 `Bot in: tsumo` 都有 `Bot out: dahai`、`no op list` 为 0；
-   打完在模型机上 `python scripts/analyze_majsoul_session.py <session>.jsonl` 出顺位/和牌/放铳/立直/副露。
+   The patches fix the three Windows blockers: Playwright's bundled Chromium SxS error (use system Chrome), the
+   46 MB Majsoul wasm buffered by mitmproxy (stream large responses), and the mitm root certificate needing admin
+   (install into the current-user store).
+4. **Tunnel** (client, keep open): `ssh -N -L 8765:127.0.0.1:8765 <model machine>`; MC's URL stays
+   `http://127.0.0.1:8765`.
+5. **Configure and start MC**: in `settings.json` set `"model_type": "LLM_Mahjong"`,
+   `"llmmahjong_url": "http://127.0.0.1:8765"`, `"ai_randomize_choice": 0`; `enable_automation` = `false` for
+   assist mode (you click; the panel shows probabilities / V) or `true` for auto-play (official scoring).
+   Start: `cd $env:USERPROFILE\MahjongCopilot; .\venv\Scripts\python.exe main.py` → launch browser → log in.
+6. **Verify and score**: play one friendly-room game first; every `Bot in: tsumo` in the MC log must have a
+   `Bot out: dahai` and `no op list` must be 0. Afterwards, on the model machine:
+   `python scripts/analyze_majsoul_session.py <session>.jsonl` (placements / wins / deal-ins / riichi / calls).
 
-**详细 runbook**：[tools/majsoul_bridge/README.md](tools/majsoul_bridge/README.md)（通用流程、两种模式、牌局留底格式、协议坑）
-· [tools/majsoul_bridge/WINDOWS.md](tools/majsoul_bridge/WINDOWS.md)（Windows 实录：三处补丁的现象与根因、
-新版 Unity 客户端兼容、`spawn UNKNOWN` / 黑屏 / 证书 / 「主进程发生错误!」排障速查表）
-· [docs/champion_model.md](docs/champion_model.md)（用哪个 ckpt、要多少资源）。
+**Detailed runbooks**: [tools/majsoul_bridge/README.md](tools/majsoul_bridge/README.md) (general flow, both modes,
+session log format, protocol pitfalls) · [tools/majsoul_bridge/WINDOWS.md](tools/majsoul_bridge/WINDOWS.md)
+(Windows field notes: symptoms and root causes of the three patches, new Unity client compatibility,
+`spawn UNKNOWN` / black screen / certificate troubleshooting) · [docs/champion_model.md](docs/champion_model.md)
+(which checkpoint, how much hardware).
 
-> **风险**：使用第三方自动化工具违反雀魂服务条款，**存在封号风险**，只用可承受损失的账号。
+> **Risk**: third-party automation violates Majsoul's terms of service and **can get the account banned**. Use only
+> accounts you can afford to lose.
 
-**纪律**（CLAUDE.md 强制）：任何 run 先写 `EXPERIMENT.md`（目的/方法/成功标准）再发射；发射后核对吞吐符合预期；
-每个长跑任务挂心跳；VM 用完即删；奖励逻辑走 registry；新教训追加 SKILLS.md。
+**Discipline** (enforced by CLAUDE.md): pre-register every run; check throughput after launch; heartbeat on every
+long job; terminate cloud machines when done (never merely stop them); reward logic goes through the registry; new
+lessons are appended to SKILLS.md with a date.

@@ -2,7 +2,7 @@
 
 > **🤖 AI Agent Directive**: Whenever you start a new session or work on this repository, you MUST read this file first. As the project evolves, if you encounter new bugs, hardware limitations, or make architectural decisions, you are required to **continuously update and append** to this skill file so that the project's context is never lost.
 >
-> **当前状态快照不在本文件**：看 [README「当前状态」](README.md)（冠军/纪元/进行中实验）和
+> **当前状态快照不在本文件**：看 [README「Current status」](README.md)（中文 README.zh.md）（冠军/纪元/进行中实验）和
 > [docs/roadmap_epoch3.md](docs/roadmap_epoch3.md)（队列与路线）。本文件是**追加式教训账本**（时间序）。
 > 早期条目（Phase 1 LLM 时代：A100/QLoRA/文本 rollout）保留为历史，Phase 2 已转 DNN + G4 flex，机型/费用见
 > docs/gcp_compute_cost_and_quota.md §8。
@@ -648,3 +648,23 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
 
 ## 在轨偏差第三次（2026-09-14，exp91）
 半庄在轨 n=200 同 seed 组四点单调上行 0.350→0.415，终评 n=1,200 新 seed 0.364——与 exp79（"九点全部领先"被终评推翻）、exp85 同类。规则不变：在轨只用于早停，任何"趋势"都不进判决；预注册延长规则也只认终评。
+补（2026-09-20）：社区 RTX 3090 又两台坏宿主——后缀 **64411661**（99.69.17.69，CUDA unknown error，GPU 守卫拦下）、**64411ad4**（无公网 TCP 口）。两次试机合计 ≈$0.03。Secure EU-RO-1 的 RTX 2000 Ada 仍是可靠兜底。
+另：**PR 合并后推送**（2026-09-19）——`gh pr view` 与 `git push` 写在同一条命令里，读到 MERGED 时已经推出去了（1 个提交挂在已合并分支）。规则细化：查 PR 状态必须是**独立一步**，读到 OPEN 才允许下一步 push；读到 MERGED 就停，只做本地提交并告知用户。
+补（2026-09-20）：社区 3090 宿主后缀 **64411936**（32 vCPU，cuda 12.9）14 分钟拉不完镜像（`still fetching image` 循环）——慢网宿主，后续 rustup/pip 也会拖；超过 8 分钟未出 runtime 就终止。
+
+### 2026-09-21 反事实分支探针的标准误必须按局聚类
+- 接管/弃和类探针在同一局里取多个暴露决策，各分支共享同一副牌山和同一条主线结局 ⇒ 逐决策 SE 把强相关样本当独立，**低估约 2×**（exp94：+258 ± 44 实为 ± 94）。
+- 规则：凡"每局多个决策"的配对探针，一律报按局聚类的 SE（比率估计：Σ_局(和−均值×个数)² 开方 / 总决策数）或只用每局首个决策；逐决策 SE 不得用于判据。
+- 连带：2,000 局的接管探针分辨率只有 ≈±95 分/决策，判 ±100 量级的效应要 ≥2 万局；选变体与确认检验必须用不重叠的种子段。
+
+- 2026-09-22 坏宿主追加：社区 3090 Ti 宿主 **64411a92**（28 vCPU）上传 ≈30 KB/s（24 MB ckpt 8 min 传不完），终止（≈$0.07）。发射脚本应在 scp 大文件前先测 1 MB 传输速率（<1 MB/s 即弃机）。另：清理进程时 pkill -f 又一次自匹配杀了自己的 shell（exit 144）——先 pgrep 列 PID，再单独 kill。
+
+### 2026-09-22 探索噪声与 PPO 更新口径
+- 用与采样策略不同的策略（干净网）记录 logprob、比值从 1 起步、不做重要性加权：PPO 的 clip 只约束比值不约束 logit 尺度，噪声采到的 π≈1e-5 动作偶得正优势就被无限抬高，12M 局后 logit 跨度 8→188、策略崩坏（exp97）。任何离策略采样（参数噪声、混合温度、单点偏离）都要记录**实际行为策略**的 logprob，或显式加 KL(π_old‖π_new) 惩罚；在轨必看 approx_kl 与 logit 跨度。
+- σ 自适应（Plappert）在策略变敏感时会把 σ 缩到名存实亡：把 σ 的下限和 logit 尺度一起进健康判据。
+
+### 2026-09-26 大网在弱卡上是 GPU-bound；跨 pod 迁移 runbook
+- cnn_l_v3r（4M）在 RTX 2000 Ada 上 PPO update 4.8 s + rollout 3.5 s / 2,048 局，GPU 100%（188 局/s）；`--amp_update` 把 update 减半（254）；换 RTX 4000 Ada（$0.28）到 408 局/s——$/局减半。
+  发射前先在目标卡上跑 4 min bench 再定预算；GPU util 看 nvidia-smi，别只看 nproc。
+- 迁移 runbook：①确认 latest.pt 刚落盘（ckpt_every 迭代）；②`pgrep` 列 PID → 单独 `kill`；③rsync 到本机镜像 → scp 到新机（md5 核对）；④`--resume` 起新进程，train_log 行保留；
+  ⑤心跳/拉取循环换主机重挂；⑥把旧 `exp*.log` 里操作员 kill 留下的 `TRAIN_FAILED` 改成 STOPPED_BY_OPERATOR，否则心跳误报（09-26 踩过一次）。

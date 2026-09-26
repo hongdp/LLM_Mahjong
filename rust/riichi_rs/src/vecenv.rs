@@ -87,6 +87,7 @@ pub struct VecEnv {
     hanchan: bool,
     max_deals: usize,
     houjuu_extra: f64,
+    houjuu_by_shanten: [f64; 3],
     seat_styles: std::collections::HashMap<u64, [[f64; 2]; 4]>,   // exp89: per-seed (tau_d, tau_a) x 4 seats
 }
 
@@ -133,9 +134,11 @@ fn deal_done(g: &mut Game) -> bool {
     let honba = ms.honba;
     let n = ms.n as u64;
     let hx = g.table.houjuu_extra;
+    let hs = g.table.houjuu_by_shanten;
     let st = g.table.seat_style;
     g.table = Table::new_hanchan(g.seed.wrapping_mul(1_000_003).wrapping_add(n), dealer, rw, pts, kyo, honba);
     g.table.houjuu_extra = hx;
+    g.table.houjuu_by_shanten = hs;
     g.table.seat_style = st;
     g.phase = Phase::Turn;
     g.guard = 0;
@@ -319,6 +322,7 @@ impl VecEnv {
                         (Table::new_seeded(seed, self.randomize_round), None)
                     };
                     table.houjuu_extra = self.houjuu_extra;
+                    table.houjuu_by_shanten = self.houjuu_by_shanten;
                     if let Some(st) = self.seat_styles.get(&seed) {
                         table.seat_style = *st;
                     }
@@ -364,11 +368,16 @@ impl VecEnv {
 #[pymethods]
 impl VecEnv {
     #[new]
-    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true, variant="v1r".to_string(), hanchan=false, max_deals=24, houjuu_extra=0.0, seat_styles=None))]
-    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool, variant: String, hanchan: bool, max_deals: usize, houjuu_extra: f64, seat_styles: Option<Vec<Vec<f64>>>) -> PyResult<Self> {
+    #[pyo3(signature = (seeds, k, gamma=0.995, shaping=false, shaping_scale=1.0, randomize_round=true, variant="v1r".to_string(), hanchan=false, max_deals=24, houjuu_extra=0.0, seat_styles=None, houjuu_by_shanten=None))]
+    fn new(seeds: Vec<u64>, k: usize, gamma: f64, shaping: bool, shaping_scale: f64, randomize_round: bool, variant: String, hanchan: bool, max_deals: usize, houjuu_extra: f64, seat_styles: Option<Vec<Vec<f64>>>, houjuu_by_shanten: Option<Vec<f64>>) -> PyResult<Self> {
         if hanchan && shaping {
             return Err(pyo3::exceptions::PyValueError::new_err("hanchan VecEnv: PBRS shaping is per-deal and not supported across a match"));
         }
+        let hbs = match houjuu_by_shanten {
+            None => [0.0; 3],
+            Some(v) if v.len() == 3 => [v[0], v[1], v[2]],
+            Some(_) => return Err(pyo3::exceptions::PyValueError::new_err("houjuu_by_shanten must be [p_tenpai, p_1shanten, p_far]")),
+        };
         let mut style_map = std::collections::HashMap::new();
         if let Some(st) = seat_styles {
             if st.len() != seeds.len() {
@@ -388,6 +397,7 @@ impl VecEnv {
             finished: Vec::new(),
             n_started: 0,
             hanchan, max_deals, houjuu_extra,
+            houjuu_by_shanten: hbs,
             seat_styles: style_map,
         };
         env.fill_slots();
@@ -418,6 +428,7 @@ impl VecEnv {
             finished: Vec::new(),
             n_started: 0,
             hanchan: false, max_deals: 24, houjuu_extra: 0.0,
+            houjuu_by_shanten: [0.0; 3],
             seat_styles: std::collections::HashMap::new(),
         };
         for (i, (pt, (seat, xml))) in tables.iter().zip(seats.iter().zip(first_actions.iter())).enumerate() {
@@ -622,5 +633,79 @@ impl VecEnv {
     /// `games` column back to the deal seed (league seat plans are keyed by seed).
     fn slot_seeds(&self) -> Vec<i64> {
         self.active.iter().map(|g| g.as_ref().map_or(-1, |g| g.seed as i64)).collect()
+    }
+
+    /// exp99: per pending row (observe() order) the ORACLE danger label [B, 34]: tile is a winning tile of at
+    /// least one opponent currently in riichi (rows with no riichi opponent are all false). Training labels for a
+    /// public-information danger head only — never an observation.
+    fn riichi_waits<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<bool>>> {
+        let b = self.total_rows();
+        let mut out = Vec::with_capacity(b * 34);
+        for g in self.active.iter().flatten() {
+            let t = &g.table;
+            for r in g.rows.iter() {
+                let mut lab = [false; 34];
+                for o in 0..4 {
+                    if o == r.seat || !t.riichi[o] {
+                        continue;
+                    }
+                    for w in t.waits(o) {
+                        lab[crate::tiles::norm(w) as usize] = true;
+                    }
+                }
+                out.extend_from_slice(&lab);
+            }
+        }
+        Ok(PyArray1::from_vec_bound(py, out).reshape([b, 34])?)
+    }
+
+    /// exp96: per pending row (observe() order) the genbutsu mask [B, 34] — tiles safe against
+    /// EVERY opponent in riichi (their own river + anything discarded after their riichi) — and
+    /// info [B, 2] = (opponents in riichi, own shanten; -9 when nobody is in riichi, not computed).
+    fn safe_info<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyArray2<bool>>, Bound<'py, PyArray2<i32>>)> {
+        let b = self.total_rows();
+        let mut genb = Vec::with_capacity(b * 34);
+        let mut info = Vec::with_capacity(b * 2);
+        for g in self.active.iter().flatten() {
+            let t = &g.table;
+            for r in g.rows.iter() {
+                let mut safe = [true; 34];
+                let mut n_riichi = 0i32;
+                for o in 0..4 {
+                    if o == r.seat || !t.riichi[o] {
+                        continue;
+                    }
+                    n_riichi += 1;
+                    let ridx = t.river_events[o].iter().find(|e| e.riichi).map(|e| e.idx);
+                    let mut s = [false; 34];
+                    for e in &t.river_events[o] {
+                        s[crate::tiles::norm(e.tile) as usize] = true;
+                    }
+                    if let Some(ri) = ridx {
+                        for p in 0..4 {
+                            if p == o {
+                                continue;
+                            }
+                            for e in t.river_events[p].iter().filter(|e| e.idx > ri) {
+                                s[crate::tiles::norm(e.tile) as usize] = true;
+                            }
+                        }
+                    }
+                    for i in 0..34 {
+                        safe[i] &= s[i];
+                    }
+                }
+                if n_riichi == 0 {
+                    genb.extend_from_slice(&[false; 34]);
+                    info.extend_from_slice(&[0, -9]);
+                } else {
+                    genb.extend_from_slice(&safe);
+                    info.extend_from_slice(&[n_riichi, t.shanten_of(&t.hands[r.seat], t.melds[r.seat].len())]);
+                }
+            }
+        }
+        let genb = PyArray1::from_vec_bound(py, genb).reshape([b, 34])?;
+        let info = PyArray1::from_vec_bound(py, info).reshape([b, 2])?;
+        Ok((genb, info))
     }
 }
