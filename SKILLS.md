@@ -668,3 +668,4 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
   发射前先在目标卡上跑 4 min bench 再定预算；GPU util 看 nvidia-smi，别只看 nproc。
 - 迁移 runbook：①确认 latest.pt 刚落盘（ckpt_every 迭代）；②`pgrep` 列 PID → 单独 `kill`；③rsync 到本机镜像 → scp 到新机（md5 核对）；④`--resume` 起新进程，train_log 行保留；
   ⑤心跳/拉取循环换主机重挂；⑥把旧 `exp*.log` 里操作员 kill 留下的 `TRAIN_FAILED` 改成 STOPPED_BY_OPERATOR，否则心跳误报（09-26 踩过一次）。
+- 2026-09-27 心跳脚本 bug："发射相 40 min 死线"写成了对任何 ssh 失败都生效，一次瞬时 ssh 失败在 40 min 后就误报 LAUNCH DEADLINE 退出（exp101 p2，训练无恙）。修正：死线只在首个迭代出现前生效；之后连续 4 次失败才报 UNREACHABLE。
