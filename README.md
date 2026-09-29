@@ -27,9 +27,10 @@ exp46-I 1457 ± 11, **bc49 1443 ± 11**. Mortal head-to-head over 1,200 hanchan:
 "match Mortal" reached, "surpass" not. Majsoul maka S+ twice. Details and ckpt paths in
 [docs/champion_model.md](docs/champion_model.md); numbers in [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md).
 
-**Pure lineage — the $200 program (2026-09-06 → 09-21, ≈$92 spent)**. Goal: a from-scratch model at bc49/Mortal
+**Pure lineage — the $200 program (2026-09-06 →, ≈$166 spent)**. Goal: a from-scratch model at bc49/Mortal
 level (T=0 single-deal share ≥ 0.50 vs bc49 over ≥ 20k paired walls, and hanchan ≥ 0.50 over ≥ 1,200 matches).
-Best so far: **exp88_Q1x, 0.4568 ± 0.0035 single-deal vs bc49**; hanchan 0.37–0.39. Every terminal number lives in
+Best so far: **exp102 A @ 216M, 0.4655 ± 0.0035 single-deal vs bc49** (entropy-coefficient tail anneal; formal 224M
+verdict pending); previous best exp88_Q1x 0.4568. Hanchan 0.37–0.39. Every terminal number lives in
 [experiments/INDEX.md](experiments/INDEX.md); the program design and verdicts in
 [experiments/designs/design_pure_line_200usd_program.md](experiments/designs/design_pure_line_200usd_program.md).
 What was learned (exp70–exp97):
@@ -54,9 +55,17 @@ What was learned (exp70–exp97):
   equilibrium that nobody can exploit — a low-quality one, since both sides lack the same multi-step skill; no cycling, no
   degenerate signal. A stage-by-turn probe shows the model already folds in the last few turns (live-tile rate 96 % below chance)
   and the gap opens toward the early game.
-- **Running**: **exp101** — the last untested axis, capacity × scale: `cnn_l_v3r` (4.0M params, 2× cnn_m) from scratch toward
-  400M deals on one Secure RTX 4000 Ada ($0.28/h, ≈408 deals/s, cap $100). Decision points 32M / 64M / 112M (≥0.462 vs bc49 =
-  capacity pays; ≤0.452 = switch the budget to pure scale of Q1x); goal ≥0.50 at the end. Spend to date ≈$111 of $200.
+- **exp101 — capacity × scale: H0.** `cnn_l_v3r` (4.0M params, 2× cnn_m) from scratch, moved to a Secure RTX 4090
+  (≈1,040 deals/s). 20k-pair readings vs bc49: 32M 0.4305 · 64M 0.4379 · 112M 0.4497 · 160M 0.4597 · 192M 0.4541 ·
+  216M 0.4529 · 232M 0.4594 — a plateau at ≈0.455, equal to Q1x at 1.7–2× its deals. Neither 2× capacity nor 3.5× scale
+  moves the equilibrium.
+- **exp102 — entropy-coefficient tail anneal: first positive lever since exp88 (preliminary).** The PPO entropy bonus
+  α = 0.03 holds the policy at ≈1.0 nat (bc49: 0.49 nat, same probe) — the plateau is a static point where the
+  entropy gradient cancels the policy gradient, and all earlier lower-entropy tests had been run on the α = 0.01
+  lineage. From exp101's 192M checkpoint, a step anneal 0.03 → 0.003 (194–200M) drops H to 0.28 and gives
+  **0.4655 ± 0.0035 at 216M vs 0.4529 for the same-lineage control at the same deal count (+1.26 ± 0.50 pp, ≈2.5σ)**.
+  Formal verdict at 224M; if it holds, next are a dose arm (α → 0.0003) and an arm that separates "own policy
+  sharper" from "training opponents sharper" (learner seat keeps α, opponent seats greedy).
 
 **Infrastructure**: the deal engine is ported to Rust (`rust/riichi_rs`, bit-exact parity with the Python engine,
 ≈ 575 deals/s on one RTX 2000 Ada, cost per million deals $3.1 → $0.07). Training runs on RunPod (Secure Cloud
