@@ -367,6 +367,9 @@ ZOO = {
                                      encoder_variant="v3rf", action_dim=ACTION_DIM + 1, action_space="native_fold"), False),
     "cnn_l_v3rf": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3F,
                                      encoder_variant="v3rf", action_dim=ACTION_DIM + 1, action_space="native_fold"), False),
+    # arm M2: same option but NO mask restriction inside fold mode (sub-policy fully learned; only the flag is imposed)
+    "cnn_l_v3rfl": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3F,
+                                      encoder_variant="v3rf", action_dim=ACTION_DIM + 1, action_space="native_fold_free"), False),
 }
 
 

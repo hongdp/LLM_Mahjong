@@ -233,3 +233,24 @@ def test_rust_rollout_rewrites_episodes_consistently():
         M = torch.from_numpy(e["mask"]).cuda()
         lp = torch.log_softmax(net(P, S, M), 1).gather(1, torch.from_numpy(e["actions"]).cuda().long()[:, None]).squeeze(1)
     assert torch.allclose(lp.cpu(), torch.from_numpy(e["old_logprobs"]).float(), atol=2e-3), (lp[:5], e["old_logprobs"][:5])
+
+
+def test_free_space_only_adds_the_flag():
+    """Arm M2 (native_fold_free / cnn_l_v3rfl): inside fold mode the mask stays the full legal
+    mask (riichi/calls included), the follow-up step still excludes wins/skip, and the only
+    imposed structure is the ENTER_FOLD slot + the in_fold_mode scalar."""
+    sp = REGISTRY["native_fold_free"]
+    assert space_of_arch("cnn_l_v3rfl") == "native_fold_free" and sp.dim == ACTION_DIM + 1
+    from src.agents.dnn.encoder import variant_of_arch
+    assert variant_of_arch("cnn_l_v3rfl") == "v3rf"
+    m = np.zeros(ACTION_DIM, dtype=np.bool_)
+    d, r, p = TYPE_TO_ID["discard"], TYPE_TO_ID["riichi"], TYPE_TO_ID["pon"]
+    for tile in (0, 5, 9):
+        m[d * TILE_TYPES + tile] = True
+    m[r * TILE_TYPES + 5] = True; m[p * TILE_TYPES + 9] = True
+    genb = np.zeros(TILE_TYPES, dtype=np.bool_); genb[9] = True
+    assert np.array_equal(fo.restrict_mask(m, genb, restrict=False), m)
+    fd = fo.fold_discard_mask(m, genb, restrict=False)
+    assert set(np.nonzero(fd)[0].tolist()) == {d * TILE_TYPES + x for x in (0, 5, 9)}
+    wide, enter = fo.batch_masks(m[None], genb[None], np.array([1]), np.array([True]), restrict=False)
+    assert np.array_equal(wide[0, :ACTION_DIM], m) and not wide[0, fo.FOLD_SLOT] and not enter[0]

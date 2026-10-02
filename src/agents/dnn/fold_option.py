@@ -89,10 +89,14 @@ def enter_legal(mask374: np.ndarray, n_opp_riichi: int, in_fold: bool) -> bool:
     return d >= 2
 
 
-def restrict_mask(mask374: np.ndarray, genb: Optional[np.ndarray]) -> np.ndarray:
+def restrict_mask(mask374: np.ndarray, genb: Optional[np.ndarray], restrict: bool = True) -> np.ndarray:
     """Fold-mode mask: discards ∩ genbutsu (falls back to all legal discards
     when none is safe), wins and skip kept, riichi/calls/kyuushu dropped.
-    Returns a NEW [374] bool array."""
+    restrict=False (arm M2, "learned" sub-policy): the mask is left as is and
+    only the in_fold_mode input tells the net it committed. Returns a NEW
+    [374] bool array."""
+    if not restrict:
+        return mask374.copy()
     m = mask374.copy()
     for t in _DROP_TYPES:
         m[t * _TT:(t + 1) * _TT] = False
@@ -121,7 +125,7 @@ def widen(mask374: np.ndarray, enter: bool) -> np.ndarray:
     return out
 
 
-def batch_masks(mask374: np.ndarray, genb: np.ndarray, n_opp: np.ndarray, in_fold: np.ndarray):
+def batch_masks(mask374: np.ndarray, genb: np.ndarray, n_opp: np.ndarray, in_fold: np.ndarray, restrict: bool = True):
     """Vectorised version for the Rust rollout. mask374 [n,374], genb [n,34],
     n_opp [n] (opponents in riichi), in_fold [n] bool. Returns
     (mask375 [n,375] for the policy query, enter [n] bool)."""
@@ -130,7 +134,7 @@ def batch_masks(mask374: np.ndarray, genb: np.ndarray, n_opp: np.ndarray, in_fol
     enter = np.zeros(n, dtype=np.bool_)
     for i in range(n):
         if in_fold[i]:
-            out[i, :_enc.ACTION_DIM] = restrict_mask(mask374[i], genb[i] if n_opp[i] > 0 else None)
+            out[i, :_enc.ACTION_DIM] = restrict_mask(mask374[i], genb[i] if n_opp[i] > 0 else None, restrict)
         else:
             out[i, :_enc.ACTION_DIM] = mask374[i]
             enter[i] = enter_legal(mask374[i], int(n_opp[i]), False)
@@ -138,13 +142,14 @@ def batch_masks(mask374: np.ndarray, genb: np.ndarray, n_opp: np.ndarray, in_fol
     return out, enter
 
 
-def fold_discard_mask(mask374: np.ndarray, genb: Optional[np.ndarray]) -> np.ndarray:
+def fold_discard_mask(mask374: np.ndarray, genb: Optional[np.ndarray], restrict: bool = True) -> np.ndarray:
     """Second-step mask after ENTER_FOLD: safe discards only (same rule as
     restrict_mask, wins/skip excluded because the row IS a turn decision
-    and the commitment means 'discard a safe tile now')."""
-    m = restrict_mask(mask374, genb)
-    for t in (T["ron"], T["tsumo"], T["skip"]):
+    and the commitment means 'discard a safe tile now'). restrict=False: any
+    legal discard (the commitment is only the input flag)."""
+    m = restrict_mask(mask374, genb, restrict)
+    for t in _DROP_TYPES + (T["ron"], T["tsumo"], T["skip"]):
         m[t * _TT:(t + 1) * _TT] = False
     if not m.any():
-        m = restrict_mask(mask374, genb)
+        m = restrict_mask(mask374, genb, restrict)
     return widen(m, False)

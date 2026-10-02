@@ -93,7 +93,8 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     if variant == "v3rf":
         from src.agents.dnn import fold_option as _fo
         fold = {"flag": np.zeros((k, 4), dtype=bool), "prev_seed": np.full(k, -2, dtype=np.int64),
-                "log": {}, "n_enter": 0, "n_eligible": 0, "n_rows": 0, "fo": _fo}
+                "log": {}, "n_enter": 0, "n_eligible": 0, "n_rows": 0, "fo": _fo,
+                "restrict": getattr(net, "action_space", "native_fold") != "native_fold_free"}
         variant = "v3r"
     if variant not in ("v1r", "v3r", "v3s"):
         raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s only)")
@@ -265,7 +266,7 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                     g = np.asarray(gids, dtype=np.int64); st = np.asarray(seats, dtype=np.int64)
                     genb, info = env.safe_info()
                     in_fold = fold["flag"][g, st]
-                    M375, enter = fo.batch_masks(mask, genb, info[:, 0], in_fold)
+                    M375, enter = fo.batch_masks(mask, genb, info[:, 0], in_fold, fold["restrict"])
                     fold["n_eligible"] += int(enter.sum()); fold["n_rows"] += n
                     Mt = torch.from_numpy(M375).to(dev)
                     St = torch.cat([S, torch.from_numpy(in_fold.astype(np.float32)).to(dev)[:, None]], 1)
@@ -276,7 +277,7 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                     if len(chose):
                         fold["n_enter"] += len(chose)
                         fold["flag"][g[chose], st[chose]] = True
-                        M2 = np.stack([fo.fold_discard_mask(mask[i], genb[i]) for i in chose])
+                        M2 = np.stack([fo.fold_discard_mask(mask[i], genb[i], fold["restrict"]) for i in chose])
                         sel = torch.from_numpy(chose).to(dev)
                         S2 = torch.cat([S[sel], torch.ones(len(chose), 1, device=dev)], 1)
                         idx2, lp2 = net.act(P[sel], S2, torch.from_numpy(M2).to(dev), temperature=temperature, check=False)

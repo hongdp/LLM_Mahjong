@@ -129,7 +129,7 @@ def variant_of_arch(arch: str) -> str:
     arch = re.sub(r"_m\d+$", "", arch)
     if arch.startswith("mortal_full"):
         return "mortal_v3_pure" if "_pure" in arch else "mortal_v3"
-    for suf, v in (("_v4", "v4"), ("_v3rh", "v3rh"), ("_v3rf", "v3rf"), ("_v3r", "v3r"),
+    for suf, v in (("_v4", "v4"), ("_v3rh", "v3rh"), ("_v3rfl", "v3rf"), ("_v3rf", "v3rf"), ("_v3r", "v3r"),
                    ("_v3", "v3"), ("_ro", "v1ro"), ("_rh", "v1rh"), ("_r", "v1r")):
         if arch.endswith(suf):
             return v

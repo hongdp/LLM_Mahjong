@@ -98,6 +98,10 @@ class NativeFoldActionSpace(ActionSpace):
     name = "native_fold"
     dim = _fold.FOLD_ACTION_DIM
 
+    def __init__(self, restrict: bool = True, name: str = "native_fold"):
+        self.restrict = restrict          # False = arm M2 ("native_fold_free"): no mask restriction, flag only
+        self.name = name
+
     def mask(self, actions, mode=None, table=None, pid=None):
         m, lookup = _enc.legal_mask(actions)
         m = m.numpy()
@@ -106,9 +110,9 @@ class NativeFoldActionSpace(ActionSpace):
         genb = _fold.genbutsu_34(table, pid)
         flags = _fold.fold_flags(table)
         if mode == _fold.FOLD_MODE:
-            return torch.from_numpy(_fold.fold_discard_mask(m, genb)), lookup
+            return torch.from_numpy(_fold.fold_discard_mask(m, genb, self.restrict)), lookup
         if flags[pid]:
-            return torch.from_numpy(_fold.widen(_fold.restrict_mask(m, genb), False)), lookup
+            return torch.from_numpy(_fold.widen(_fold.restrict_mask(m, genb, self.restrict), False)), lookup
         n_opp = 0 if genb is None else sum(1 for o in range(4) if o != pid and table.riichi[o])
         enter = _fold.enter_legal(m, n_opp, False) and not table.riichi[pid]
         return torch.from_numpy(_fold.widen(m, enter)), lookup
@@ -171,6 +175,7 @@ REGISTRY: Dict[str, ActionSpace] = {
     NativeActionSpace.name: NativeActionSpace(),
     MortalActionSpace.name: MortalActionSpace(),
     NativeFoldActionSpace.name: NativeFoldActionSpace(),
+    "native_fold_free": NativeFoldActionSpace(restrict=False, name="native_fold_free"),
 }
 
 
@@ -183,6 +188,8 @@ def space_of_arch(arch: str) -> str:
     arch = arch or ""
     if "_m46" in arch or arch.startswith("mortal_full"):
         return MortalActionSpace.name
+    if arch.endswith("_v3rfl"):
+        return "native_fold_free"
     if arch.endswith("_v3rf"):
         return NativeFoldActionSpace.name
     return NativeActionSpace.name
