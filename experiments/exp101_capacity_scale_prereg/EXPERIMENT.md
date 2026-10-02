@@ -79,10 +79,13 @@ exp72–100 把"单局点差 + 镜像自对弈 + 2M 参数 CNN"设定下的七�
   结果文件 `experiments/probes/policy_entropy_bc49_Q1x_cnnL_20260928.txt`。
 
 ## Results
-（待）
+- cnn_l 20k 对 vs bc49：32M 0.4305 / 64M 0.4379 / 112M 0.4497 / 160M 0.4597 / 192M 0.4541 / 216M 0.4529 / 232M 0.4594 / **400M 0.4627 ± 0.0035**（0.4632/0.4621，md5 bf8186f0）；10k 对补点 200M 0.4501、248M 0.4530。
+- 112–248M 平台 ≈0.455 = Q1x；248→400M 再 +1 pp。112→400M（3.6×）合计 +1.3 pp，远低于早期每倍增 +1.5–2 pp。
 
 ## Conclusion
-（待）
+- 判据 2：容量轴 H0（112M 0.4497 ≤ 0.452）。判据 4：终点 0.4627 ≤ 0.47 ⇒ **天花板确认 0.46–0.47**；判据 5 延长条件不成立（最后两里程碑 232M 0.4594 → 400M 0.4627 = +0.3 pp < +0.5）。
+- 2× 容量在任何局数都不优于 cnn_m；纯规模在 400M 仍有微弱爬升但斜率已接近零。p2 作为 exp102 的同谱系对照（窗口 0.4537 vs 退火臂 0.4605）。
 
 ## Artifacts
-（待）
+- ckpt：`experiments/exp101_L/`（p1 0–64M）、`experiments/exp101_L_p2/`（72–392M 每 8/16M + `games_final.pt` 400M）；GCS `gs://llm-mahjong-experiments/exp101_L{,_p2}/`（不含 ckpt）；TB 镜像 `_cloud_mirror/exp101_L{,_p2}`。
+- 评测：`probes/exp101_track_L{,_p2}.jsonl`、`exp101_td_*.txt`、`pairdiff_exp101_L_p2_*.json`。费用 ≈$103（含空转 $18）。
