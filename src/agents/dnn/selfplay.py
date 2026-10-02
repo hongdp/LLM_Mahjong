@@ -166,7 +166,7 @@ def _choose(net, table, pid, actions, temperature, device, cmode="none"):
 
     steps, mode = [], None
     for _ in range(2):                      # at most one follow-up
-        mask, lookup = space.mask(actions, mode=mode)
+        mask, lookup = space.mask(actions, mode=mode, table=table, pid=pid)
         if os.environ.get("INFER_DEBUG") and not bool(mask.any()):
             with open("/tmp/choose_debug.txt", "a") as _f:
                 _f.write(f"EMPTY mask mode={mode} pid={pid} actions={actions}\n")
@@ -175,7 +175,7 @@ def _choose(net, table, pid, actions, temperature, device, cmode="none"):
         i = int(idx)
         steps.append(DnnStep(planes=planes, scalars=scalars, mask=mask,
                              action_idx=i, logprob=float(lp), cfeats=cf))
-        nxt = space.follow_up(i, actions, mode=mode)
+        nxt = space.follow_up(i, actions, mode=mode, table=table, pid=pid)
         if nxt is None:
             return steps, space.resolve(i, lookup)
         mode = nxt

@@ -54,6 +54,10 @@ N_SCALARS_V3H = N_SCALARS_V3 + 3
 # v3s (exp89 style-conditioned population): v3r + [tau_d / 8, tau_a] of this
 # seat's reward style (Table.seat_style; zeros = the pure objective, used at play)
 N_SCALARS_V3S = N_SCALARS_V3 + 2
+# v3rf (exp103 fold option): v3r + [in_fold_mode] of this seat (Table.fold_mode,
+# set by the ENTER_FOLD option; zero = plain v3r, so a v3r checkpoint loads
+# unchanged with the new input column zero-initialised)
+N_SCALARS_V3F = N_SCALARS_V3 + 1
 # red-dora variants (2026-08-23): base planes + 6 — own red fives (at the
 # 5x columns), per relative seat red fives visible in river/melds, and the
 # yakuhai plane (round wind, seat wind, dragons: a rule fact placed on the
@@ -100,6 +104,7 @@ VARIANT_SHAPE = {                            # encoder variant -> (planes, scala
     "v3r2": (N_PLANES_V3R2, N_SCALARS_V3),
     "v3rh": (N_PLANES_V3R, N_SCALARS_V3H),
     "v3s": (N_PLANES_V3R, N_SCALARS_V3S),      # exp89 style-conditioned (v3r + 2 style scalars)
+    "v3rf": (N_PLANES_V3R, N_SCALARS_V3F),     # exp103 fold option (v3r + in_fold_mode scalar)
     "v4": (N_PLANES_V4, N_SCALARS_V3),
     # exp41: Mortal-aligned observation (934 planes). The two variants share a
     # shape so arm A / arm B checkpoints stay swappable; they differ only in
@@ -124,7 +129,7 @@ def variant_of_arch(arch: str) -> str:
     arch = re.sub(r"_m\d+$", "", arch)
     if arch.startswith("mortal_full"):
         return "mortal_v3_pure" if "_pure" in arch else "mortal_v3"
-    for suf, v in (("_v4", "v4"), ("_v3rh", "v3rh"), ("_v3r", "v3r"),
+    for suf, v in (("_v4", "v4"), ("_v3rh", "v3rh"), ("_v3rf", "v3rf"), ("_v3r", "v3r"),
                    ("_v3", "v3"), ("_ro", "v1ro"), ("_rh", "v1rh"), ("_r", "v1r")):
         if arch.endswith(suf):
             return v
@@ -368,6 +373,12 @@ def encode_state(table, player_id: int,
         if st is not None:
             ex[0] = float(st[player_id][0]) / 8.0
             ex[1] = float(st[player_id][1])
+        return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
+                torch.from_numpy(np.concatenate([sc, ex])))
+    if variant == "v3rf":
+        P, sc = _encode_v3(table, player_id, as_numpy=True)
+        f = getattr(table, "fold_mode", None)
+        ex = np.array([1.0 if (f is not None and f[player_id]) else 0.0], dtype=np.float32)
         return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
                 torch.from_numpy(np.concatenate([sc, ex])))
     if variant == "v3rh":

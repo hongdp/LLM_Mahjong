@@ -235,6 +235,10 @@ def main():
                          "'0:0.5,1000000:0.25'); overrides --entropy_floor "
                          "as the dual-control target (exp31)")
     ap.add_argument("--entropy_dual_lr", type=float, default=0.1)
+    ap.add_argument("--fold_init_bias", type=float, default=None,
+                    help="exp103 fold option: after loading, set the ENTER_FOLD slot's head bias to this "
+                         "value (default: keep the checkpoint's / the widening default -6; -4 ~ 0.5%% of "
+                         "eligible rows take the option at the start)")
     ap.add_argument("--entropy_abort", type=float, default=None,
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
@@ -464,8 +468,8 @@ def main():
             # match the parameter shapes, so they restart.
             from src.agents.dnn.net import load_compatible
             load_compatible(net, blob["state_dict"])
-            print("   legacy action head widened 272->374 (optimizer moments restart)",
-                  flush=True)
+            print("   checkpoint widened into this net (272->374 head / extra scalars / fold slot); "
+                  "optimizer moments restart", flush=True)
         else:
             net.load_state_dict(blob["state_dict"])
         if "optimizer" in blob and not widened:
@@ -474,6 +478,11 @@ def main():
         elif not widened:
             print("   (checkpoint has no optimizer state; Adam moments restart)",
                   flush=True)
+        if args.fold_init_bias is not None:
+            from src.agents.dnn.fold_option import FOLD_SLOT
+            with torch.no_grad():
+                net.head[-1].bias[FOLD_SLOT].fill_(float(args.fold_init_bias))
+            print(f"   fold option: ENTER_FOLD bias set to {args.fold_init_bias}", flush=True)
         start_games = int(blob.get("games", 0))
         start_iter = int(blob.get("iter", 0))
         ent_alpha = float(blob.get("entropy_alpha", ent_alpha) or ent_alpha)
@@ -911,6 +920,12 @@ def main():
             row["dev_steps"] = int(_dv["n_dev"])
             if dev_mask is not None and dev_mask.any():
                 row["dev_adv_std"] = float(adv_raw[dev_mask].std())
+        _fd = getattr(collector, "last_fold", None)
+        if _fd:
+            # exp103 fold option: how often ENTER_FOLD was legal and taken this iteration
+            row["fold_enter_rate"] = float(_fd["enter_rate"])
+            row["fold_enter_n"] = int(_fd["n_enter"])
+            row["fold_eligible_frac"] = _fd["n_eligible"] / max(_fd["n_rows"], 1)
         _nz = getattr(collector, "last_noise", None)
         if args.param_noise_kl > 0 and _nz:
             row["noise_sigma"] = noise_sigma

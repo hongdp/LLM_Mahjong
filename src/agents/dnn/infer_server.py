@@ -60,7 +60,8 @@ class _Shared:
         self.done_gen = torch.zeros(n_slots, dtype=torch.int64).share_memory_()
         self.planes = torch.zeros(n_slots, n_planes, TILE_TYPES).share_memory_()
         self.scalars = torch.zeros(n_slots, n_scalars).share_memory_()
-        self.mask = torch.zeros(n_slots, ACTION_DIM, dtype=torch.bool).share_memory_()
+        # widest hosted space: native 374 + the exp103 ENTER_FOLD slot; narrower spaces use a prefix
+        self.mask = torch.zeros(n_slots, ACTION_DIM + 1, dtype=torch.bool).share_memory_()
         self.temp = torch.ones(n_slots).share_memory_()
         self.out_idx = torch.zeros(n_slots, dtype=torch.int64).share_memory_()
         self.out_lp = torch.zeros(n_slots).share_memory_()

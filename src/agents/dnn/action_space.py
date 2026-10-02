@@ -36,6 +36,7 @@ import torch
 
 from src.agents.dnn import encoder as _enc
 from src.agents.dnn import mortal_action as _ma
+from src.agents.dnn import fold_option as _fold
 
 # A follow-up mode is an opaque string the space hands back to itself.
 FollowUp = Optional[str]
@@ -49,15 +50,17 @@ class ActionSpace:
     name: str = "abstract"
     dim: int = 0
 
-    def mask(self, actions: List[str], mode: FollowUp = None
+    def mask(self, actions: List[str], mode: FollowUp = None, table=None, pid=None
              ) -> Tuple[torch.Tensor, Dict[int, str]]:
         """Returns a torch bool tensor of width `dim` (matching what
         `encoder.legal_mask` has always returned, so callers can keep doing
-        `mask[None].to(device)` unchanged) plus the slot -> action lookup."""
+        `mask[None].to(device)` unchanged) plus the slot -> action lookup.
+        `table`/`pid` are optional context (exp103 fold option reads riichi
+        state and rivers); the incumbent spaces ignore them."""
         raise NotImplementedError
 
     def follow_up(self, slot: int, actions: List[str],
-                  mode: FollowUp = None) -> FollowUp:
+                  mode: FollowUp = None, table=None, pid=None) -> FollowUp:
         """Mode string for a required second query, else None."""
         return None
 
@@ -77,8 +80,45 @@ class NativeActionSpace(ActionSpace):
     name = "native"
     dim = _enc.ACTION_DIM
 
-    def mask(self, actions, mode=None):
+    def mask(self, actions, mode=None, table=None, pid=None):
         return _enc.legal_mask(actions)
+
+
+class NativeFoldActionSpace(ActionSpace):
+    """exp103: native 374 + ENTER_FOLD (slot 374), see fold_option.py.
+
+    The follow-up protocol is Mortal's: ENTER_FOLD answers mode
+    "fold_discard", the caller re-queries with the safe-discard mask, and
+    the seat's `table.fold_mode[pid]` stays set for the rest of the deal so
+    every later turn mask is restricted the same way. Without `table` the
+    space degrades to plain native (slot 374 never legal), which keeps every
+    context-free caller (tests, mask parity) on the incumbent semantics.
+    """
+
+    name = "native_fold"
+    dim = _fold.FOLD_ACTION_DIM
+
+    def mask(self, actions, mode=None, table=None, pid=None):
+        m, lookup = _enc.legal_mask(actions)
+        m = m.numpy()
+        if table is None or pid is None:
+            return torch.from_numpy(_fold.widen(m, False)), lookup
+        genb = _fold.genbutsu_34(table, pid)
+        flags = _fold.fold_flags(table)
+        if mode == _fold.FOLD_MODE:
+            return torch.from_numpy(_fold.fold_discard_mask(m, genb)), lookup
+        if flags[pid]:
+            return torch.from_numpy(_fold.widen(_fold.restrict_mask(m, genb), False)), lookup
+        n_opp = 0 if genb is None else sum(1 for o in range(4) if o != pid and table.riichi[o])
+        enter = _fold.enter_legal(m, n_opp, False) and not table.riichi[pid]
+        return torch.from_numpy(_fold.widen(m, enter)), lookup
+
+    def follow_up(self, slot, actions, mode=None, table=None, pid=None):
+        if mode is None and slot == _fold.FOLD_SLOT:
+            if table is not None and pid is not None:
+                _fold.fold_flags(table)[pid] = True
+            return _fold.FOLD_MODE
+        return None
 
 
 class MortalActionSpace(ActionSpace):
@@ -97,7 +137,7 @@ class MortalActionSpace(ActionSpace):
     _KINDS = {"riichi": ("riichi", "riichi0"),
               "kan": ("kan", "ankan", "kakan", "daiminkan")}
 
-    def mask(self, actions, mode=None):
+    def mask(self, actions, mode=None, table=None, pid=None):
         if mode in self._KINDS:
             actions = [a for a in actions
                        if _kind_of(a) in self._KINDS[mode]]
@@ -108,7 +148,7 @@ class MortalActionSpace(ActionSpace):
         )
         return torch.tensor(m, dtype=torch.bool), lookup
 
-    def follow_up(self, slot, actions, mode=None):
+    def follow_up(self, slot, actions, mode=None, table=None, pid=None):
         if mode is not None:
             return None                     # already the second step
         if slot == _ma.IDX_RIICHI:
@@ -130,6 +170,7 @@ def _kind_of(action_xml: str) -> str:
 REGISTRY: Dict[str, ActionSpace] = {
     NativeActionSpace.name: NativeActionSpace(),
     MortalActionSpace.name: MortalActionSpace(),
+    NativeFoldActionSpace.name: NativeFoldActionSpace(),
 }
 
 
@@ -142,6 +183,8 @@ def space_of_arch(arch: str) -> str:
     arch = arch or ""
     if "_m46" in arch or arch.startswith("mortal_full"):
         return MortalActionSpace.name
+    if arch.endswith("_v3rf"):
+        return NativeFoldActionSpace.name
     return NativeActionSpace.name
 
 

@@ -666,7 +666,7 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
             else:
                 pl, sc = encode_state(st["table"], pid, variant=var)
             sparse_logs.append(sp_log)
-            mask, lookup = pool_space.get(model_id, _space).mask(actions)
+            mask, lookup = pool_space.get(model_id, _space).mask(actions, table=st["table"], pid=pid)
             if os.environ.get("INFER_DEBUG") and not bool(mask.any()):
                 with open("/tmp/vec_debug.txt", "a") as _f:
                     _f.write(f"EMPTY vec mask pid={pid} actions={actions!r}\n")
@@ -706,14 +706,16 @@ def _worker_vectorized(rank, n_games, seeds, cfg, net, pool_nets, cmode, K):
         ]
         pending = []
         for k, (gi, ri, pid, actions, model_id, var) in enumerate(rows):
-            mode = pool_space.get(rows[k][4], _space).follow_up(int(idx[k]), actions)
+            mode = pool_space.get(rows[k][4], _space).follow_up(int(idx[k]), actions,
+                                                                 table=active[gi]["table"], pid=pid)
             if mode is not None:
                 pending.append((k, mode))
         follow = {}
         if pending:
             f_masks, f_lookups = [], []
             for k, mode in pending:
-                m2, lk2 = pool_space.get(rows[k][4], _space).mask(rows[k][3], mode=mode)
+                m2, lk2 = pool_space.get(rows[k][4], _space).mask(rows[k][3], mode=mode,
+                                                                   table=active[rows[k][0]]["table"], pid=rows[k][2])
                 if os.environ.get("INFER_DEBUG") and not bool(m2.any()):
                     with open("/tmp/vec_debug.txt", "a") as _f:
                         _f.write(f"EMPTY vec FOLLOWUP mode={mode} actions={rows[k][3]!r}\n")

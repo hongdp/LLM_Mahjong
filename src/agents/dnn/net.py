@@ -202,6 +202,8 @@ def load_compatible(net: nn.Module, state: dict) -> list:
              for k, v in state.items()}
     state = {k: _widen_scalar_input(k, v, model_sd[k]) if k in model_sd else v
              for k, v in state.items()}
+    state = {k: _widen_fold_head(k, v, model_sd[k]) if k in model_sd else v
+             for k, v in state.items()}
     ok = {k: v for k, v in state.items()
           if k in model_sd and tuple(model_sd[k].shape) == tuple(v.shape)}
     net.load_state_dict(ok, strict=False)
@@ -210,6 +212,24 @@ def load_compatible(net: nn.Module, state: dict) -> list:
     if bad:
         raise RuntimeError(f"policy keys failed to load: {bad[:5]}")
     return [k for k in model_sd if k not in ok]
+
+
+FOLD_SLOT_INIT_BIAS = -6.0     # p(ENTER_FOLD) ~ e^-6 of the top logit at load: the loaded net plays like the v3r one
+
+
+def _widen_fold_head(k: str, v, target):
+    """exp103: a 374-slot native checkpoint loading into a 375-slot native_fold
+    net: the flat policy head's last Linear gains one output row (zero weights,
+    bias FOLD_SLOT_INIT_BIAS), so ENTER_FOLD starts rare but reachable."""
+    if (k.startswith("head.") and v.dim() in (1, 2) and v.dim() == target.dim()
+            and v.shape[0] == ACTION_DIM and target.shape[0] == ACTION_DIM + 1
+            and (v.dim() == 1 or tuple(v.shape[1:]) == tuple(target.shape[1:]))):
+        out = torch.zeros_like(target)
+        out[:ACTION_DIM] = v
+        if v.dim() == 1:
+            out[ACTION_DIM] = FOLD_SLOT_INIT_BIAS
+        return out
+    return v
 
 
 def _widen_scalar_input(k: str, v, target):

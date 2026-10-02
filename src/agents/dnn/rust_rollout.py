@@ -43,6 +43,39 @@ def widen_planes(t: torch.Tensor) -> torch.Tensor:
     return t.float()
 
 
+def _rewrite_fold_episodes(gm: dict, fold: dict) -> None:
+    """exp103: make a finished VecEnv game's episodes match what the fold-aware
+    policy actually saw — scalars gain the in_fold_mode column, masks become the
+    375-wide (possibly safe-set-restricted) masks the actions were sampled from,
+    and every ENTER_FOLD decision becomes its own step row (same state, action
+    FOLD_SLOT, reward 0, the discard row's return) inserted before the restricted
+    discard it led to. GAE then hands the option ~gamma*lambda of the chain's
+    advantage, exactly like Mortal's declare-then-choose riichi rows."""
+    fo = fold["fo"]
+    slot, seed = int(gm["slot"]), int(gm["seed"])
+    for e in gm["episodes"]:
+        seat = int(e["key"][1])
+        ent = fold["log"].pop((slot, seed, seat), None)
+        n = len(e["actions"])
+        if ent is None or len(ent) != n:
+            raise RuntimeError(f"fold option: step log mismatch for slot {slot} seed {seed} seat {seat}: "
+                               f"{0 if ent is None else len(ent)} logged vs {n} recorded")
+        planes, scal, acts = e["planes"], e["scalars"], e["actions"]
+        lps, rets, rews = e["old_logprobs"], e["returns"], e["rewards"]
+        P, Sc, Mk, A, Lp, Rt, Rw = [], [], [], [], [], [], []
+        for i in range(n):
+            flag_before, chose, m_used, m_pre, lp_pre = ent[i]
+            if chose:
+                P.append(planes[i]); Sc.append(np.append(scal[i], np.float32(0.0)).astype(np.float32))
+                Mk.append(m_pre); A.append(fo.FOLD_SLOT); Lp.append(np.float32(lp_pre)); Rt.append(rets[i]); Rw.append(np.float32(0.0))
+            flag_used = 1.0 if (chose or flag_before) else 0.0
+            P.append(planes[i]); Sc.append(np.append(scal[i], np.float32(flag_used)).astype(np.float32))
+            Mk.append(m_used); A.append(int(acts[i])); Lp.append(lps[i]); Rt.append(rets[i]); Rw.append(rews[i])
+        e["planes"] = np.stack(P); e["scalars"] = np.stack(Sc); e["mask"] = np.stack(Mk)
+        e["actions"] = np.asarray(A, dtype=acts.dtype); e["old_logprobs"] = np.asarray(Lp, dtype=lps.dtype)
+        e["returns"] = np.asarray(Rt, dtype=rets.dtype); e["rewards"] = np.asarray(Rw, dtype=rews.dtype)
+
+
 def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[List[int]] = None,
                  device: str = "cuda"):
     """Returns (episodes, results) like collect_parallel. `workers` is unused
@@ -53,6 +86,15 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
         seeds = [6_000_000 + i for i in range(n_games)]
     k = max(1, int(cfg.get("games_per_worker", 32)) * max(1, workers))
     variant = cfg.get("encoder_variant") or getattr(net, "encoder_variant", "v1r")
+    # exp103 fold option: the VecEnv encodes plain v3r; the in_fold_mode scalar, the 375th
+    # policy slot, the safe-set mask restriction and the two-step ENTER_FOLD protocol all
+    # live host-side (fold_option.py) and the finished episodes are rewritten to match.
+    fold = None
+    if variant == "v3rf":
+        from src.agents.dnn import fold_option as _fo
+        fold = {"flag": np.zeros((k, 4), dtype=bool), "prev_seed": np.full(k, -2, dtype=np.int64),
+                "log": {}, "n_enter": 0, "n_eligible": 0, "n_rows": 0, "fo": _fo}
+        variant = "v3r"
     if variant not in ("v1r", "v3r", "v3s"):
         raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s only)")
     # exp89 style-conditioned population: per seed, each seat draws a reward style
@@ -92,6 +134,9 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     # PPO treats the perturbation as the policy's own exploration (NoisyNet reading, no IS).
     noise_sigma = float(cfg.get("param_noise_sigma", 0.0) or 0.0)
     noise = None
+    if fold is not None and (noise_sigma > 0 or float(cfg.get("dev_p", 0.0) or 0.0) > 0
+                             or (cfg.get("league") and float(cfg.get("league_frac", 0.0) or 0.0) > 0) or hanchan):
+        raise SystemExit("collect_rust: the fold option (v3rf) is exclusive with param noise / dev_p / league pools / hanchan")
     # exp98 greedy-continuation single deviation: every decision is argmax except, per (table slot, seat),
     # at most ONE multi-choice decision per deal sampled at T=1 (probability dev_p per candidate step).
     # The recorded logprob is log pi(a) for both kinds of step; greedy steps carry the marker +1000 so the
@@ -212,6 +257,37 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                     lp = lps.gather(1, idx[:, None]).squeeze(1)
                     lp = torch.where(pk, lp, lp + 1000.0)                 # marker: greedy step
                     acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
+                elif fold is not None:
+                    fo = fold["fo"]
+                    slot_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
+                    fresh = (slot_seed != fold["prev_seed"]) & (slot_seed >= 0)
+                    fold["flag"][fresh] = False; fold["prev_seed"] = slot_seed.copy()
+                    g = np.asarray(gids, dtype=np.int64); st = np.asarray(seats, dtype=np.int64)
+                    genb, info = env.safe_info()
+                    in_fold = fold["flag"][g, st]
+                    M375, enter = fo.batch_masks(mask, genb, info[:, 0], in_fold)
+                    fold["n_eligible"] += int(enter.sum()); fold["n_rows"] += n
+                    Mt = torch.from_numpy(M375).to(dev)
+                    St = torch.cat([S, torch.from_numpy(in_fold.astype(np.float32)).to(dev)[:, None]], 1)
+                    idx, lp = net.act(P, St, Mt, temperature=temperature, check=False)
+                    acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
+                    chose = np.nonzero(acts_np == fo.FOLD_SLOT)[0]
+                    pre_mask = {}; pre_lp = {}
+                    if len(chose):
+                        fold["n_enter"] += len(chose)
+                        fold["flag"][g[chose], st[chose]] = True
+                        M2 = np.stack([fo.fold_discard_mask(mask[i], genb[i]) for i in chose])
+                        sel = torch.from_numpy(chose).to(dev)
+                        S2 = torch.cat([S[sel], torch.ones(len(chose), 1, device=dev)], 1)
+                        idx2, lp2 = net.act(P[sel], S2, torch.from_numpy(M2).to(dev), temperature=temperature, check=False)
+                        for j, i in enumerate(chose):
+                            pre_mask[i] = M375[i].copy(); pre_lp[i] = float(lps_np[i])   # copy: the row is overwritten next
+                            M375[i] = M2[j]
+                        acts_np[chose] = idx2.cpu().numpy().astype(np.int64); lps_np[chose] = lp2.float().cpu().numpy()
+                    for i in range(n):
+                        key = (int(g[i]), int(slot_seed[g[i]]), int(st[i]))
+                        fold["log"].setdefault(key, []).append(
+                            (bool(in_fold[i]), (i in pre_mask), M375[i].copy(), pre_mask.get(i), pre_lp.get(i)))
                 elif not pool:
                     idx, lp = net.act(P, S, M, temperature=temperature, check=False)   # legality checked on host
                     acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
@@ -229,7 +305,11 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                 env.step(acts_np.tolist(), lps_np.tolist())
             else:
                 env.step([], [])
-            games.extend(env.drain_finished())
+            new_games = env.drain_finished()
+            if fold is not None:
+                for gm in new_games:
+                    _rewrite_fold_episodes(gm, fold)
+            games.extend(new_games)
     episodes, results = [], []
     agg = new_agg()
     lg = {}
@@ -269,6 +349,9 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     collect_rust.last_cf_skipped = 0
     collect_rust.last_noise = None
     collect_rust.last_dev = None if sdev is None else {"n_dev": sdev["n_dev"], "n_multi": sdev["n_multi"]}
+    collect_rust.last_fold = None if fold is None else {
+        "n_enter": fold["n_enter"], "n_eligible": fold["n_eligible"], "n_rows": fold["n_rows"],
+        "enter_rate": fold["n_enter"] / max(fold["n_eligible"], 1), "unconsumed_keys": len(fold["log"])}
     if noise is not None:
         collect_rust.last_noise = {"sigma": noise_sigma, "kl": noise["kl_sum"] / max(noise["rows"], 1),
                                    "greedy_change": noise["chg_sum"] / max(noise["rows"], 1),
