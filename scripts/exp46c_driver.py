@@ -105,7 +105,15 @@ def main():
                          "opponent seats are frozen greedy bc49 forever "
                          "(stationary MDP, no anchor) — can PPO at least "
                          "learn to exploit a fixed policy?")
+    ap.add_argument("--bc_kl_mask", default=None,
+                    help="exp104: pass through to the trainer — 'riichi' = state-selective anchor "
+                         "(KL only on opponent-riichi rows), 'quiet' = complementary control")
+    ap.add_argument("--bc_kl_coef", type=float, default=0.3)
+    ap.add_argument("--n_chunks", type=int, default=N_CHUNKS)
+    ap.add_argument("--init_pt", default=None, help="local bc49 path (skips the gsutil fetch)")
     a = ap.parse_args()
+    global N_CHUNKS
+    N_CHUNKS = a.n_chunks
     exp = a.exp_dir
     pool = os.path.join(exp, "pool")
     os.makedirs(pool, exist_ok=True)
@@ -114,7 +122,10 @@ def main():
     init = os.path.join(pool, "init.pt")
     best = os.path.join(pool, "best.pt")
     if not os.path.exists(init):
-        assert sh(["gsutil", "-q", "cp", FLAG_GS, init]) == 0
+        if a.init_pt:
+            shutil.copy(a.init_pt, init)
+        else:
+            assert sh(["gsutil", "-q", "cp", FLAG_GS, init]) == 0
         shutil.copy(init, best)
 
     league_file = os.path.join(pool, "league.json")
@@ -150,7 +161,8 @@ def main():
                # dose) — the bias guard the clean T=0 gradients need; the
                # 2x2 cell (T0 x anchor) is exp46-D's operating regime
                *([] if a.mode in ("fixed_bc", "noanchor")
-                  else ["--bc_anchor", init, "--bc_kl_coef", "0.3"]),
+                  else ["--bc_anchor", init, "--bc_kl_coef", str(a.bc_kl_coef)]
+                  + (["--bc_kl_mask", a.bc_kl_mask] if a.bc_kl_mask else [])),
                "--games_per_iter", "8192",
                "--league", league_file, "--league_frac", "1.0",
                "--milestones", ",".join(str(i * CHUNK) for i in range(1, N_CHUNKS)),

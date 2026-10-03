@@ -67,6 +67,11 @@ def main():
                     help="frozen BC checkpoint; adds bc_kl_coef * KL(pi || pi_BC) "
                          "to the loss (exp46: keep the human prior while improving)")
     ap.add_argument("--bc_kl_coef", type=float, default=0.0)
+    ap.add_argument("--bc_kl_mask", default=None, choices=[None, "riichi", "quiet"],
+                    help="exp104 state-selective anchor: apply the BC KL only on rows where an opponent is in "
+                         "riichi and the seat is not ('riichi' — the defensive states RL erodes first, FINDINGS "
+                         "10-02), or only on the complementary rows ('quiet', control). The KL is averaged over "
+                         "the selected rows, so bc_kl_coef keeps its meaning; everywhere else the policy is free.")
     ap.add_argument("--total_games", type=int, default=600000)
     ap.add_argument("--games_per_iter", type=int, default=2048)
     ap.add_argument("--dup_k", type=int, default=8)
@@ -735,6 +740,7 @@ def main():
         t_upd0 = time.time()
         pack_s = t_upd0 - t_roll0 - rollout_s      # batch packing + value forward + GAE (perf 2026-09-09)
         stop, passes, kls, closs, vloss, hloss, bkls = False, 0, [], [], [], [], []
+        bkl_frac = []
         aloss, asep = [], []                  # exp69 aux waits BCE / positive-negative separation
         for ep in range(args.ppo_epochs):
             order = idx_keep[torch.randperm(n_eff, device=dev)]
@@ -775,7 +781,16 @@ def main():
                     # poisons the BACKWARD even though the forward is finite
                     fin = torch.isfinite(logp) & torch.isfinite(alogp)
                     diff = torch.where(fin, logp - alogp, torch.zeros_like(logp))
-                    bc_kl = (logp.exp() * diff).sum(1).mean()
+                    kl_rows = (logp.exp() * diff).sum(1)
+                    if args.bc_kl_mask:
+                        # scalars[4] = own riichi flag, [5:8] = opponents' (encoder v1/v3 layouts agree)
+                        sc_ = scal[sel]
+                        vs_r = (sc_[:, 5:8].amax(1) > 0.5) & (sc_[:, 4] < 0.5)
+                        rows_m = vs_r if args.bc_kl_mask == "riichi" else ~vs_r
+                        bc_kl = (kl_rows * rows_m).sum() / rows_m.sum().clamp(min=1)
+                        bkl_frac.append(float(rows_m.float().mean()))
+                    else:
+                        bc_kl = kl_rows.mean()
                     loss = loss + args.bc_kl_coef * bc_kl
                     bkls.append(float(bc_kl.detach()))
                 if args.critic_feats == "hazard":
@@ -899,6 +914,7 @@ def main():
                "value/ret_std": ret_std, "value/v_mean": v_mean,
                "value/v_std": v_std,
                "bc_kl": float(np.mean(bkls)) if bkls else None,
+               "bc_kl_rows_frac": float(np.mean(bkl_frac)) if bkl_frac else None,
                "entropy_coef": ent_alpha,
                "n_effective": n_eff, "n_raw": int(len(acts))}
         if args.shaping:
