@@ -112,8 +112,7 @@ def main():
     ap.add_argument("--n_chunks", type=int, default=N_CHUNKS)
     ap.add_argument("--init_pt", default=None, help="local bc49 path (skips the gsutil fetch)")
     a = ap.parse_args()
-    global N_CHUNKS
-    N_CHUNKS = a.n_chunks
+    n_chunks = a.n_chunks
     exp = a.exp_dir
     pool = os.path.join(exp, "pool")
     os.makedirs(pool, exist_ok=True)
@@ -130,7 +129,7 @@ def main():
 
     league_file = os.path.join(pool, "league.json")
     ratings = {}
-    for k in range(1, N_CHUNKS + 1):
+    for k in range(1, n_chunks + 1):
         entries = ([{"name": "init", "path": init}] if a.mode == "fixed_bc"
                    else build_league(pool, init, best, k, ratings))
         # mode "noanchor" (exp46-J): full league ecology, anchor stripped
@@ -165,7 +164,7 @@ def main():
                   + (["--bc_kl_mask", a.bc_kl_mask] if a.bc_kl_mask else [])),
                "--games_per_iter", "8192",
                "--league", league_file, "--league_frac", "1.0",
-               "--milestones", ",".join(str(i * CHUNK) for i in range(1, N_CHUNKS)),
+               "--milestones", ",".join(str(i * CHUNK) for i in range(1, n_chunks)),
                "--exp_dir", exp]
         if k == 1:
             cmd += ["--init", init]
