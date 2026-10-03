@@ -217,7 +217,8 @@ def test_rust_rollout_rewrites_episodes_consistently():
                 assert i + 1 < n and e["scalars"][i, -1] == 0.0 and e["scalars"][i + 1, -1] == 1.0
                 assert e["returns"][i] == e["returns"][i + 1] and e["rewards"][i] == 0.0
                 assert np.array_equal(e["planes"][i], e["planes"][i + 1])
-                assert int(e["actions"][i + 1]) < 2 * TILE_TYPES, "the committed step is a discard"
+                a2 = int(e["actions"][i + 1]) // TILE_TYPES
+                assert a2 in (TYPE_TO_ID["discard"], TYPE_TO_ID["discard0"]), "the committed step is a discard"
                 assert not bool(e["mask"][i + 1, fo.FOLD_SLOT])
         # once in fold mode the flag never clears within the deal
         f = e["scalars"][:, -1]

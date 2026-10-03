@@ -50,8 +50,10 @@ def _rewrite_fold_episodes(gm: dict, fold: dict) -> None:
     and every ENTER_FOLD decision becomes its own step row (same state, action
     FOLD_SLOT, reward 0, the discard row's return) inserted before the restricted
     discard it led to. GAE then hands the option ~gamma*lambda of the chain's
-    advantage, exactly like Mortal's declare-then-choose riichi rows."""
-    fo = fold["fo"]
+    advantage, exactly like Mortal's declare-then-choose riichi rows.
+    The per-step facts live in fold["rounds"] (one record per observe() round);
+    fold["log"] only holds (round, row) indices per (slot, seed, seat)."""
+    fo = fold["fo"]; R = fold["rounds"]
     slot, seed = int(gm["slot"]), int(gm["seed"])
     for e in gm["episodes"]:
         seat = int(e["key"][1])
@@ -62,18 +64,27 @@ def _rewrite_fold_episodes(gm: dict, fold: dict) -> None:
                                f"{0 if ent is None else len(ent)} logged vs {n} recorded")
         planes, scal, acts = e["planes"], e["scalars"], e["actions"]
         lps, rets, rews = e["old_logprobs"], e["returns"], e["rewards"]
-        P, Sc, Mk, A, Lp, Rt, Rw = [], [], [], [], [], [], []
-        for i in range(n):
-            flag_before, chose, m_used, m_pre, lp_pre = ent[i]
-            if chose:
-                P.append(planes[i]); Sc.append(np.append(scal[i], np.float32(0.0)).astype(np.float32))
-                Mk.append(m_pre); A.append(fo.FOLD_SLOT); Lp.append(np.float32(lp_pre)); Rt.append(rets[i]); Rw.append(np.float32(0.0))
-            flag_used = 1.0 if (chose or flag_before) else 0.0
-            P.append(planes[i]); Sc.append(np.append(scal[i], np.float32(flag_used)).astype(np.float32))
-            Mk.append(m_used); A.append(int(acts[i])); Lp.append(lps[i]); Rt.append(rets[i]); Rw.append(rews[i])
-        e["planes"] = np.stack(P); e["scalars"] = np.stack(Sc); e["mask"] = np.stack(Mk)
-        e["actions"] = np.asarray(A, dtype=acts.dtype); e["old_logprobs"] = np.asarray(Lp, dtype=lps.dtype)
-        e["returns"] = np.asarray(Rt, dtype=rets.dtype); e["rewards"] = np.asarray(Rw, dtype=rews.dtype)
+        Ms = np.stack([R[r]["M"][w] for r, w in ent])                                   # [n, 375] masks the actions came from
+        flag_before = np.fromiter((R[r]["in_fold"][w] for r, w in ent), dtype=bool, count=n)
+        chose = np.fromiter((w in R[r]["pre_mask"] for r, w in ent), dtype=bool, count=n)
+        flag_used = (chose | flag_before).astype(np.float32)
+        sc = np.concatenate([scal, flag_used[:, None]], 1).astype(np.float32)
+        if not chose.any():
+            e["scalars"] = sc; e["mask"] = Ms
+            continue
+        # insert one ENTER_FOLD row before every chosen step: output row j comes from source step src[j]
+        counts = 1 + chose.astype(np.int64)
+        src = np.repeat(np.arange(n), counts)
+        first = np.cumsum(counts) - counts
+        is_macro = np.zeros(len(src), dtype=bool); is_macro[first[chose]] = True
+        idx = np.nonzero(chose)[0]
+        e["planes"] = planes[src]
+        sc_out = sc[src]; sc_out[is_macro, -1] = 0.0; e["scalars"] = sc_out
+        m_out = Ms[src]; m_out[is_macro] = np.stack([R[r]["pre_mask"][w] for r, w in (ent[i] for i in idx)]); e["mask"] = m_out
+        a_out = acts[src].copy(); a_out[is_macro] = fo.FOLD_SLOT; e["actions"] = a_out
+        lp_out = lps[src].copy(); lp_out[is_macro] = np.asarray([R[r]["pre_lp"][w] for r, w in (ent[i] for i in idx)], dtype=lps.dtype); e["old_logprobs"] = lp_out
+        e["returns"] = rets[src]
+        rw_out = rews[src].copy(); rw_out[is_macro] = 0.0; e["rewards"] = rw_out
 
 
 def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[List[int]] = None,
@@ -93,7 +104,7 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     if variant == "v3rf":
         from src.agents.dnn import fold_option as _fo
         fold = {"flag": np.zeros((k, 4), dtype=bool), "prev_seed": np.full(k, -2, dtype=np.int64),
-                "log": {}, "n_enter": 0, "n_eligible": 0, "n_rows": 0, "fo": _fo,
+                "log": {}, "rounds": [], "n_enter": 0, "n_eligible": 0, "n_rows": 0, "fo": _fo,
                 "restrict": getattr(net, "action_space", "native_fold") != "native_fold_free"}
         variant = "v3r"
     if variant not in ("v1r", "v3r", "v3s"):
@@ -282,13 +293,15 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                         S2 = torch.cat([S[sel], torch.ones(len(chose), 1, device=dev)], 1)
                         idx2, lp2 = net.act(P[sel], S2, torch.from_numpy(M2).to(dev), temperature=temperature, check=False)
                         for j, i in enumerate(chose):
-                            pre_mask[i] = M375[i].copy(); pre_lp[i] = float(lps_np[i])   # copy: the row is overwritten next
+                            pre_mask[int(i)] = M375[i].copy(); pre_lp[int(i)] = float(lps_np[i])   # copy: the row is overwritten next
                             M375[i] = M2[j]
                         acts_np[chose] = idx2.cpu().numpy().astype(np.int64); lps_np[chose] = lp2.float().cpu().numpy()
-                    for i in range(n):
-                        key = (int(g[i]), int(slot_seed[g[i]]), int(st[i]))
-                        fold["log"].setdefault(key, []).append(
-                            (bool(in_fold[i]), (i in pre_mask), M375[i].copy(), pre_mask.get(i), pre_lp.get(i)))
+                    # per-round record + (round, row) index per (slot, seed, seat): no per-row copies
+                    rid = len(fold["rounds"])
+                    fold["rounds"].append({"M": M375, "in_fold": in_fold, "pre_mask": pre_mask, "pre_lp": pre_lp})
+                    log = fold["log"]
+                    for i, key in enumerate(zip(g.tolist(), slot_seed[g].tolist(), st.tolist())):
+                        log.setdefault(key, []).append((rid, i))
                 elif not pool:
                     idx, lp = net.act(P, S, M, temperature=temperature, check=False)   # legality checked on host
                     acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
