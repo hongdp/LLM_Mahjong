@@ -254,3 +254,29 @@ def test_free_space_only_adds_the_flag():
     assert set(np.nonzero(fd)[0].tolist()) == {d * TILE_TYPES + x for x in (0, 5, 9)}
     wide, enter = fo.batch_masks(m[None], genb[None], np.array([1]), np.array([True]), restrict=False)
     assert np.array_equal(wide[0, :ACTION_DIM], m) and not wide[0, fo.FOLD_SLOT] and not enter[0]
+
+
+def test_batch_masks_matches_per_row():
+    """The vectorised rollout path must reproduce restrict_mask/enter_legal row by row (random legal masks)."""
+    rng = np.random.default_rng(3)
+    n = 400
+    m = np.zeros((n, ACTION_DIM), dtype=np.bool_)
+    for i in range(n):
+        k = rng.integers(1, 14)
+        m[i, TYPE_TO_ID["discard"] * TILE_TYPES + rng.choice(34, k, replace=False)] = True
+        if rng.random() < 0.3: m[i, TYPE_TO_ID["riichi"] * TILE_TYPES + rng.integers(34)] = True
+        if rng.random() < 0.3: m[i, TYPE_TO_ID["pon"] * TILE_TYPES + rng.integers(34)] = True
+        if rng.random() < 0.1: m[i] = False; m[i, TYPE_TO_ID["pon"] * TILE_TYPES + rng.integers(34)] = True; m[i, TYPE_TO_ID["skip"] * TILE_TYPES] = True
+        if rng.random() < 0.05: m[i, TYPE_TO_ID["ron"] * TILE_TYPES + rng.integers(34)] = True
+    genb = rng.random((n, 34)) < 0.25
+    n_opp = rng.integers(0, 3, n)
+    in_fold = rng.random(n) < 0.5
+    for restrict in (True, False):
+        out, enter = fo.batch_masks(m, genb, n_opp, in_fold, restrict)
+        for i in range(n):
+            if in_fold[i]:
+                ref = fo.widen(fo.restrict_mask(m[i], genb[i] if n_opp[i] > 0 else None, restrict), False)
+            else:
+                ref = fo.widen(m[i], fo.enter_legal(m[i], int(n_opp[i]), False))
+            assert np.array_equal(out[i], ref), (i, restrict, in_fold[i], n_opp[i])
+            assert enter[i] == bool(ref[fo.FOLD_SLOT])

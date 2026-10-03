@@ -126,19 +126,32 @@ def widen(mask374: np.ndarray, enter: bool) -> np.ndarray:
 
 
 def batch_masks(mask374: np.ndarray, genb: np.ndarray, n_opp: np.ndarray, in_fold: np.ndarray, restrict: bool = True):
-    """Vectorised version for the Rust rollout. mask374 [n,374], genb [n,34],
-    n_opp [n] (opponents in riichi), in_fold [n] bool. Returns
-    (mask375 [n,375] for the policy query, enter [n] bool)."""
+    """Vectorised version for the Rust rollout (perf 2026-10-03: the per-row loop cost ~2.5x rollout throughput).
+    mask374 [n,374], genb [n,34], n_opp [n] (opponents in riichi), in_fold [n] bool. Returns
+    (mask375 [n,375] for the policy query, enter [n] bool). Semantics identical to restrict_mask / enter_legal
+    per row (asserted by tests/test_fold_option.py::test_batch_masks_matches_per_row)."""
     n = mask374.shape[0]
+    m3 = mask374.reshape(n, -1, _TT).copy()                       # [n, 11, 34]
+    dt = list(_DISCARD_TYPES)
+    n_disc = m3[:, dt, :].sum(axis=(1, 2))
+    enter = (~in_fold) & (n_opp > 0) & (n_disc >= 2)
+    rows = np.nonzero(in_fold)[0]
+    if restrict and len(rows):
+        sub = m3[rows]                                             # [r, 11, 34]
+        orig = sub.copy()
+        sub[:, list(_DROP_TYPES), :] = False
+        g = genb[rows] & (n_opp[rows] > 0)[:, None]                # no riichi opponent -> no safe set
+        safe_any = (sub[:, dt, :] & g[:, None, :]).any(axis=(1, 2))
+        sa = np.nonzero(safe_any)[0]
+        if len(sa):
+            sub[np.ix_(sa, dt)] &= g[sa][:, None, :]
+        empty = ~sub.any(axis=(1, 2))
+        for j in np.nonzero(empty)[0]:                             # rare: interrupt rows offering only a call
+            sub[j] = restrict_mask(orig[j].reshape(-1), None).reshape(-1, _TT)
+        m3[rows] = sub
     out = np.zeros((n, FOLD_ACTION_DIM), dtype=np.bool_)
-    enter = np.zeros(n, dtype=np.bool_)
-    for i in range(n):
-        if in_fold[i]:
-            out[i, :_enc.ACTION_DIM] = restrict_mask(mask374[i], genb[i] if n_opp[i] > 0 else None, restrict)
-        else:
-            out[i, :_enc.ACTION_DIM] = mask374[i]
-            enter[i] = enter_legal(mask374[i], int(n_opp[i]), False)
-            out[i, FOLD_SLOT] = enter[i]
+    out[:, :_enc.ACTION_DIM] = m3.reshape(n, -1)
+    out[:, FOLD_SLOT] = enter
     return out, enter
 
 
