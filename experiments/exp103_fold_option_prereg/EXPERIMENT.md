@@ -62,3 +62,6 @@ M2 是纯血线的正式臂（只有时间抽象 + 触发条件），M1 是诊�
 - 代码：`src/agents/dnn/fold_option.py`、`action_space.py`（`NativeFoldActionSpace`、`native_fold_free`）、`encoder.py`（v3rf）、`arch_zoo.py`（`cnn_{m,l}_v3rf`、`cnn_l_v3rfl`）、`net.py`（`_widen_fold_head`）、
   `rust_rollout.py`（fold 分支 + `_rewrite_fold_episodes`）、`parallel_rollout.py`/`selfplay.py`（table/pid 上下文）、`infer_server.py`、`scripts/train_dnn_ppo.py`（`--fold_init_bias`、fold 统计行）、`rust/riichi_rs/src/vecenv.rs`（drain 暴露 slot）。
 - 冒烟工件：scratchpad `exp103_smoke{,2}/`（不入库）。
+- [10-03 00:40 PDT] **M1/M2 发射**（32 核宿主）。首版 fold rollout 只有 341–365 局/s（M0 880）：瓶颈是 Python 侧逐行 mask 限制与逐行日志；向量化 `batch_masks` + 按轮记录 + numpy 重写（`0d7245f`、`2eb8fdf`）后本地 1100 vs 1680（67%），
+  pod 上 **M1 729 / M2 747 局/s**（M0 ≈850）。费用控制：M1/M2 目标降为 **248M（24M 局）**，判决窗口统一取 236/240/244/248M（M0 同样有这些里程碑）；预计 M0 $7.8 + M1/M2 各 $6.7 + exp104 $2.2 ≈ **$23**。
+  健康判据 1 的"吞吐 ≥ 原配方 90%"未达（≈85% on pod），记录为偏离；不影响判决。
