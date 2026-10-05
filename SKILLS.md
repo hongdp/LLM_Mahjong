@@ -684,3 +684,6 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
   规则：pod 脚本把要保全的目录列表写进 `/workspace/ARTIFACT_DIRS`，拉取循环逐一镜像并校验后才发 `PULLED_OK`；一台 pod 多个臂时每臂一个拉取循环或一个循环遍历列表。
 - **（2026-10-03）worktree 目录可能被外部清理，长驻循环的 cwd 会失效**：`cd` 到 worktree 的循环在目录被删后 `os.getcwd()` 抛错、python 导入失败。长驻脚本用 `git worktree add` 重建后必须按 PID 重启；更稳的做法是把代码 tar 到 scratchpad 或用主 checkout 的绝对路径。
 - **（2026-10-03）宏动作（options）的 PG 探索陷阱**：新动作槽位的初始概率 ≈1% 时，若其在随机入口的平均优势为负，PPO 会在几百次迭代内把它整体压到 0，根本来不及学状态依赖的入口。要测"是否存在好的入口"，需要探索地板（ε 钉住）或限定合法状态，否则结论只是"随机入口不值"。
+- **（2026-10-04，exp103 M0 终段工件丢失）拉取循环必须检查 rsync 退出码并在连续失败时报警，不得 `2>/dev/null` 吞错**：worktree 被删后循环 cwd 失效，rsync/gsutil 全部失败但循环照常打印"pulled"，
+  7 小时无人察觉；pod 等握手 2 h 后自毁，236–256M ckpt 丢失。规则：①循环启动时 `cd` 到主 checkout 或 scratchpad 的绝对路径，不用 worktree；②每次 rsync 记录退出码，连续 2 次失败即在心跳日志打 🚨 并 `touch` 一个 ALERT 文件；
+  ③自毁的等待时限至少覆盖两个拉取周期 + 一次完整 ckpt 传输，且 pod 在自毁前把 `games_final.pt` 的 md5 写进 exp.log（便于事后核对是否真的丢失）。
