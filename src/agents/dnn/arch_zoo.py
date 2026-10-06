@@ -23,7 +23,7 @@ from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
 from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
                                     N_PLANES_V1R, N_PLANES_V3R, N_PLANES_V3R2,
                                     N_PLANES_V2, N_PLANES_V3, N_SCALARS,
-                                    N_SCALARS_V3, N_SCALARS_V3H, N_SCALARS_V3S, TILE_TYPES)
+                                    N_SCALARS_V3, N_SCALARS_V3H, N_SCALARS_V3S, N_SCALARS_V3F, TILE_TYPES)
 from src.agents.dnn.net import MahjongPolicyNet, ResBlock
 
 
@@ -31,10 +31,15 @@ class CnnPolicy(MahjongPolicyNet):
     """The incumbent, parameterized by input planes for encoder v2."""
 
     def __init__(self, channels=64, blocks=3, in_planes=N_PLANES,
-                 in_scalars=N_SCALARS, encoder_variant="v1", aux_waits=False):
+                 in_scalars=N_SCALARS, encoder_variant="v1", aux_waits=False,
+                 action_dim=None, action_space=None):
         nn.Module.__init__(self)
         self.encoder_variant = encoder_variant
         self.in_planes = in_planes
+        if action_space is not None:          # exp103: native_fold (375 slots); default stays native
+            self.action_space = action_space
+        if action_dim is not None:            # read by the inference server (per-model mask width)
+            self.action_dim = action_dim
         # bypasses MahjongPolicyNet.__init__, so the exp11 critic-variant
         # attributes its inherited forward_with_value reads must exist here
         self.critic_feat_dim = 0
@@ -45,7 +50,7 @@ class CnnPolicy(MahjongPolicyNet):
         self.scalar_fc = nn.Sequential(nn.Linear(in_scalars, 64), nn.ReLU())
         self.head = nn.Sequential(
             nn.Linear(channels * TILE_TYPES + 64, 512), nn.ReLU(),
-            nn.Linear(512, ACTION_DIM),
+            nn.Linear(512, action_dim if action_dim is not None else ACTION_DIM),
         )
         self.value = nn.Sequential(
             nn.Linear(channels * TILE_TYPES + 64, 256), nn.ReLU(),
@@ -356,6 +361,15 @@ ZOO = {
                                     in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
     "cnn_xl_v3r": (lambda: CnnPolicy(192, 6, in_planes=N_PLANES_V3R,
                                      in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp103 (2026-10-02, pure line fold option): v3r trunk + in_fold_mode scalar + ENTER_FOLD slot (375).
+    # A v3r checkpoint loads through net.load_compatible: zero input column, new head row at bias -6.
+    "cnn_m_v3rf": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3F,
+                                     encoder_variant="v3rf", action_dim=ACTION_DIM + 1, action_space="native_fold"), False),
+    "cnn_l_v3rf": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3F,
+                                     encoder_variant="v3rf", action_dim=ACTION_DIM + 1, action_space="native_fold"), False),
+    # arm M2: same option but NO mask restriction inside fold mode (sub-policy fully learned; only the flag is imposed)
+    "cnn_l_v3rfl": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3F,
+                                      encoder_variant="v3rf", action_dim=ACTION_DIM + 1, action_space="native_fold_free"), False),
 }
 
 

@@ -67,6 +67,11 @@ def main():
                     help="frozen BC checkpoint; adds bc_kl_coef * KL(pi || pi_BC) "
                          "to the loss (exp46: keep the human prior while improving)")
     ap.add_argument("--bc_kl_coef", type=float, default=0.0)
+    ap.add_argument("--bc_kl_mask", default=None, choices=[None, "riichi", "quiet"],
+                    help="exp104 state-selective anchor: apply the BC KL only on rows where an opponent is in "
+                         "riichi and the seat is not ('riichi' — the defensive states RL erodes first, FINDINGS "
+                         "10-02), or only on the complementary rows ('quiet', control). The KL is averaged over "
+                         "the selected rows, so bc_kl_coef keeps its meaning; everywhere else the policy is free.")
     ap.add_argument("--total_games", type=int, default=600000)
     ap.add_argument("--games_per_iter", type=int, default=2048)
     ap.add_argument("--dup_k", type=int, default=8)
@@ -235,6 +240,10 @@ def main():
                          "'0:0.5,1000000:0.25'); overrides --entropy_floor "
                          "as the dual-control target (exp31)")
     ap.add_argument("--entropy_dual_lr", type=float, default=0.1)
+    ap.add_argument("--fold_init_bias", type=float, default=None,
+                    help="exp103 fold option: after loading, set the ENTER_FOLD slot's head bias to this "
+                         "value (default: keep the checkpoint's / the widening default -6; -4 ~ 0.5%% of "
+                         "eligible rows take the option at the start)")
     ap.add_argument("--entropy_abort", type=float, default=None,
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
@@ -464,8 +473,8 @@ def main():
             # match the parameter shapes, so they restart.
             from src.agents.dnn.net import load_compatible
             load_compatible(net, blob["state_dict"])
-            print("   legacy action head widened 272->374 (optimizer moments restart)",
-                  flush=True)
+            print("   checkpoint widened into this net (272->374 head / extra scalars / fold slot); "
+                  "optimizer moments restart", flush=True)
         else:
             net.load_state_dict(blob["state_dict"])
         if "optimizer" in blob and not widened:
@@ -474,6 +483,11 @@ def main():
         elif not widened:
             print("   (checkpoint has no optimizer state; Adam moments restart)",
                   flush=True)
+        if args.fold_init_bias is not None:
+            from src.agents.dnn.fold_option import FOLD_SLOT
+            with torch.no_grad():
+                net.head[-1].bias[FOLD_SLOT].fill_(float(args.fold_init_bias))
+            print(f"   fold option: ENTER_FOLD bias set to {args.fold_init_bias}", flush=True)
         start_games = int(blob.get("games", 0))
         start_iter = int(blob.get("iter", 0))
         ent_alpha = float(blob.get("entropy_alpha", ent_alpha) or ent_alpha)
@@ -726,6 +740,7 @@ def main():
         t_upd0 = time.time()
         pack_s = t_upd0 - t_roll0 - rollout_s      # batch packing + value forward + GAE (perf 2026-09-09)
         stop, passes, kls, closs, vloss, hloss, bkls = False, 0, [], [], [], [], []
+        bkl_frac = []
         aloss, asep = [], []                  # exp69 aux waits BCE / positive-negative separation
         for ep in range(args.ppo_epochs):
             order = idx_keep[torch.randperm(n_eff, device=dev)]
@@ -766,7 +781,16 @@ def main():
                     # poisons the BACKWARD even though the forward is finite
                     fin = torch.isfinite(logp) & torch.isfinite(alogp)
                     diff = torch.where(fin, logp - alogp, torch.zeros_like(logp))
-                    bc_kl = (logp.exp() * diff).sum(1).mean()
+                    kl_rows = (logp.exp() * diff).sum(1)
+                    if args.bc_kl_mask:
+                        # scalars[4] = own riichi flag, [5:8] = opponents' (encoder v1/v3 layouts agree)
+                        sc_ = scal[sel]
+                        vs_r = (sc_[:, 5:8].amax(1) > 0.5) & (sc_[:, 4] < 0.5)
+                        rows_m = vs_r if args.bc_kl_mask == "riichi" else ~vs_r
+                        bc_kl = (kl_rows * rows_m).sum() / rows_m.sum().clamp(min=1)
+                        bkl_frac.append(float(rows_m.float().mean()))
+                    else:
+                        bc_kl = kl_rows.mean()
                     loss = loss + args.bc_kl_coef * bc_kl
                     bkls.append(float(bc_kl.detach()))
                 if args.critic_feats == "hazard":
@@ -890,6 +914,7 @@ def main():
                "value/ret_std": ret_std, "value/v_mean": v_mean,
                "value/v_std": v_std,
                "bc_kl": float(np.mean(bkls)) if bkls else None,
+               "bc_kl_rows_frac": float(np.mean(bkl_frac)) if bkl_frac else None,
                "entropy_coef": ent_alpha,
                "n_effective": n_eff, "n_raw": int(len(acts))}
         if args.shaping:
@@ -911,6 +936,12 @@ def main():
             row["dev_steps"] = int(_dv["n_dev"])
             if dev_mask is not None and dev_mask.any():
                 row["dev_adv_std"] = float(adv_raw[dev_mask].std())
+        _fd = getattr(collector, "last_fold", None)
+        if _fd:
+            # exp103 fold option: how often ENTER_FOLD was legal and taken this iteration
+            row["fold_enter_rate"] = float(_fd["enter_rate"])
+            row["fold_enter_n"] = int(_fd["n_enter"])
+            row["fold_eligible_frac"] = _fd["n_eligible"] / max(_fd["n_rows"], 1)
         _nz = getattr(collector, "last_noise", None)
         if args.param_noise_kl > 0 and _nz:
             row["noise_sigma"] = noise_sigma

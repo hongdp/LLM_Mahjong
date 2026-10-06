@@ -668,3 +668,22 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
   发射前先在目标卡上跑 4 min bench 再定预算；GPU util 看 nvidia-smi，别只看 nproc。
 - 迁移 runbook：①确认 latest.pt 刚落盘（ckpt_every 迭代）；②`pgrep` 列 PID → 单独 `kill`；③rsync 到本机镜像 → scp 到新机（md5 核对）；④`--resume` 起新进程，train_log 行保留；
   ⑤心跳/拉取循环换主机重挂；⑥把旧 `exp*.log` 里操作员 kill 留下的 `TRAIN_FAILED` 改成 STOPPED_BY_OPERATOR，否则心跳误报（09-26 踩过一次）。
+- 2026-09-27 心跳脚本 bug："发射相 40 min 死线"写成了对任何 ssh 失败都生效，一次瞬时 ssh 失败在 40 min 后就误报 LAUNCH DEADLINE 退出（exp101 p2，训练无恙）。修正：死线只在首个迭代出现前生效；之后连续 4 次失败才报 UNREACHABLE。
+
+- **（2026-10-02 运维事故，≈$34 空转）完成信号必须直接接关机，不能只接报警**：exp101 p2 于 10-01 01:06 PDT 跑完、exp102 A 于 09-29 08:38 跑完，
+  两台 pod 分别空转 24.5 h（4090 $0.74/h）与 65 h（A4000 $0.25/h）到 10-02 01:35 才终止，$200 计划因此超支到 ≈$236。三个漏洞叠加：
+  ①心跳脚本见 `TRAIN_DONE` 只打印 `✅ DONE` 后退出，没有调用终止 pod；②判决作业等的是 `games_<N>.pt`，而训练器把终点存成 `games_final.pt`，永远等不到；
+  ③会话没有用户消息就不会醒来巡检，"等待期主动巡检"规则对跨天空档无效。**规则**：发射脚本里 `TRAIN_DONE` 之后必须紧接 pod 终止（pod 内 `runpodctl`/API，或本机心跳 exit 0 ⇒ `delete-pod`）；
+  依赖终点 ckpt 的作业同时监听 `games_final.pt`；凡是预计跨过无人值守时段的 run，发射时就写好自动关机，不依赖任何会话。
+- **（2026-10-02）单 ckpt 的 20k 对读数有 ≈0.5 pp 的"ckpt 噪声"，判决要看窗口均值**：同一谱系相邻 ckpt（8–16M 局）的 T=0 vs bc49 读数来回摆动
+  （p2 216M 0.4529 / 232M 0.4594；exp102 A 216M 0.4655 / 224M 0.4509），幅度与 20k 对的采样 SE（0.35 pp）同量级甚至更大。
+  单点差 1 pp 可能是两个 ckpt 各抽到一边。规则：判决点前后各评 ≥3 个 ckpt 取均值，臂间比较用窗口均值之差；预注册里写明窗口。
+- **（2026-09-29）评测脚本漏写 `if __name__ == "__main__":` 会在 spawn 子进程里递归执行主模块**：`play_pair_vector` 用 multiprocessing spawn，
+  子进程重新 import 主脚本，顶层代码再跑一次评测，表现为父进程永久等待、一个子进程成僵尸。所有探针/评测脚本一律加 main 保护，并独立跑一次 ast 校验 + 小样本冒烟。
+- **（2026-10-03）自毁握手必须覆盖同一 pod 上的全部臂目录**：exp104 一台 pod 串行跑 R/Q，本机拉取循环只挂了 R，TRAIN_DONE 后握手校验 R 的 md5 即放行自毁，Q 的 ckpt 随 pod 一起消失（日志因 `*.log` 通配得以保留）。
+  规则：pod 脚本把要保全的目录列表写进 `/workspace/ARTIFACT_DIRS`，拉取循环逐一镜像并校验后才发 `PULLED_OK`；一台 pod 多个臂时每臂一个拉取循环或一个循环遍历列表。
+- **（2026-10-03）worktree 目录可能被外部清理，长驻循环的 cwd 会失效**：`cd` 到 worktree 的循环在目录被删后 `os.getcwd()` 抛错、python 导入失败。长驻脚本用 `git worktree add` 重建后必须按 PID 重启；更稳的做法是把代码 tar 到 scratchpad 或用主 checkout 的绝对路径。
+- **（2026-10-03）宏动作（options）的 PG 探索陷阱**：新动作槽位的初始概率 ≈1% 时，若其在随机入口的平均优势为负，PPO 会在几百次迭代内把它整体压到 0，根本来不及学状态依赖的入口。要测"是否存在好的入口"，需要探索地板（ε 钉住）或限定合法状态，否则结论只是"随机入口不值"。
+- **（2026-10-04，exp103 M0 终段工件丢失）拉取循环必须检查 rsync 退出码并在连续失败时报警，不得 `2>/dev/null` 吞错**：worktree 被删后循环 cwd 失效，rsync/gsutil 全部失败但循环照常打印"pulled"，
+  7 小时无人察觉；pod 等握手 2 h 后自毁，236–256M ckpt 丢失。规则：①循环启动时 `cd` 到主 checkout 或 scratchpad 的绝对路径，不用 worktree；②每次 rsync 记录退出码，连续 2 次失败即在心跳日志打 🚨 并 `touch` 一个 ALERT 文件；
+  ③自毁的等待时限至少覆盖两个拉取周期 + 一次完整 ckpt 传输，且 pod 在自毁前把 `games_final.pt` 的 md5 写进 exp.log（便于事后核对是否真的丢失）。

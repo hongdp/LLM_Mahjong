@@ -46,6 +46,7 @@ enum Phase {
 struct Game {
     table: Table,
     seed: u64,
+    slot: usize,                            // table slot hosting this game (exp103: Python-side per-slot state)
     traj: [Vec<StepRec>; 4],
     phase: Phase,
     guard: usize,
@@ -61,6 +62,7 @@ struct Game {
 
 struct Finished {
     seed: u64,
+    slot: usize,
     episodes: Vec<(usize, Vec<StepRec>)>,   // (seat, steps)
     result: String,
     riichi: [bool; 4],
@@ -184,6 +186,7 @@ fn finish(g: Game) -> Finished {
     }
     Finished {
         seed: g.seed,
+        slot: g.slot,
         episodes,
         result: t.result_summary.clone(),
         riichi: t.riichi,
@@ -327,7 +330,7 @@ impl VecEnv {
                         table.seat_style = *st;
                     }
                     self.active[slot] = Some(Game {
-                        table, seed, traj: Default::default(), phase: Phase::Turn, guard: 0,
+                        table, seed, slot, traj: Default::default(), phase: Phase::Turn, guard: 0,
                         rows: Vec::new(), pending_steps: Vec::new(),
                         ms, deal_facts: Vec::new(), deal_start_len: [0; 4],
                     });
@@ -439,7 +442,7 @@ impl VecEnv {
             let (_rewards, done, info) = table.step(*seat, xml);
             let phase = if info.discarded || info.chankan.is_some() { Phase::Interrupt } else { Phase::Turn };
             let mut g = Game {
-                table, seed: i as u64, traj: Default::default(), phase, guard: 0,
+                table, seed: i as u64, slot: i, traj: Default::default(), phase, guard: 0,
                 rows: Vec::new(), pending_steps: Vec::new(),
                 ms: None, deal_facts: Vec::new(), deal_start_len: [0; 4],
             };
@@ -593,6 +596,7 @@ impl VecEnv {
             d.set_item("learner_seats", vec![0usize, 1, 2, 3])?;
             d.set_item("league", PyDict::new_bound(py))?;
             d.set_item("seed", f.seed)?;
+            d.set_item("slot", f.slot)?;
             if let Some(h) = &f.hanchan {
                 let hd = PyDict::new_bound(py);
                 hd.set_item("placements", h.placements.to_vec())?;
