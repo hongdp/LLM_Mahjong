@@ -244,6 +244,13 @@ def main():
                     help="exp103 fold option: after loading, set the ENTER_FOLD slot's head bias to this "
                          "value (default: keep the checkpoint's / the widening default -6; -4 ~ 0.5%% of "
                          "eligible rows take the option at the start)")
+    ap.add_argument("--fold_floor", type=float, default=0.0,
+                    help="exp105: exploration floor p(ENTER_FOLD) >= eps on legal rows (straight-through "
+                         "logit floor, applied in rollout AND loss); 0 = off")
+    ap.add_argument("--fold_floor_until", type=int, default=0,
+                    help="exp105: absolute games counter at which the floor is released (0 = never)")
+    ap.add_argument("--fold_floor_wall", type=float, default=2.0,
+                    help="exp105: below floor - wall nats, downward gradients on the raw ENTER logit are dropped")
     ap.add_argument("--entropy_abort", type=float, default=None,
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
@@ -597,6 +604,14 @@ def main():
     while next_ms < len(milestones) and milestones[next_ms] <= start_games:
         next_ms += 1
     t_prev_it = None
+    if args.fold_floor > 0:
+        from src.agents.dnn.fold_option import apply_floor as _apply_floor
+        _ffloor = lambda lg, e: _apply_floor(lg, e, args.fold_floor_wall)
+        print(f"   fold floor: eps={args.fold_floor} until games={args.fold_floor_until or 'never'} "
+              f"wall={args.fold_floor_wall}", flush=True)
+    else:
+        _ffloor = lambda lg, e: lg
+    fold_floor_now = 0.0
     while games < args.total_games:
         it += 1
         t_it0 = time.time()
@@ -613,6 +628,11 @@ def main():
                 g0, g1 = hbs_anneal
                 hs = 1.0 if games <= g0 else 0.0 if games >= g1 else 1.0 - (games - g0) / max(g1 - g0, 1)
             cfg["houjuu_by_shanten"] = [p * hs for p in hbs_base]
+        fold_floor_now = (args.fold_floor if args.fold_floor > 0 and
+                          (args.fold_floor_until <= 0 or games < args.fold_floor_until) else 0.0)
+        cfg["fold_floor"] = fold_floor_now
+        cfg["fold_floor_wall"] = args.fold_floor_wall
+        cfg["fold_floor_ref"] = args.fold_floor if args.fold_floor > 0 else 0.01
         if shaping_sched:
             sc_now = shaping_scale_at(games)
             cfg["shaping_scale"] = sc_now
@@ -682,7 +702,7 @@ def main():
 
         with torch.no_grad():
             probe = idx_keep[torch.randperm(n_eff, device=dev)[:2048]]
-            lp0 = torch.log_softmax(net(planes[probe], scal[probe], mask[probe]), 1)
+            lp0 = torch.log_softmax(_ffloor(net(planes[probe], scal[probe], mask[probe]), fold_floor_now), 1)
             s0 = torch.where(torch.isfinite(lp0), lp0, torch.zeros_like(lp0))
             ent_before = float(-(lp0.exp() * s0).sum(1).mean())
             # V(s) for the whole batch under the SAMPLING policy
@@ -756,6 +776,7 @@ def main():
                 # only the forward matmuls run in bf16 (bench: numerically
                 # safe, matches the rollout inference server's pattern)
                 logits, v = logits.float(), v.float()
+                logits = _ffloor(logits, fold_floor_now)         # exp105: same floored policy as the rollout
                 logp = torch.log_softmax(logits, 1)
                 chosen = logp.gather(1, acts[sel][:, None]).squeeze(1)
                 ratio = torch.exp(chosen - old_lp[sel])
@@ -848,7 +869,7 @@ def main():
 
         with torch.no_grad():
             net.eval()
-            lp1 = torch.log_softmax(net(planes[probe], scal[probe], mask[probe]), 1)
+            lp1 = torch.log_softmax(_ffloor(net(planes[probe], scal[probe], mask[probe]), fold_floor_now), 1)
             s1 = torch.where(torch.isfinite(lp1), lp1, torch.zeros_like(lp1))
             ent_after = float(-(lp1.exp() * s1).sum(1).mean())
             ev = float(1 - (rets[idx_keep] - vals[idx_keep]).var()
@@ -942,6 +963,11 @@ def main():
             row["fold_enter_rate"] = float(_fd["enter_rate"])
             row["fold_enter_n"] = int(_fd["n_enter"])
             row["fold_eligible_frac"] = _fd["n_eligible"] / max(_fd["n_rows"], 1)
+            if "floor" in _fd:
+                # exp105: floor in force this iteration, and what the UNfloored policy does by itself
+                row["fold_floor"] = float(_fd["floor"])
+                row["fold_raw_above_frac"] = float(_fd["raw_above_frac"])
+                row["fold_raw_p_mean"] = float(_fd["raw_p_mean"])
         _nz = getattr(collector, "last_noise", None)
         if args.param_noise_kl > 0 and _nz:
             row["noise_sigma"] = noise_sigma
