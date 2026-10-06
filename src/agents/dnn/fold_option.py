@@ -169,30 +169,16 @@ def fold_discard_mask(mask374: np.ndarray, genb: Optional[np.ndarray], restrict:
     return widen(m, False)
 
 
-class _WallGrad(torch.autograd.Function):
-    """Identity forward; backward drops the gradient components that would push
-    the raw ENTER_FOLD logit further DOWN (positive grad under descent) on rows
-    already below the wall, so the shared bias cannot sink without bound while
-    the floor hides it from the sampled policy."""
-
-    @staticmethod
-    def forward(ctx, x, below):
-        ctx.save_for_backward(below)
-        return x.view_as(x)
-
-    @staticmethod
-    def backward(ctx, g):
-        (below,) = ctx.saved_tensors
-        return torch.where(below & (g > 0), torch.zeros_like(g), g), None
-
-
 def apply_floor(logits: torch.Tensor, eps: float, wall: float = 2.0) -> torch.Tensor:
     """exp105 exploration floor on the ENTER_FOLD slot: p(ENTER) >= eps on every
     row where it is legal. The floored logit is max(raw, lse(others) + logit(eps))
     with a straight-through gradient, so the raw logit keeps receiving the policy
     gradient of the floored policy (per-state signal ~ eps * advantage) instead of
     the vanishing p_raw * advantage that killed exp103. Below `wall` nats under the
-    floor, downward gradients are dropped (_WallGrad). Applied identically in the
+    floor the row is a dead zone: NO gradient reaches the raw logit (symmetric). An
+    earlier version dropped only the downward components there, which rectifies
+    zero-mean noise into a net upward push (exp105 F, 2026-10-05: entry 0.3% -> 30%
+    in 0.4M games; toy: raw p 0.009 -> 0.034 at zero advantage). Applied identically in the
     rollout (collect_rust) and the PPO loss, so the recorded logprob IS the policy
     being trained. eps <= 0 or a non-fold head: returned unchanged."""
     if eps <= 0 or logits.shape[1] != FOLD_ACTION_DIM:
@@ -203,7 +189,7 @@ def apply_floor(logits: torch.Tensor, eps: float, wall: float = 2.0) -> torch.Te
     floor = (torch.logsumexp(others, 1) + math.log(eps / (1.0 - eps))).detach()
     raw_s = torch.where(legal, raw, floor)                  # keep -inf out of the arithmetic
     eff = raw_s + (floor - raw_s).clamp(min=0).detach()
-    eff = _WallGrad.apply(eff, (raw_s.detach() < floor - wall))
+    eff = torch.where(raw_s.detach() < floor - wall, eff.detach(), eff)
     return torch.cat([others, torch.where(legal, eff, raw)[:, None]], 1)
 
 

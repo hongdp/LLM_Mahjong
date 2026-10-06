@@ -309,15 +309,18 @@ def test_floor_guarantees_eps_and_leaves_the_rest():
 
 def test_floor_straight_through_and_wall():
     eps, wall = 0.01, 2.0
-    lg = _fold_logits(raw_shift=-3.0).requires_grad_(True)
+    lg = _fold_logits(raw_shift=0.5).requires_grad_(True)            # rows spread across above / band / below
     out = fo.apply_floor(lg, eps, wall)
     legal = torch.isfinite(lg[:, fo.FOLD_SLOT]).detach()
     # maximise log p(ENTER): the raw logit must get an UPWARD gradient (descent grad < 0) even when floored
     loss = -torch.log_softmax(out, 1)[legal, fo.FOLD_SLOT].sum()
     loss.backward()
-    g = lg.grad[legal, fo.FOLD_SLOT]
-    assert torch.all(g < 0) and torch.isfinite(lg.grad).all()
-    # minimise log p(ENTER): rows far below the floor (beyond the wall) get NO downward push; rows above it do
+    fl0 = torch.logsumexp(lg[:, :fo.FOLD_SLOT].detach(), 1) + np.log(eps / (1 - eps))
+    raw0 = lg[:, fo.FOLD_SLOT].detach()
+    band = legal & (raw0 < fl0) & (raw0 >= fl0 - wall)              # floored but inside the wall
+    assert band.any() and torch.all(lg.grad[band, fo.FOLD_SLOT] < 0) and torch.isfinite(lg.grad).all()
+    assert torch.all(lg.grad[legal & (raw0 < fl0 - wall), fo.FOLD_SLOT] == 0)
+    # rows far below the floor (beyond the wall) are a symmetric dead zone: no gradient in EITHER direction
     lg2 = _fold_logits(raw_shift=-3.0)
     r0 = legal.nonzero()[0, 0]
     lg2[r0, fo.FOLD_SLOT] = torch.logsumexp(lg2[r0, :fo.FOLD_SLOT], 0) + 1.0   # one row above the floor (p ~ 0.73)
@@ -332,6 +335,10 @@ def test_floor_straight_through_and_wall():
     assert below.any() and torch.all(gw[below] == 0)
     above = legal & (raw > floor)
     assert above.any() and torch.all(gw[above] > 0)
+    lg2.grad = None
+    out3 = fo.apply_floor(lg2, eps, wall)
+    (-torch.log_softmax(out3, 1)[legal, fo.FOLD_SLOT].sum()).backward()   # upward pressure: still blocked below the wall
+    assert torch.all(lg2.grad[below, fo.FOLD_SLOT] == 0)
 
 
 def test_rust_rollout_floor_matches_recorded_logprobs():
