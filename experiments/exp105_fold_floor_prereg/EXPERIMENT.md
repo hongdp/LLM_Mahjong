@@ -1,6 +1,6 @@
 # exp105 — 承诺弃和宏 + 入口探索地板（ε floor）
 
-- **日期**：2026-10-05 预注册  **状态**：prereg
+- **日期**：2026-10-05 预注册  **状态**：running
 - **Git**：`b2dfd69`（feat(exp105) 地板实现；之后的提交只改文档/运维）
 - **Env**：纯血线；Rust 引擎镜像自对弈；从 `exp102_A/games_final.pt`（224M，cnn_l_v3r，α=0.003 收尾退火终点）经 widening 加载到 `cnn_l_v3rfl`（= exp103 M2 无限制臂）；RunPod Secure RTX 4090（$0.74/h）
 - **用户批准**：2026-10-05 "合并 PR，然后做 exp105 ε 地板"（预算口径 ≈$6–8，单臂）
@@ -32,6 +32,11 @@ exp103 的 M1/M2 在首个 4M 局就把 `ENTER_FOLD` 压到 0（判据 1 早停�
 
 ## Progress
 - [10-05] 实现 + 测试 + 本地冒烟完成（`b2dfd69`）。
+- [10-05 20:51 PDT] 开 pod `5lata2xpt15p13`（Secure RTX 4090，EU-CZ-1，36 vCPU，宿主 CUDA 13.2，213.192.2.93:40057，$0.74/h），镜像 `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404`。
+  起点 ckpt md5 `cf66bae99f7fb61d13724f74af5d58b2` 两端一致。运维脚本（主 checkout `experiments/exp105_ops/`，不入库）：`pod_boot.sh`（硬校验 BOOTSTRAP_DONE）、
+  `pod_run.sh`（TRAIN_DONE 写 md5 → 等 `PULLED_OK` ≤3 h → GraphQL `podTerminate` 自毁；`ARTIFACT_DIRS`=exp105_F）、`pull_loop.sh`（主 checkout 绝对路径、每 10 min rsync、退出码检查连续 2 次失败 ALERT、15 min 发射死线 / 30 min STALL、md5 核对后发 PULLED_OK）。
+  20:53 PDT 训练启动：**≈660 局/s**（36 vCPU、GPU 98%）⇒ 24M ≈ 10 h ≈ **$7.5**（上限 $9 内）；首批迭代 KL 0.001、H 0.27–0.32。
+  TB：`experiments/_tb_qlearning/exp105_F_LIVE` → `experiments/exp105_F/tensorboard`，面板 :6006。
 
 ## Results
 （待）
