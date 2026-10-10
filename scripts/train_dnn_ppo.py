@@ -331,6 +331,9 @@ def main():
                          "optimizer moments and the games counter when the "
                          "checkpoint carries them (older ones only have "
                          "weights — Adam moments then rebuild in a few iters)")
+    ap.add_argument("--reset_optimizer", action="store_true",
+                    help="exp106: on --resume keep the weights but discard the checkpoint's Adam "
+                         "moments (warm restart) — what the exp103 widening did implicitly")
     ap.add_argument("--ckpt_every", type=int, default=25,
                     help="also snapshot every N iterations, so a restart "
                          "never loses more than that")
@@ -484,7 +487,9 @@ def main():
                   "optimizer moments restart", flush=True)
         else:
             net.load_state_dict(blob["state_dict"])
-        if "optimizer" in blob and not widened:
+        if args.reset_optimizer and not widened:
+            print("   --reset_optimizer: Adam moments discarded (warm restart)", flush=True)
+        elif "optimizer" in blob and not widened:
             opt.load_state_dict(blob["optimizer"])
             print("   optimizer moments restored", flush=True)
         elif not widened:
