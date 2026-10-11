@@ -1,6 +1,6 @@
 # exp106 — 优化器热重启（Adam 矩重置）是不是纯血线的杠杆
 
-- **日期**：2026-10-11 预注册  **状态**：launching
+- **日期**：2026-10-11 预注册  **状态**：running
 - **Git**：`7371bed`（`--reset_optimizer`）+ 本文件
 - **Env**：纯血线；Rust 引擎镜像自对弈；`cnn_l_v3r`（无宏、无新输入）从 `exp102_A/games_final.pt`（224M，α=0.003 退火终点，20k 对 vs bc49 0.4509/0.4511）`--resume`；RunPod Secure RTX 4090 $0.74/h × 3
 - **用户批准**：2026-10-11 "三臂都跑，exp106 发射"
@@ -35,6 +35,9 @@ exp105 的 $0 复评（10-10）发现：exp103 的两个 widened 臂（加载时
 - [10-11 14:16 PDT] 三台 Secure RTX 4090 开机（EU-RO-1，16 vCPU，**$0.89/h**——比 exp105 时的 $0.74 涨价，库存 Low；三臂 ≈4.7 h ⇒ ≈$12.6，仍在 $14 上限内）：
   R `kon8ezplbs5g29` 213.173.102.212:28384（CUDA 12.8）/ C `nsikefnliqirk4` 213.173.110.42:14615（13.0）/ C′ `kr6uym6xiee3ct` 213.173.110.38:10801（13.0）。
   起点 ckpt md5 `cf66bae9…` 三端一致，repo.tgz `aa297f06…`（HEAD `fb75e4b`）。运维脚本：主 checkout `experiments/exp106_ops/`（`pod_run.sh ARM SEED [flags]`、`pull_loop.sh HOST PORT ARM`）；TB `exp106_{R,C,Cp}_LIVE`。
+- [10-11 14:20 PDT] 三臂启动，首迭代 EV 0.094–0.110（critic 完整）、KL 0.001–0.002、H 0.28–0.31。吞吐：C **1256 局/s**、C′ **993**、R 只有 **577**（48 核宿主，核慢）⇒ R 预计 7.7 h ≈ $6.9，总额顶到上限。
+  再开一台 R2 `j8gdrtqoqs6qu4`（EU-CZ-1，36 vCPU，213.192.2.77:40035）试机：**928 局/s**，前 15 迭代与旧 R 逐位一致（pg/H/KL/EV 全同 ⇒ 续训确定性） ⇒ R 切到 R2，旧 R pod 终止（≈12 min ≈ $0.2）。
+  修正预计：R 4.8 h $4.3 + C 3.5 h $3.1 + C′ 4.5 h $4.0 + 试机损耗 ≈ **$11.6**（上限 $14）。拉取循环三条（主 checkout）、TB 三面板已挂。
 
 ## Results
 （待）
