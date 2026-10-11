@@ -1,6 +1,6 @@
 # exp106 — 优化器热重启（Adam 矩重置）是不是纯血线的杠杆
 
-- **日期**：2026-10-11 预注册  **状态**：prereg
+- **日期**：2026-10-11 预注册  **状态**：launching
 - **Git**：`7371bed`（`--reset_optimizer`）+ 本文件
 - **Env**：纯血线；Rust 引擎镜像自对弈；`cnn_l_v3r`（无宏、无新输入）从 `exp102_A/games_final.pt`（224M，α=0.003 退火终点，20k 对 vs bc49 0.4509/0.4511）`--resume`；RunPod Secure RTX 4090 $0.74/h × 3
 - **用户批准**：2026-10-11 "三臂都跑，exp106 发射"
@@ -31,7 +31,10 @@ exp105 的 $0 复评（10-10）发现：exp103 的两个 widened 臂（加载时
 5. **运维**：TRAIN_DONE ⇒ 本机 md5 握手 ⇒ 自毁；拉取循环主 checkout 绝对路径、rsync 退出码报警；发射相 15 min 死线 / 30 min STALL。
 
 ## Progress
-- [10-11] `--reset_optimizer` 已加（`7371bed`），本机冒烟见下。
+- [10-11] `--reset_optimizer` 已加（`7371bed`）；本机冒烟（2 迭代）打印 "Adam moments discarded (warm restart)" 并正常训练。
+- [10-11 14:16 PDT] 三台 Secure RTX 4090 开机（EU-RO-1，16 vCPU，**$0.89/h**——比 exp105 时的 $0.74 涨价，库存 Low；三臂 ≈4.7 h ⇒ ≈$12.6，仍在 $14 上限内）：
+  R `kon8ezplbs5g29` 213.173.102.212:28384（CUDA 12.8）/ C `nsikefnliqirk4` 213.173.110.42:14615（13.0）/ C′ `kr6uym6xiee3ct` 213.173.110.38:10801（13.0）。
+  起点 ckpt md5 `cf66bae9…` 三端一致，repo.tgz `aa297f06…`（HEAD `fb75e4b`）。运维脚本：主 checkout `experiments/exp106_ops/`（`pod_run.sh ARM SEED [flags]`、`pull_loop.sh HOST PORT ARM`）；TB `exp106_{R,C,Cp}_LIVE`。
 
 ## Results
 （待）
