@@ -345,6 +345,9 @@ def main():
     ap.add_argument("--oracle_batch", type=int, default=4096)
     ap.add_argument("--oracle_warmup_iters", type=int, default=200,
                     help="iterations (of this run) during which the critic trains but advantages stay blind")
+    ap.add_argument("--oracle_gate_margin", type=float, default=0.02,
+                    help="advantages switch to the oracle critic only once its batch EV >= the policy's own "
+                         "value-head EV minus this margin (and after --oracle_warmup_iters); re-checked every iteration")
     ap.add_argument("--oracle_channels", type=int, default=128)
     ap.add_argument("--oracle_blocks", type=int, default=4)
     ap.add_argument("--reset_optimizer_every", type=int, default=0,
@@ -769,7 +772,6 @@ def main():
                 for i in range(0, len(acts), 8192)])
         o_stats = None
         if ocrit is not None:
-            oracle_active = n_iter_run > args.oracle_warmup_iters
             with torch.no_grad():
                 ocrit.eval()
                 o_out = torch.cat([ocrit(planes[i:i + 8192], scal[i:i + 8192], ocf[i:i + 8192]).float()
@@ -783,8 +785,13 @@ def main():
                     o_pred = o_out.gather(1, acts[:, None]).squeeze(1)
                     del pol_logits
                 o_stats = {"ev": explained_variance(o_pred[idx_keep], rets[idx_keep]),
-                           "blind_ev": float(1 - (rets[idx_keep] - vals[idx_keep]).var() / (rets[idx_keep].var() + 1e-9)),
-                           "active": int(oracle_active)}
+                           "blind_ev": float(1 - (rets[idx_keep] - vals[idx_keep]).var() / (rets[idx_keep].var() + 1e-9))}
+                # quality gate: a half-trained critic's advantages are unit-normalised noise that drives the
+                # policy straight to target_kl (smoke 2026-10-12: KL 0.002 -> 0.04), so switch only once it is
+                # at least as good a predictor as the policy's own value head
+                oracle_active = (n_iter_run > args.oracle_warmup_iters
+                                 and o_stats["ev"] >= o_stats["blind_ev"] - args.oracle_gate_margin)
+                o_stats["active"] = int(oracle_active)
             if args.oracle_critic == "v" and oracle_active:
                 vals = o_out                      # asymmetric baseline + bootstrap for GAE
         if args.gae_lambda is not None:

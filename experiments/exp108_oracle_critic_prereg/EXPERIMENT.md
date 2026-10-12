@@ -18,7 +18,7 @@ exp67（09-05）把 319 维隐藏信息喂给**共享 trunk** 的价值头、随
 
 ## Method
 - **oracle 向量**：Rust `VecEnv.oracle_info()` / `Table.oracle(pid)`（`rust/riichi_rs/src/oracle.rs`），与 Python `oracle_features.py` 逐槽一致（`tests/test_oracle_rust_parity.py`：120 局随机对局含中断态全部相等）。`collect_rust(cfg["oracle_feats"])` 把它按 (slot, seed, seat) 挂到每个 episode 的 `cfeats` [T, 319]（float16）。
-- **独立 critic**（`src/agents/dnn/oracle_critic.py::SeparateCritic`）：与策略同族的 CNN trunk（128 ch × 4 blocks ≈ 策略同量级）+ 标量 FC + oracle 投影（319→128），头 → V（1）或 Q（374）。自己的 Adam（lr 1e-4）、每迭代 2 pass、MSE 回归 MC 回报（Q 只回归已采样动作）。`--oracle_warmup_iters 200`（≈0.4M 局）期间 critic 只训练、优势仍用盲 GAE；之后：V 模式把 GAE 的 V 换成 oracle V；Q 模式优势 = Q(s,a_t) − Σ_a π(a|s)Q(s,a)（π = 当前采样策略，合法动作上 softmax）。策略自己的价值头照常训练（两臂一致）。
+- **独立 critic**（`src/agents/dnn/oracle_critic.py::SeparateCritic`）：与策略同族的 CNN trunk（128 ch × 4 blocks ≈ 策略同量级）+ 标量 FC + oracle 投影（319→128），头 → V（1）或 Q（374）。自己的 Adam（lr 1e-4）、每迭代 2 pass、MSE 回归 MC 回报（Q 只回归已采样动作）。`--oracle_warmup_iters 200`（≈0.4M 局）期间 critic 只训练、优势仍用盲 GAE；之后**且** critic 在当批的 EV ≥ 策略自身价值头 EV − 0.02（`--oracle_gate_margin`，每迭代重判；冒烟发现半生不熟的 critic 优势经归一化后是单位尺度噪声，KL 0.002→0.04）才切换：V 模式把 GAE 的 V 换成 oracle V；Q 模式优势 = Q(s,a_t) − Σ_a π(a|s)Q(s,a)（π = 当前采样策略，合法动作上 softmax）。策略自己的价值头照常训练（两臂一致）。
 - **臂**（均从 224M 续 16M → 240M，配方 = exp106 C：lr 3e-5、α 0.003、gpi 2048、dup_k 8、γ 0.995、λ 0.95、target_kl 0.03、clip 0.2、batch 4096、1 pass、amp_update、**无 adv_clamp**（10-11 测得 5σ 裁剪只动 0.1% 梯度质量，用户同意去掉）；seed 1081）：
   - **OV**：`--oracle_critic v`；
   - **OQ**：`--oracle_critic q`；
@@ -37,7 +37,8 @@ exp67（09-05）把 319 维隐藏信息喂给**共享 trunk** 的价值头、随
 5. **运维**：TRAIN_DONE ⇒ md5 握手 ⇒ 自毁；critic ckpt (`critic_games_*.pt`) 一并镜像。
 
 ## Progress
-（待）
+- [10-12] 实现 + 测试（`tests/test_oracle_rust_parity.py` 3 项：Rust/Python oracle 向量 120 局含中断态逐槽相等、VecEnv 行一致性、critic 形状/盲控制/all-action 优势恒等式）+ 本机冒烟（V / Q / 盲 Q 各 4 迭代）：
+  critic 参数 2.8–3.0M；无闸门时 Q 一激活 KL 0.002→0.038（归一化噪声）⇒ 加质量闸门，再冒烟 KL 保持 0.002、`oracle/active`=0 直到 EV 追上。本机吞吐比纯策略慢 ≈25–50%（critic 前向 + 2 pass）。
 
 ## Results
 （待）
