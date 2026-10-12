@@ -55,7 +55,10 @@ exp67（09-05）把 319 维隐藏信息喂给**共享 trunk** 的价值头、随
   | OQ | **0.088** | 0.101 | 间歇（83%） | 0.005–0.006 | **0.273 → 0.202** |
   | BQ | **0.085** | 0.101 | 间歇（37–57%） | 0.004–0.005 | **0.273 → 0.206** |
   ①**判据 1（信息）已失败**：oracle Q 比盲 Q 只多 0.001–0.003 EV（门槛 +5 pp）；oracle V 甚至低于策略自身的盲头。exp67 的"隐藏信息不增加可解释方差"在独立、trunk 预训练、2 pass 的 critic 上**复现**。
-  ②**Q 模式的尺度问题**：Q 优势 std 只有盲 GAE 优势的 1.9%（`adv_std_ratio`），按自身 std 归一化后 100 分级的动作差被放大成单位尺度的推力，策略 100 迭代内 H 0.27→0.20，与 exp105 熵塌缩的损伤模式同形；且闸门在 0.08 阈值附近来回翻转（优势来源交替）。新增 `--oracle_adv_norm blind`（按盲 GAE 优势 std 缩放 ⇒ 单位真实价值的步长与盲配方一致，只有噪声不同）。
+  ②**Q 模式的尺度问题**：Q 优势 std 只有盲 GAE 优势的 1.9%（`adv_std_ratio`），按自身 std 归一化后 100 分级的动作差被放大成单位尺度的推力，策略 100 迭代内 H 0.27→0.20，与 exp105 熵塌缩的损伤模式同形；且闸门在 0.08 阈值附近来回翻转（优势来源交替）。新增 `--oracle_adv_norm blind`（按盲 GAE 优势 std 缩放 ⇒ 单位真实价值的步长与盲配方一致，只有噪声不同）；冒烟激活后 KL 0.002–0.003、H 0.29–0.31 稳定。
+- [10-11 22:50 PDT] **用户裁决：停 OV/OQ（oracle 信息判据 1 失败 ⇒ H0），BQ 修正后重发**。OV/OQ 工件（latest.pt、critic_latest.pt、train_log）镜像到 `exp108_{OV,OQ}_v2/` 后终止 pod（v1+v2 合计 ≈$1.5）。
+  **BQ v3**：`--oracle_critic q --oracle_blind --oracle_init_from_policy --oracle_adv_norm blind --oracle_gate_margin 0.03`（EV 0.085 vs 盲头 0.101，0.02 的 margin 会在阈值上翻转），其余不变。
+  问题改写为：**all-action Q 优势（独立 Q critic，无 oracle）是否是纯血降方差杠杆**——对照 exp106 C/C′，判据同主判据 2（BQ − mean(C,C′) ≥ +0.5 pp 且点差 > 0）。
 
 ## Results
 （待）
