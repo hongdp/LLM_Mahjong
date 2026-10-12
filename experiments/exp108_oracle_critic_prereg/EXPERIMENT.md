@@ -1,7 +1,7 @@
 # exp108 — 独立 oracle critic（V / Q）在纯血 PPO 上重测
 
 - **日期**：2026-10-12 预注册  **状态**：prereg
-- **Git**：（发射前填）
+- **Git**：`5a28dc1`（实现 + 闸门）；repo.tgz md5 `8f9879d8…`
 - **Env**：纯血线；Rust 引擎镜像自对弈；`cnn_l_v3r` 策略从 `exp102_A/games_final.pt`（224M）`--resume`；RunPod Secure RTX 4090
 - **用户指示**：2026-10-11 "把 oracle Q 和 V 都在纯血 PPO 上分离开重测一遍"
 
@@ -39,6 +39,9 @@ exp67（09-05）把 319 维隐藏信息喂给**共享 trunk** 的价值头、随
 ## Progress
 - [10-12] 实现 + 测试（`tests/test_oracle_rust_parity.py` 3 项：Rust/Python oracle 向量 120 局含中断态逐槽相等、VecEnv 行一致性、critic 形状/盲控制/all-action 优势恒等式）+ 本机冒烟（V / Q / 盲 Q 各 4 迭代）：
   critic 参数 2.8–3.0M；无闸门时 Q 一激活 KL 0.002→0.038（归一化噪声）⇒ 加质量闸门，再冒烟 KL 保持 0.002、`oracle/active`=0 直到 EV 追上。本机吞吐比纯策略慢 ≈25–50%（critic 前向 + 2 pass）。
+- [10-11 20:28 PDT] 用户批三臂。**Secure 4090 全部 Out**（含不限 vCPU），改 **Secure RTX A5000 $0.27/h**（CA-MTL-1，9 vCPU，CUDA 13.0，库存 Low 但三台都拿到）：
+  OV `dnqt8sgfr5xmn1` 63.141.33.157:22022 / OQ `flq63kqcieg69r` 63.141.33.146:22041 / BQ `6ha8z3a27rc2vf` 69.30.85.237:22080。
+  纯血线权重按 09-01 安全分层本可上 community，但 community 坏宿主抽奖费时，A5000 Secure 更稳。预计吞吐 ≈300–450 局/s ⇒ 16M ≈ 10–15 h ≈ **$3–4/臂，三臂 ≈ $10**（上限 $20 不变）。
 
 ## Results
 （待）
