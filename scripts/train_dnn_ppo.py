@@ -349,6 +349,11 @@ def main():
                     help="exp108: initialise the separate critic's trunk (stem/blocks/scalar_fc) from the policy "
                          "checkpoint so it starts with trained features (a from-scratch critic sat at EV~0 for "
                          "0.7M games on 2026-10-11); heads stay fresh, training stays separate")
+    ap.add_argument("--oracle_adv_norm", choices=["self", "blind"], default="self",
+                    help="exp108 Q mode: 'self' z-scores the Q advantage by its own std (its std is ~2%% of the "
+                         "blind GAE std, so a 100-point action gap becomes a unit-scale push: H 0.27->0.20 in 100 "
+                         "iterations on 2026-10-11); 'blind' divides by the blind GAE advantage std instead, so the "
+                         "policy step per unit of true value equals the blind recipe and only the noise differs")
     ap.add_argument("--oracle_gate_margin", type=float, default=0.02,
                     help="advantages switch to the oracle critic only once its batch EV >= the policy's own "
                          "value-head EV minus this margin (and after --oracle_warmup_iters); re-checked every iteration")
@@ -848,9 +853,13 @@ def main():
             o_stats["adv_std_ratio"] = float(q_.std() / (b_.std() + 1e-8))
             o_stats["adv_corr"] = float(torch.corrcoef(torch.stack([b_, q_]))[0, 1])
             if oracle_active:
+                blind_std = float(adv_raw[idx_keep].std()) + 1e-8
                 adv_raw = o_qadv
         adv = ((adv_raw - adv_raw[idx_keep].mean())
                / (adv_raw[idx_keep].std() + 1e-8))
+        if (o_stats is not None and args.oracle_critic == "q" and oracle_active and args.oracle_adv_norm == "blind"):
+            adv = (adv_raw - adv_raw[idx_keep].mean()) / blind_std
+            o_stats["adv_scale_used"] = float(adv[idx_keep].std())
         if args.adv_clamp:
             adv = adv.clamp(-args.adv_clamp, args.adv_clamp)
 
