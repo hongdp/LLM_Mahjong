@@ -112,6 +112,14 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
         variant = "v3r"
     if variant not in ("v1r", "v3r", "v3s"):
         raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s only)")
+    # exp108 separate oracle critic: per observe() round the 319-dim privileged vector of every pending
+    # row (VecEnv.oracle_info), indexed per (slot, seed, seat) like the fold log; finished episodes get
+    # e["cfeats"] [T, 319] float16. Critic-only — the policy never sees it (see oracle_critic.py).
+    oracle = None
+    if cfg.get("oracle_feats"):
+        if fold is not None:
+            raise SystemExit("collect_rust: oracle_feats with the fold option is not supported (episode rewrite)")
+        oracle = {"rounds": [], "log": {}, "prev": None}
     # exp89 style-conditioned population: per seed, each seat draws a reward style
     # (tau_d deal-in penalty, tau_a win bonus) from the prior; seeds are shared by the
     # dup_k replicas so the (seed, seat) group baseline still compares like with like.
@@ -216,6 +224,13 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                 P = torch.from_numpy(planes).to(dev).view(n, -1, 34).float().div_(q)
                 S = torch.from_numpy(scalars).to(dev)
                 M = torch.from_numpy(mask).to(dev)
+                if oracle is not None:
+                    o_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
+                    oracle["rounds"].append(np.asarray(env.oracle_info(), dtype=np.float16))
+                    rid_o = len(oracle["rounds"]) - 1
+                    olog = oracle["log"]
+                    for i, key in enumerate(zip(np.asarray(gids).tolist(), o_seed[np.asarray(gids)].tolist(), np.asarray(seats).tolist())):
+                        olog.setdefault(key, []).append((rid_o, i))
                 if noise is not None:
                     slot_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
                     fresh = np.nonzero((slot_seed != noise["prev_seed"]) & (slot_seed >= 0))[0]
@@ -337,6 +352,16 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
             if fold is not None:
                 for gm in new_games:
                     _rewrite_fold_episodes(gm, fold)
+            if oracle is not None:
+                R = oracle["rounds"]
+                for gm in new_games:
+                    slot, seed_ = int(gm["slot"]), int(gm["seed"])
+                    for e in gm["episodes"]:
+                        ent = oracle["log"].pop((slot, seed_, int(e["key"][1])), None)
+                        if ent is None or len(ent) != len(e["actions"]):
+                            raise RuntimeError(f"oracle_feats: step log mismatch slot {slot} seed {seed_} seat {e['key'][1]}: "
+                                               f"{0 if ent is None else len(ent)} logged vs {len(e['actions'])} recorded")
+                        e["cfeats"] = np.stack([R[r][w] for r, w in ent])
             games.extend(new_games)
     episodes, results = [], []
     agg = new_agg()

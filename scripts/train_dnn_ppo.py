@@ -334,6 +334,22 @@ def main():
     ap.add_argument("--reset_optimizer", action="store_true",
                     help="exp106: on --resume keep the weights but discard the checkpoint's Adam "
                          "moments (warm restart) — what the exp103 widening did implicitly")
+    ap.add_argument("--oracle_critic", choices=["none", "v", "q"], default="none",
+                    help="exp108: SEPARATE critic network fed the 319-dim oracle vector (Rust engine only): "
+                         "v = asymmetric V(s) replaces the policy's V in GAE; q = Q(s,a) gives the all-action "
+                         "advantage Q(s,a) - sum_a' pi(a'|s) Q(s,a'). The policy never sees the oracle input")
+    ap.add_argument("--oracle_blind", action="store_true",
+                    help="exp108 control: same separate critic, oracle input zeroed")
+    ap.add_argument("--oracle_lr", type=float, default=1e-4)
+    ap.add_argument("--oracle_epochs", type=int, default=2, help="critic passes over each iteration's batch")
+    ap.add_argument("--oracle_batch", type=int, default=4096)
+    ap.add_argument("--oracle_warmup_iters", type=int, default=200,
+                    help="iterations (of this run) during which the critic trains but advantages stay blind")
+    ap.add_argument("--oracle_channels", type=int, default=128)
+    ap.add_argument("--oracle_blocks", type=int, default=4)
+    ap.add_argument("--reset_optimizer_every", type=int, default=0,
+                    help="exp107: discard the Adam moments every N games (counted from the run's first "
+                         "iteration; 0 = off). Combine with --reset_optimizer for a reset at the start too")
     ap.add_argument("--ckpt_every", type=int, default=25,
                     help="also snapshot every N iterations, so a restart "
                          "never loses more than that")
@@ -450,6 +466,17 @@ def main():
         print(f"⚓ warm-start {args.init}"
               + (f" (fresh: {skipped})" if skipped else ""), flush=True)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
+    ocrit, oopt = None, None
+    if args.oracle_critic != "none":
+        if args.engine != "rust" or args.critic_feats != "none":
+            raise SystemExit("--oracle_critic needs --engine rust and --critic_feats none")
+        from src.agents.dnn.oracle_critic import SeparateCritic, q_advantage, explained_variance
+        ocrit = SeparateCritic(args.oracle_critic, args.oracle_channels, args.oracle_blocks,
+                               blind=args.oracle_blind).to(dev)
+        oopt = torch.optim.Adam(ocrit.parameters(), lr=args.oracle_lr)
+        print(f"🔮 separate oracle critic: mode={args.oracle_critic} blind={args.oracle_blind} "
+              f"params={sum(q.numel() for q in ocrit.parameters())/1e6:.2f}M lr={args.oracle_lr} "
+              f"epochs={args.oracle_epochs} warmup_iters={args.oracle_warmup_iters}", flush=True)
     n_upd = 0                      # optimizer updates, for --warmup_updates
     ent_alpha = args.entropy_coef      # live coefficient (schedule/auto laws)
     noise_sigma = args.param_noise_sigma0 if args.param_noise_kl > 0 else 0.0
@@ -463,6 +490,11 @@ def main():
                     "games": games, "iter": it, "entropy_alpha": ent_alpha,
                     "param_noise_sigma": noise_sigma,
                     "optimizer": opt.state_dict()}, f"{exp_dir}/{tag}.pt")
+        if ocrit is not None:
+            torch.save({"state_dict": {k: v.cpu() for k, v in ocrit.state_dict().items()},
+                        "optimizer": oopt.state_dict(), "mode": args.oracle_critic, "blind": args.oracle_blind,
+                        "channels": args.oracle_channels, "blocks": args.oracle_blocks, "games": games},
+                       f"{exp_dir}/critic_{tag}.pt")
 
     from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(os.path.join(exp_dir, "tensorboard"))
@@ -500,6 +532,14 @@ def main():
             with torch.no_grad():
                 net.head[-1].bias[FOLD_SLOT].fill_(float(args.fold_init_bias))
             print(f"   fold option: ENTER_FOLD bias set to {args.fold_init_bias}", flush=True)
+        if ocrit is not None:
+            cpath = os.path.join(os.path.dirname(args.resume), "critic_" + os.path.basename(args.resume))
+            if os.path.exists(cpath):
+                cb = torch.load(cpath, map_location=dev)
+                ocrit.load_state_dict(cb["state_dict"]); oopt.load_state_dict(cb["optimizer"])
+                print(f"   oracle critic restored from {cpath}", flush=True)
+            else:
+                print("   oracle critic starts fresh (no critic_*.pt next to the resume checkpoint)", flush=True)
         start_games = int(blob.get("games", 0))
         start_iter = int(blob.get("iter", 0))
         ent_alpha = float(blob.get("entropy_alpha", ent_alpha) or ent_alpha)
@@ -573,6 +613,7 @@ def main():
               f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
               flush=True)
     cfg["houjuu_extra"] = float(args.houjuu_extra)
+    cfg["oracle_feats"] = ocrit is not None
     hbs_base, hbs_anneal = None, None
     if args.houjuu_by_shanten:
         hbs_base = [float(x) for x in args.houjuu_by_shanten.split(",")]
@@ -617,8 +658,17 @@ def main():
     else:
         _ffloor = lambda lg, e: lg
     fold_floor_now = 0.0
+    n_iter_run = 0
+    next_opt_reset = (start_games + args.reset_optimizer_every) if args.reset_optimizer_every > 0 else None
+    n_opt_resets = 0
     while games < args.total_games:
         it += 1
+        n_iter_run += 1
+        if next_opt_reset is not None and games >= next_opt_reset:
+            opt.state.clear()                       # fresh Adam: moments and step counts restart (exp107 periodic warm restart)
+            n_opt_resets += 1
+            next_opt_reset += args.reset_optimizer_every
+            print(f"   periodic warm restart #{n_opt_resets}: Adam moments discarded at games={games}", flush=True)
         t_it0 = time.time()
         iter_s = 0.0 if t_prev_it is None else t_it0 - t_prev_it     # full previous-iteration wall (incl. logging/ckpt)
         t_prev_it = t_it0
@@ -686,6 +736,7 @@ def main():
             dev_mask = old_lp < 500.0                          # collect_rust marks greedy steps with +1000
             old_lp = torch.where(dev_mask, old_lp, old_lp - 1000.0)
         cfe = torch.from_numpy(cat("cfeats")).to(dev) if use_cf else None
+        ocf = torch.from_numpy(cat("cfeats")).to(dev).float() if ocrit is not None else None
         if args.critic_feats == "hazard":
             # per-(game,seat) settled-fact label, broadcast over the episode
             hlab = torch.from_numpy(np.concatenate(
@@ -716,6 +767,26 @@ def main():
                                        mask[i:i + 8192],
                                        cfeats=cfe[i:i + 8192] if use_cf else None)[1]
                 for i in range(0, len(acts), 8192)])
+        o_stats = None
+        if ocrit is not None:
+            oracle_active = n_iter_run > args.oracle_warmup_iters
+            with torch.no_grad():
+                ocrit.eval()
+                o_out = torch.cat([ocrit(planes[i:i + 8192], scal[i:i + 8192], ocf[i:i + 8192]).float()
+                                   for i in range(0, len(acts), 8192)])
+                if args.oracle_critic == "v":
+                    o_pred = o_out
+                else:
+                    pol_logits = torch.cat([net(planes[i:i + 8192], scal[i:i + 8192], mask[i:i + 8192]).float()
+                                            for i in range(0, len(acts), 8192)])
+                    o_qadv, o_vpi = q_advantage(o_out, pol_logits, mask, acts)
+                    o_pred = o_out.gather(1, acts[:, None]).squeeze(1)
+                    del pol_logits
+                o_stats = {"ev": explained_variance(o_pred[idx_keep], rets[idx_keep]),
+                           "blind_ev": float(1 - (rets[idx_keep] - vals[idx_keep]).var() / (rets[idx_keep].var() + 1e-9)),
+                           "active": int(oracle_active)}
+            if args.oracle_critic == "v" and oracle_active:
+                vals = o_out                      # asymmetric baseline + bootstrap for GAE
         if args.gae_lambda is not None:
             # per-episode GAE over the SAME per-step V used elsewhere. Vectorized
             # (2026-09-08): the per-step Python loop cost ~7 s per 2048-deal
@@ -756,6 +827,12 @@ def main():
                         cf_n += 1; cf_sum += a; cf_best += int(a >= 0)
                 cf_fold.extend((e.get("cf_fold_gain") or {}).values())
                 off += n
+        if o_stats is not None and args.oracle_critic == "q":
+            b_, q_ = adv_raw[idx_keep], o_qadv[idx_keep]
+            o_stats["adv_std_ratio"] = float(q_.std() / (b_.std() + 1e-8))
+            o_stats["adv_corr"] = float(torch.corrcoef(torch.stack([b_, q_]))[0, 1])
+            if oracle_active:
+                adv_raw = o_qadv
         adv = ((adv_raw - adv_raw[idx_keep].mean())
                / (adv_raw[idx_keep].std() + 1e-8))
         if args.adv_clamp:
@@ -872,6 +949,21 @@ def main():
             if stop:
                 break
 
+        if ocrit is not None:
+            ocrit.train(); o_losses = []
+            for _ep in range(args.oracle_epochs):
+                order = idx_keep[torch.randperm(n_eff, device=dev)]
+                for lo in range(0, n_eff, args.oracle_batch):
+                    sel = order[lo:lo + args.oracle_batch]
+                    with torch.autocast("cuda", torch.bfloat16, enabled=args.amp_update and dev.type == "cuda"):
+                        out = ocrit(planes[sel], scal[sel], ocf[sel])
+                    out = out.float()
+                    pred = out if args.oracle_critic == "v" else out.gather(1, acts[sel][:, None]).squeeze(1)
+                    oloss = torch.nn.functional.mse_loss(pred, rets[sel])
+                    oopt.zero_grad(set_to_none=True); oloss.backward()
+                    torch.nn.utils.clip_grad_norm_(ocrit.parameters(), 1.0); oopt.step()
+                    o_losses.append(oloss.item())
+            ocrit.eval(); o_stats["loss"] = float(np.mean(o_losses))
         with torch.no_grad():
             net.eval()
             lp1 = torch.log_softmax(_ffloor(net(planes[probe], scal[probe], mask[probe]), fold_floor_now), 1)
@@ -962,6 +1054,10 @@ def main():
             row["dev_steps"] = int(_dv["n_dev"])
             if dev_mask is not None and dev_mask.any():
                 row["dev_adv_std"] = float(adv_raw[dev_mask].std())
+        if o_stats is not None:
+            for k_, v_ in o_stats.items():
+                row[f"oracle/{k_}"] = v_
+                writer.add_scalar(f"oracle/{k_}", v_, games)
         _fd = getattr(collector, "last_fold", None)
         if _fd:
             # exp103 fold option: how often ENTER_FOLD was legal and taken this iteration

@@ -663,6 +663,22 @@ impl VecEnv {
         Ok(PyArray1::from_vec_bound(py, out).reshape([b, 34])?)
     }
 
+    /// exp108: per pending row (observe() order) the 319-dim oracle critic vector [B, 319]
+    /// (opponents' hidden hands / waits / shanten, live wall, hidden indicators). Critic only.
+    fn oracle_info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+        let b = self.total_rows();
+        let d = crate::oracle::ORACLE_DIM;
+        let mut out = vec![0f32; b * d];
+        let mut i = 0usize;
+        for g in self.active.iter().flatten() {
+            for r in g.rows.iter() {
+                crate::oracle::oracle_vec(&g.table, r.seat, &mut out[i * d..(i + 1) * d]);
+                i += 1;
+            }
+        }
+        Ok(PyArray1::from_vec_bound(py, out).reshape([b, d])?)
+    }
+
     /// exp96: per pending row (observe() order) the genbutsu mask [B, 34] — tiles safe against
     /// EVERY opponent in riichi (their own river + anything discarded after their riichi) — and
     /// info [B, 2] = (opponents in riichi, own shanten; -9 when nobody is in riichi, not computed).
