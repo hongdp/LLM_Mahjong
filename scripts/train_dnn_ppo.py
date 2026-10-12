@@ -345,6 +345,10 @@ def main():
     ap.add_argument("--oracle_batch", type=int, default=4096)
     ap.add_argument("--oracle_warmup_iters", type=int, default=200,
                     help="iterations (of this run) during which the critic trains but advantages stay blind")
+    ap.add_argument("--oracle_init_from_policy", action="store_true",
+                    help="exp108: initialise the separate critic's trunk (stem/blocks/scalar_fc) from the policy "
+                         "checkpoint so it starts with trained features (a from-scratch critic sat at EV~0 for "
+                         "0.7M games on 2026-10-11); heads stay fresh, training stays separate")
     ap.add_argument("--oracle_gate_margin", type=float, default=0.02,
                     help="advantages switch to the oracle critic only once its batch EV >= the policy's own "
                          "value-head EV minus this margin (and after --oracle_warmup_iters); re-checked every iteration")
@@ -537,6 +541,11 @@ def main():
             print(f"   fold option: ENTER_FOLD bias set to {args.fold_init_bias}", flush=True)
         if ocrit is not None:
             cpath = os.path.join(os.path.dirname(args.resume), "critic_" + os.path.basename(args.resume))
+            if args.oracle_init_from_policy and not os.path.exists(cpath):
+                trunk = {k: v for k, v in net.state_dict().items() if k.startswith(("stem.", "blocks.", "scalar_fc."))}
+                res = ocrit.load_state_dict(trunk, strict=False)
+                print(f"   oracle critic trunk initialised from the policy ({len(trunk)} tensors; "
+                      f"fresh: {len(res.missing_keys)} tensors)", flush=True)
             if os.path.exists(cpath):
                 cb = torch.load(cpath, map_location=dev)
                 ocrit.load_state_dict(cb["state_dict"]); oopt.load_state_dict(cb["optimizer"])
