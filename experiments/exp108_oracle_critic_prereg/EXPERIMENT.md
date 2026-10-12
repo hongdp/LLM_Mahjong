@@ -59,6 +59,10 @@ exp67（09-05）把 319 维隐藏信息喂给**共享 trunk** 的价值头、随
 - [10-11 22:50 PDT] **用户裁决：停 OV/OQ（oracle 信息判据 1 失败 ⇒ H0），BQ 修正后重发**。OV/OQ 工件（latest.pt、critic_latest.pt、train_log）镜像到 `exp108_{OV,OQ}_v2/` 后终止 pod（v1+v2 合计 ≈$1.5）。
   **BQ v3**：`--oracle_critic q --oracle_blind --oracle_init_from_policy --oracle_adv_norm blind --oracle_gate_margin 0.03`（EV 0.085 vs 盲头 0.101，0.02 的 margin 会在阈值上翻转），其余不变。
   问题改写为：**all-action Q 优势（独立 Q critic，无 oracle）是否是纯血降方差杠杆**——对照 exp106 C/C′，判据同主判据 2（BQ − mean(C,C′) ≥ +0.5 pp 且点差 > 0）。
+- [10-11 23:30 PDT] **BQ v3 预热后（350 迭代）**：闸门稳定放行（active 1.00）、KL 0.002、EV_q 0.084 vs 盲头 0.102；但 **pg_loss ≈ 0（|pg| 0.00005 vs 盲 0.001）、H 0.27 → 0.33 单调上行**。
+  解释：按盲 std 缩放后 Q 优势只有 0.02 的量级，策略梯度项被 α=0.003 的熵项压过——盲配方里 H≈0.28 的平衡其实是"噪声优势的自我锐化 + 真实信号" vs α，去掉噪声后锐化项消失，熵只能往上漂。
+  ⇒ 两种缩放都不"公平"：自归一化（v2）推力 50×、熵塌缩；盲 std 缩放（v3）推力不足、熵发散。正确做法是**固定熵水平、放开 α**：v4 = 自归一化 + 训练器现成的对偶熵控制器（`--entropy_auto --entropy_floor 0.28`，= exp106 C/C′ 的均值水平，`--entropy_coef 0.003` 初值，dual_lr 0.1），其余不变。
+  本机冒烟 10 迭代：激活后 KL 0.011–0.021（target 0.03 内）、pg −0.03、H 0.25–0.30、α 开始响应。记录偏离：BQ 的 α 不再是常数（对照 C/C′ 为常数 0.003），熵水平匹配、更新预算（target_kl/clip）相同。v3 日志归档 `exp108_BQ_v3_blindnorm/`。
 
 ## Results
 （待）
