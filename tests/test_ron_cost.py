@@ -97,3 +97,63 @@ def test_vecenv_ron_cost_plumbing():
         # interrupt rows (no discard legal) carry zeros
         disc_legal = e["mask"].reshape(len(e["actions"]), -1, TILE_TYPES)[:, [TYPE_TO_ID["discard"], TYPE_TO_ID["discard0"]], :].any((1, 2))
         assert not e["ron_cost"][~disc_legal].any()
+
+
+def test_python_ron_costs_match_rust_under_policy_play():
+    """Python-engine `ron_costs` (used by the exp109 judge) == Rust `Table.ron_costs` on the same lockstep states."""
+    import os, torch
+    from src.agents.dnn.encoder import legal_mask
+    from src.agents.dnn.oracle_features import ron_costs as py_ron
+    from src.tasks.mahjong.claims import _resolve_claims
+    from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
+    from scripts.run_elo_league import load_dnn
+    ck = "/home/hongdp/Workspace/LLM_Mahjong/experiments/exp88_Q1x/games_final.pt"
+    if not os.path.exists(ck) or not torch.cuda.is_available():
+        pytest.skip("needs a trained cnn_m_v3r checkpoint + CUDA")
+    net = load_dnn(ck, "cuda").eval()
+    n_states, n_pos = 0, 0
+    with torch.no_grad():
+        for seed in range(60):
+            random.seed(seed)
+            py = PyMahjongTable(randomize_round=True); py.text_obs = False
+            rs = riichi_rs.Table(seed, True); rng = random.Random(seed + 11)
+            for _ in range(400):
+                if py.finished:
+                    break
+                pid = py.turn
+                acts = py.get_legal_actions(pid)
+                if not acts:
+                    break
+                a_py = py_ron(py, pid); a_rs = np.asarray(rs.ron_costs(pid), dtype=np.float32)
+                assert np.allclose(a_py, a_rs, atol=1e-6), (seed, n_states, np.nonzero(a_py != a_rs)[0][:5], a_py[a_py != a_rs][:5], a_rs[a_py != a_rs][:5])
+                n_states += 1; n_pos += int(a_py.max() > 0)
+                pl, sc = rs.encode(pid, "v3r")
+                P = torch.tensor(pl, device="cuda").view(1, -1, TILE_TYPES); S = torch.tensor(sc, device="cuda").view(1, -1)
+                m, lookup = legal_mask(acts)
+                a = lookup[int(torch.multinomial(torch.softmax(net(P, S, m.view(1, -1).cuda())[0], 0), 1))]
+                _, _, done, info = py.step(pid, a); rs.step(pid, a)
+                if done:
+                    break
+                if not (info.get("discarded") or info.get("chankan")):
+                    continue
+                cands = []
+                for off in range(1, 4):
+                    other = (pid + off) % 4
+                    opts = py.get_interrupt_actions(other)
+                    if len(opts) == 1:
+                        continue
+                    ron = [x for x in opts if "ron" in x]
+                    chosen = ron[0] if ron else opts[rng.randrange(len(opts))]
+                    mm = ACTION_RE.search(chosen)
+                    cands.append({"player_id": other, "parsed": chosen, "type": mm.group(1), "reward": 0.0})
+                executed, done = _resolve_claims(py, cands); rs.resolve_claims([(c["player_id"], c["parsed"]) for c in cands])
+                if done:
+                    break
+                if not executed:
+                    if py.pending_kan:
+                        py.resolve_pending_kan(); rs.resolve_pending_kan()
+                    else:
+                        _, rd = py.advance_turn(); rs.advance_turn()
+                        if rd:
+                            break
+    assert n_states > 1500 and n_pos >= 20, (n_states, n_pos)

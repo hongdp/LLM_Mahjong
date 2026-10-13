@@ -41,6 +41,12 @@ def critic_features(table, pid, mode: str) -> Optional[torch.Tensor]:
             return oracle_features(table, pid)
         except Exception:                 # noqa: BLE001
             return torch.zeros(ORACLE_DIM)
+    if mode == "oracle_ron":              # exp109 judge: oracle vector + engine-exact per-discard ron cost
+        from src.agents.dnn.oracle_features import oracle_ron_features, RON_COST_DIM
+        try:
+            return oracle_ron_features(table, pid)
+        except Exception:                 # noqa: BLE001
+            return torch.zeros(ORACLE_DIM + RON_COST_DIM)
     hand = table.hands[pid]
     n_melds = len(table.melds[pid])
     closed = n_melds == 0                 # proxy: ankan also counts as open
