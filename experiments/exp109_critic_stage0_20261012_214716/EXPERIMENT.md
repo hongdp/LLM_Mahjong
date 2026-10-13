@@ -31,6 +31,14 @@ ckpt 每 100 迭代（`critic_{BQ,OQ,ODQ}_latest.pt`），`metrics.jsonl`，`con
 ## Progress
 - [10-12 21:47 PDT] 冒烟 11 迭代通过（ODQ 由构造 avoid_waits 0.99、wait_gap −5.7k；ODQ ev 0.129 vs BQ 0.112 已多出 1.7 pp）。Rust 对拍套件（table/game/score/rollout/encoder parity）全过，win_result 重构无行为变化。
 - [10-12 21:52 PDT] **发射**：1500 迭代 × 2048 局，本机 4080，PID 2929563，日志 `train.log`、`metrics.jsonl`。
+- [10-12 23:35 PDT] **300 迭代（0.62M 局）在轨**，吞吐 366 局/s（三 critic × 2 pass ≈ 5.5 s + rollout ≈ 5.6 s），1500 迭代预计 ≈4.6 h。最近 6 次诊断均值：
+  | | ev | agree_policy | avoid_waits | wait_gap | top2_gap |
+  |---|---|---|---|---|---|
+  | 策略 | — | — | 0.937 | — | — |
+  | BQ | 0.128 | 0.317 | 0.898 | −59 | 119 |
+  | OQ | 0.135 | 0.325 | **0.920**（−79→−126 渐升） | −106 | 118 |
+  | ODQ | **0.152** | 0.303 | 0.993 | −5750 | 108 |
+  读法：精确放铳项让 ODQ 多解释 ≈2.5 pp 方差；OQ 正在缓慢学待张（avoid +2 pp、gap 翻倍），判据 1 的 +5 pp 还差一半；三者与策略 argmax 的一致率都只有 ≈0.3（exp108 的结构性问题仍在）。继续到 1500。
 
 ## Results
 （待）
