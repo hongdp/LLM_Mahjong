@@ -224,6 +224,9 @@ def collect_parallel(net, n_games: int, cfg: dict, workers: int,
                     if g is not None and g in rec["alts"]:
                         fold[int(step)] = float(rec["alts"][g] - rets[step])
                 ep["cf_adv"], ep["cf_fold_gain"] = adv, fold
+                # exp109 judge: the raw per-alternative realised returns {step: {slot: R}} (same wall, same policy)
+                ep["cf_alts"] = {int(step): {int(s): float(r) for s, r in rec["alts"].items()}
+                                 for step, rec in recs.items() if rec["alts"] and step < len(rets)}
                 n_cf += len(adv)
         episodes.extend(game["episodes"])
         results.append(game["result"])
