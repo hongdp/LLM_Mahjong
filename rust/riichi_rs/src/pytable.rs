@@ -164,6 +164,8 @@ impl PyTable {
         (planes, scalars)
     }
     fn potential(&self, pid: usize) -> f64 { crate::encoder::potential(&self.t, pid) }
+    /// exp109: per-34-tile immediate ron cost (reward units) if `pid` discarded it now.
+    fn ron_costs(&self, pid: usize) -> Vec<f32> { self.t.ron_costs(pid).to_vec() }
     /// exp108: 319-dim oracle critic vector for `pid` (parity with oracle_features.py).
     fn oracle(&self, pid: usize) -> Vec<f32> {
         let mut f = vec![0f32; crate::oracle::ORACLE_DIM];

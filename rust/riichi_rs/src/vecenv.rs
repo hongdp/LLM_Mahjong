@@ -663,6 +663,23 @@ impl VecEnv {
         Ok(PyArray1::from_vec_bound(py, out).reshape([b, 34])?)
     }
 
+    /// exp109: per pending row (observe() order) the immediate ron cost [B, 68] of discarding each tile
+    /// ([0:34] plain, [34:68] red five; reward units; zeros on interrupt rows / nothing to ron). Critic only.
+    fn ron_cost_info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+        let b = self.total_rows();
+        let mut out = vec![0f32; b * 68];
+        let mut i = 0usize;
+        for g in self.active.iter().flatten() {
+            for r in g.rows.iter() {
+                if !r.interrupt {
+                    out[i * 68..(i + 1) * 68].copy_from_slice(&g.table.ron_costs(r.seat));
+                }
+                i += 1;
+            }
+        }
+        Ok(PyArray1::from_vec_bound(py, out).reshape([b, 68])?)
+    }
+
     /// exp108: per pending row (observe() order) the 319-dim oracle critic vector [B, 319]
     /// (opponents' hidden hands / waits / shanten, live wall, hidden indicators). Critic only.
     fn oracle_info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f32>>> {
