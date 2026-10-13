@@ -29,7 +29,8 @@ ckpt 每 100 迭代（`critic_{BQ,OQ,ODQ}_latest.pt`），`metrics.jsonl`，`con
 4. 健康：critic 损失单调不发散；吞吐 ≥ 800 局/s（4080）。
 
 ## Progress
-（待）
+- [10-12 21:47 PDT] 冒烟 11 迭代通过（ODQ 由构造 avoid_waits 0.99、wait_gap −5.7k；ODQ ev 0.129 vs BQ 0.112 已多出 1.7 pp）。Rust 对拍套件（table/game/score/rollout/encoder parity）全过，win_result 重构无行为变化。
+- [10-12 21:52 PDT] **发射**：1500 迭代 × 2048 局，本机 4080，PID 2929563，日志 、。
 
 ## Results
 （待）
