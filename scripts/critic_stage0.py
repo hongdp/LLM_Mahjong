@@ -12,9 +12,11 @@ training on it (so they are out-of-sample) every --diag_every iterations. Checkp
 """
 from __future__ import annotations
 
-import argparse, json, os, time
+import argparse, json, os, sys, time
 import numpy as np
 import torch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.dnn.encoder import TILE_TYPES, TYPE_TO_ID
 from src.agents.dnn.oracle_critic import SeparateCritic, explained_variance
