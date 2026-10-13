@@ -334,6 +334,11 @@ def main():
     ap.add_argument("--reset_optimizer", action="store_true",
                     help="exp106: on --resume keep the weights but discard the checkpoint's Adam "
                          "moments (warm restart) — what the exp103 widening did implicitly")
+    ap.add_argument("--ron_term", type=float, default=0.0,
+                    help="exp110: all-action control variate from the engine-exact immediate ron cost c(s,h,a) "
+                         "(Rust VecEnv.ron_cost_info): adds sum_a pi(a|s)(-c(s,h,a)) - ratio_t (-c(s,h,a_t)) to the "
+                         "PPO surrogate (zero expected gradient, cancels the deal-in noise of the sampled advantage). "
+                         "Scaled by the batch advantage std like the GAE advantage; coefficient 1.0 = exact; 0 = off")
     ap.add_argument("--oracle_critic", choices=["none", "v", "q"], default="none",
                     help="exp108: SEPARATE critic network fed the 319-dim oracle vector (Rust engine only): "
                          "v = asymmetric V(s) replaces the policy's V in GAE; q = Q(s,a) gives the all-action "
@@ -631,6 +636,7 @@ def main():
               flush=True)
     cfg["houjuu_extra"] = float(args.houjuu_extra)
     cfg["oracle_feats"] = ocrit is not None
+    cfg["ron_cost"] = args.ron_term > 0
     hbs_base, hbs_anneal = None, None
     if args.houjuu_by_shanten:
         hbs_base = [float(x) for x in args.houjuu_by_shanten.split(",")]
@@ -754,6 +760,10 @@ def main():
             old_lp = torch.where(dev_mask, old_lp, old_lp - 1000.0)
         cfe = torch.from_numpy(cat("cfeats")).to(dev) if use_cf else None
         ocf = torch.from_numpy(cat("cfeats")).to(dev).float() if ocrit is not None else None
+        ron_full = None
+        if args.ron_term > 0:
+            from scripts.critic_stage0 import ron_cost_full as _rcf
+            ron_full = _rcf(torch.from_numpy(cat("ron_cost")).to(dev).float(), mask)      # [N,374] cost >= 0, return units
         if args.critic_feats == "hazard":
             # per-(game,seat) settled-fact label, broadcast over the episode
             hlab = torch.from_numpy(np.concatenate(
@@ -855,6 +865,7 @@ def main():
             if oracle_active:
                 blind_std = float(adv_raw[idx_keep].std()) + 1e-8
                 adv_raw = o_qadv
+        adv_std_used = float(adv_raw[idx_keep].std()) + 1e-8
         adv = ((adv_raw - adv_raw[idx_keep].mean())
                / (adv_raw[idx_keep].std() + 1e-8))
         if (o_stats is not None and args.oracle_critic == "q" and oracle_active and args.oracle_adv_norm == "blind"):
@@ -867,6 +878,7 @@ def main():
         t_upd0 = time.time()
         pack_s = t_upd0 - t_roll0 - rollout_s      # batch packing + value forward + GAE (perf 2026-09-09)
         stop, passes, kls, closs, vloss, hloss, bkls = False, 0, [], [], [], [], []
+        ron_stats = {"exp": [], "samp": []}
         bkl_frac = []
         aloss, asep = [], []                  # exp69 aux waits BCE / positive-negative separation
         for ep in range(args.ppo_epochs):
@@ -891,6 +903,13 @@ def main():
                 unclipped = ratio * a
                 clipped = ratio.clamp(1 - args.clip_eps, 1 + args.clip_eps) * a
                 pg = -torch.min(unclipped, clipped).mean()
+                if ron_full is not None:
+                    # exp110 control variate: analytic all-action immediate-ron term minus its sampled counterpart
+                    cf_ = ron_full[sel] / adv_std_used
+                    exp_cost = (logp.exp() * cf_).sum(1)                                   # sum_a pi_theta(a|s) c(s,h,a)
+                    samp_cost = ratio * cf_.gather(1, acts[sel][:, None]).squeeze(1)       # ratio_t c(s,h,a_t)
+                    pg = pg + args.ron_term * (exp_cost - samp_cost).mean()                # maximise -(exp - samp)
+                    ron_stats["exp"].append(float(exp_cost.mean() * adv_std_used)); ron_stats["samp"].append(float(samp_cost.detach().mean() * adv_std_used))
                 safe = torch.where(torch.isfinite(logp), logp, torch.zeros_like(logp))
                 ent = -(logp.exp() * safe).sum(1).mean()
                 vl = torch.nn.functional.mse_loss(v, rets[sel])
@@ -1079,6 +1098,14 @@ def main():
             row["dev_steps"] = int(_dv["n_dev"])
             if dev_mask is not None and dev_mask.any():
                 row["dev_adv_std"] = float(adv_raw[dev_mask].std())
+        if ron_full is not None:
+            ex_rows = (ron_full[idx_keep] > 0).any(1)
+            row["ron/frac_rows"] = float(ex_rows.float().mean())
+            row["ron/mean_cost_taken"] = float(ron_full[idx_keep].gather(1, acts[idx_keep][:, None]).mean())
+            row["ron/expected_cost_pi"] = float(np.mean(ron_stats["exp"])) if ron_stats["exp"] else 0.0
+            row["ron/sampled_cost"] = float(np.mean(ron_stats["samp"])) if ron_stats["samp"] else 0.0
+            for k_ in ("ron/frac_rows", "ron/mean_cost_taken", "ron/expected_cost_pi", "ron/sampled_cost"):
+                writer.add_scalar(k_, row[k_], games)
         if o_stats is not None:
             for k_, v_ in o_stats.items():
                 row[f"oracle/{k_}"] = v_
