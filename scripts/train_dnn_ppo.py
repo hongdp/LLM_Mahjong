@@ -659,7 +659,13 @@ def main():
         cfg["hanchan"] = True
         cfg["hanchan_pure"] = bool(args.hanchan_pure)
         cfg["hanchan_credit"] = args.hanchan_credit
-        cfg["hanchan_w_path"] = args.hanchan_w_path if args.hanchan_credit in ("w", "wpure") else None
+        if args.hanchan_credit == "wpure":
+            # exp112: pure self-play W; an absent/missing path means the analytic rank-uma potential only
+            cfg["hanchan_w_path"] = args.hanchan_w_path if (args.hanchan_w_path and os.path.exists(args.hanchan_w_path)
+                                                            and "w_resid" not in os.path.basename(args.hanchan_w_path)) else None
+            print(f"   wpure W: {cfg['hanchan_w_path'] or 'analytic rank-uma only (no MLP residual)'}", flush=True)
+        else:
+            cfg["hanchan_w_path"] = args.hanchan_w_path if args.hanchan_credit == "w" else None
         if not args.hanchan_pure and not args.league:
             raise SystemExit("--hanchan (four-seat table) needs --league; use --hanchan_pure for mirror self-play")
         print(f"🀄 hanchan mode: {'pure mirror (4 learner seats)' if args.hanchan_pure else 'exp55-D four-seat table'}, "
@@ -1110,6 +1116,11 @@ def main():
             for k_, v_ in o_stats.items():
                 row[f"oracle/{k_}"] = v_
                 writer.add_scalar(f"oracle/{k_}", v_, games)
+        _wp = getattr(collector, "last_wpure", None)
+        if _wp:
+            # exp112: pure-W credit diagnostics (points), per iteration
+            row["wpure/mean_abs_credit_pts"] = float(_wp["mean_abs_credit_pts"]); row["wpure/paid"] = int(_wp["paid"]); row["wpure/rolled"] = int(_wp["rolled"])
+            writer.add_scalar("wpure/mean_abs_credit_pts", row["wpure/mean_abs_credit_pts"], games)
         _fd = getattr(collector, "last_fold", None)
         if _fd:
             # exp103 fold option: how often ENTER_FOLD was legal and taken this iteration

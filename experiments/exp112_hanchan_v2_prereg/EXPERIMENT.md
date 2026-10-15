@@ -35,7 +35,9 @@ W 从**本策略自对弈**的（局间状态 → 终局 uma）拟合，零人�
 6. 运维：TRAIN_DONE ⇒ md5 握手 ⇒ 自毁；拉取循环主 checkout 绝对路径。
 
 ## Progress
-（待）
+- [10-15] 基建就位（提交 `0b42cd3`+）：Rust v3rh 编码（与 Python 逐位一致，parity 测试扩展）、DealFact 场况/结局 + `deal_ends` 导出、`collect_rust --hanchan_credit wpure`（主机侧 ΔW 重写，Σ奖励 = uma − W(局首) 不变量测试通过）、`cnn_l_v3rh`（v3r ckpt widening 加载）、`scripts/fit_pure_w.py`、`scripts/hanchan_eval.py`（exp83/84/91 口径）、`scripts/hanchan_behavior_grid.py`。
+- [10-15] **起点行为分格（exp106 R 240M，2000 场镜像半庄，T=0）**：放铳率 E/top2 0.151、E/bot2 0.143、S/top2 **0.151**、S/bot2 0.143；立直率 S/top2 0.304 最高——领先时推得更凶，完全没有顺位意识（判据 3 的起点）。
+- [10-15] 纯 W 拟合中：exp106 R 镜像半庄 300k 场（≈12M 行，129 场/s）。
 
 ## Results
 （待）
