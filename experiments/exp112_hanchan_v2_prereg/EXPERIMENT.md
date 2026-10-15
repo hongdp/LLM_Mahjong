@@ -48,6 +48,7 @@ W 从**本策略自对弈**的（局间状态 → 终局 uma）拟合，零人�
   **处置（守上限，用户不在线）**：两臂 pod 上各挂 `cap_watch.sh`，到 **1.5M 场（games_241500000.pt）即止**（写 TRAIN_DONE → 正常握手 → 自毁；`touch /workspace/NO_CAP` 可解除）。1.5M 场 ≈ 8.3 h ≈ $7.4/臂 ⇒ 总计 ≈ $16（含首发/崩溃浪费 ≈$1）。判决窗口相应改为 **240.5/241.0/241.5M 三个里程碑**（而非 4 个）；1.5M 场 ≈ 12M 局仍是此前任何半庄尝试（≤1M 场）的 1.5×，也满足预注册第 3 条"≤1M 场"的原始规模。若用户追加预算到 ≈$30，解除 cap 跑满 3M。
 - [10-14 23:31 PDT] **N 臂崩溃**：第 3 次迭代采样时 `multinomial` 报 "probability tensor contains inf/nan"（CUDA device-side assert，`rust_rollout.py:338`），即第 2 次更新后策略 logits 出现 NaN；前两次迭代 kl 0.0035/0.0019、EV +0.047/+0.083 正常。同代码 H 臂（wpure 信用）同期 40+ 迭代正常；N 的 v1（K=256）此前 ~7 分钟数十次迭代也正常。pull loop 按 TRAIN_FAILED 握手 → pod `bmo8dqo6hfemx8` 自毁（该 pod 之前 ssh 已多次 "closed by remote host"，疑宿主不稳）。
   **处置**：原配置原样重发 N 于新 Secure 4090 `kbgkqpf97ozvze`（US-NC-1，16 vCPU/cgroup 13.6，103.196.86.156:48662），06:44:57 UTC 起；本地镜像旧目录改名 `exp112_N_v2crash`、`exp112_pull_N/*_v2crash.*`。**若再次 NaN** ⇒ 不是硬件而是 credit none 的回报尺度（uma±45 reward 单位）在 1024 场/迭代下的更新稳定性问题，届时给两臂加 `--adv_clamp 5` 重发（两臂同改）。H 不受影响继续。
+- [10-15 00:58 PDT] **用户追加预算**：两 pod `touch /workspace/NO_CAP` 解除截停，恢复跑满 **3M 场**，判决窗口回到最后 4 个里程碑（241.5–243M）。预计 H 还需 ≈14.8 h（51.7 场/s）、N ≈10.4 h（73.6 场/s）⇒ 剩余 ≈$22，总计 ≈$31。
 
 ## Results
 （待）
