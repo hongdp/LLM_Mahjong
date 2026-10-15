@@ -26,9 +26,16 @@ def main():
     ap.add_argument("--epochs", type=int, default=6)
     ap.add_argument("--seed0", type=int, default=12_000_000)
     ap.add_argument("--data_out", default=None, help="also save the (X, y, seed) arrays as .npz")
+    ap.add_argument("--from_npz", default=None, help="skip collection; load X/y/base/seed from this .npz")
+    ap.add_argument("--init", default=None, help="continue training from this PlacementValue checkpoint")
+    ap.add_argument("--lr", type=float, default=3e-4)
     args = ap.parse_args()
     from src.agents.dnn.rust_rollout import collect_rust
     from scripts.run_elo_league import load_dnn
+    if args.from_npz:
+        z = np.load(args.from_npz); X, Y, B, S = z["X"], z["y"], z["base"], z["seed"]
+        print(f"loaded {len(Y)} rows from {args.from_npz}", flush=True)
+        return fit(args, X, Y, B, S)
     net = load_dnn(args.policy, "cuda").eval()
     cfg = {"temperature": 1.0, "gamma": 0.995, "games_per_worker": args.games_per_worker,
            "encoder_variant": getattr(net, "encoder_variant", "v3r"), "hanchan": True, "hanchan_pure": True,
@@ -51,10 +58,17 @@ def main():
     X = np.stack(X).astype(np.float32); Y = np.asarray(Y, np.float32); B = np.asarray(B, np.float32); S = np.asarray(S)
     if args.data_out:
         np.savez_compressed(args.data_out, X=X, y=Y, base=B, seed=S)
+    return fit(args, X, Y, B, S)
+
+
+def fit(args, X, Y, B, S):
     hold = (S % 10) == 0
     resid = (Y - B) / 1000.0                                            # residual target in k-points (as exp55)
     dev = torch.device("cuda")
-    model = PlacementValue(d_in=W_DIM).to(dev); opt = torch.optim.Adam(model.parameters(), lr=3e-4)
+    model = PlacementValue(d_in=W_DIM).to(dev)
+    if args.init:
+        model.load_state_dict(torch.load(args.init, map_location=dev)["state_dict"]); print(f"init from {args.init}", flush=True)
+    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     Xt, Rt = torch.from_numpy(X[~hold]).to(dev), torch.from_numpy(resid[~hold]).to(dev)
     Xh, Rh = torch.from_numpy(X[hold]).to(dev), torch.from_numpy(resid[hold]).to(dev)
     # placement labels for the auxiliary head (final rank from uma sign/order is not recoverable per row; use uma bucket)
@@ -75,7 +89,7 @@ def main():
         _, uh = model(Xh); mae = float((uh - Rh).abs().mean().item() * 1000)
     base_mae = float(np.abs(Y[hold] - B[hold]).mean()); zero_mae = float(np.abs(Y[hold]).mean())
     torch.save({"state_dict": {k: v.cpu() for k, v in model.state_dict().items()}, "d_in": W_DIM, "policy": args.policy,
-                "matches": args.matches, "rows": int(len(Y)), "holdout_mae": mae, "rank_uma_mae": base_mae, "zero_mae": zero_mae}, args.out)
+                "matches": args.matches, "init": args.init, "rows": int(len(Y)), "holdout_mae": mae, "rank_uma_mae": base_mae, "zero_mae": zero_mae}, args.out)
     print(json.dumps({"out": args.out, "rows": int(len(Y)), "holdout_mae": mae, "rank_uma_mae": base_mae, "zero_mae": zero_mae,
                       "improvement_vs_rank_uma": round(1 - mae / base_mae, 4)}))
 
