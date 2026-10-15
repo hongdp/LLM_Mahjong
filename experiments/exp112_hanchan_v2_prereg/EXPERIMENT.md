@@ -49,6 +49,7 @@ W 从**本策略自对弈**的（局间状态 → 终局 uma）拟合，零人�
 - [10-14 23:31 PDT] **N 臂崩溃**：第 3 次迭代采样时 `multinomial` 报 "probability tensor contains inf/nan"（CUDA device-side assert，`rust_rollout.py:338`），即第 2 次更新后策略 logits 出现 NaN；前两次迭代 kl 0.0035/0.0019、EV +0.047/+0.083 正常。同代码 H 臂（wpure 信用）同期 40+ 迭代正常；N 的 v1（K=256）此前 ~7 分钟数十次迭代也正常。pull loop 按 TRAIN_FAILED 握手 → pod `bmo8dqo6hfemx8` 自毁（该 pod 之前 ssh 已多次 "closed by remote host"，疑宿主不稳）。
   **处置**：原配置原样重发 N 于新 Secure 4090 `kbgkqpf97ozvze`（US-NC-1，16 vCPU/cgroup 13.6，103.196.86.156:48662），06:44:57 UTC 起；本地镜像旧目录改名 `exp112_N_v2crash`、`exp112_pull_N/*_v2crash.*`。**若再次 NaN** ⇒ 不是硬件而是 credit none 的回报尺度（uma±45 reward 单位）在 1024 场/迭代下的更新稳定性问题，届时给两臂加 `--adv_clamp 5` 重发（两臂同改）。H 不受影响继续。
 - [10-15 00:58 PDT] **用户追加预算**：两 pod `touch /workspace/NO_CAP` 解除截停，恢复跑满 **3M 场**，判决窗口回到最后 4 个里程碑（241.5–243M）。预计 H 还需 ≈14.8 h（51.7 场/s）、N ≈10.4 h（73.6 场/s）⇒ 剩余 ≈$22，总计 ≈$31。
+- [10-15 02:20 PDT] **N 240.5M（50 万场）半庄 vs bc49**：0.3758 ± 0.0140，顺位分布 [0.217, 0.217, 0.252, 0.314]，飞人率 0.314，uma 差 −28.6k/墙；起点 R 为 0.3942 ± 0.0141 / [0.223, 0.214, 0.250, 0.313] / 0.310 ⇒ −1.8 pp，在噪声内，未触早停线（1M 场 < 起点 −5 pp）。N 的熵 0.24→0.16 下降明显（H 0.22→0.20）。H 240.5M 已镜像，等自动评测。
 
 ## Results
 （待）
