@@ -110,8 +110,8 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                 "floor": float(cfg.get("fold_floor", 0.0) or 0.0), "wall": float(cfg.get("fold_floor_wall", 2.0)),
                 "floor_ref": float(cfg.get("fold_floor_ref", 0.01)), "n_legal": 0, "n_raw_above": 0, "raw_p_sum": 0.0}
         variant = "v3r"
-    if variant not in ("v1r", "v3r", "v3s"):
-        raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s only)")
+    if variant not in ("v1r", "v3r", "v3s", "v3rh"):
+        raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s/v3rh only)")
     # exp108 separate oracle critic: per observe() round the 319-dim privileged vector of every pending
     # row (VecEnv.oracle_info), indexed per (slot, seed, seat) like the fold log; finished episodes get
     # e["cfeats"] [T, 319] float16. Critic-only — the policy never sees it (see oracle_critic.py).
@@ -136,8 +136,8 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     if hanchan:
         if not cfg.get("hanchan_pure"):
             raise SystemExit("collect_rust: only --hanchan_pure (mirror) is ported; four-seat league tables need the Python engine")
-        if cfg.get("hanchan_credit", "none") != "none":
-            raise SystemExit("collect_rust: hanchan_credit must be 'none' on the Rust engine (rank/W credits are Python-only)")
+        if cfg.get("hanchan_credit", "none") not in ("none", "wpure"):
+            raise SystemExit("collect_rust: hanchan_credit must be 'none' or 'wpure' on the Rust engine (rank/W credits are Python-only)")
         if cfg.get("shaping"):
             raise SystemExit("collect_rust: PBRS shaping is per-deal and not supported across a hanchan")
         if cfg.get("league") and float(cfg.get("league_frac", 0.0) or 0.0) > 0:
@@ -368,6 +368,14 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                         if oracle["ron"]:
                             e["ron_cost"] = np.stack([R[r][1][w] for r, w in ent])
             games.extend(new_games)
+    if hanchan and cfg.get("hanchan_credit") == "wpure":
+        # exp112: replace the engine's per-deal point deltas + lumped uma by the pure-W telescoping credit
+        from src.agents.dnn.hanchan_credit import PureW, rewrite_wpure
+        wmod = collect_rust.__dict__.setdefault("_wpure", {})
+        key = cfg.get("hanchan_w_path") or ""
+        if key not in wmod:
+            wmod[key] = PureW(cfg.get("hanchan_w_path"), device="cpu")
+        collect_rust.last_wpure = rewrite_wpure(games, wmod[key], float(cfg.get("gamma", 0.995)))
     episodes, results = [], []
     agg = new_agg()
     lg = {}

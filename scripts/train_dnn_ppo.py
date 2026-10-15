@@ -117,7 +117,7 @@ def main():
     ap.add_argument("--hanchan_pure", action="store_true",
                     help="exp70 pure line: --hanchan with FOUR learner copies (mirror self-play over a full "
                          "hanchan, no league/anchor seats); needs no --league")
-    ap.add_argument("--hanchan_credit", choices=["w", "rank", "none"], default="w",
+    ap.add_argument("--hanchan_credit", choices=["w", "rank", "none", "wpure"], default="w",
                     help="per-deal credit in hanchan mode: w = learned placement value (exp55-D, human data), "
                          "rank = analytic rank-uma potential (pure, exp70), none = raw deal points + final uma only")
     ap.add_argument("--league_opp_temp", type=float, default=None,
@@ -659,7 +659,7 @@ def main():
         cfg["hanchan"] = True
         cfg["hanchan_pure"] = bool(args.hanchan_pure)
         cfg["hanchan_credit"] = args.hanchan_credit
-        cfg["hanchan_w_path"] = args.hanchan_w_path if args.hanchan_credit == "w" else None
+        cfg["hanchan_w_path"] = args.hanchan_w_path if args.hanchan_credit in ("w", "wpure") else None
         if not args.hanchan_pure and not args.league:
             raise SystemExit("--hanchan (four-seat table) needs --league; use --hanchan_pure for mirror self-play")
         print(f"🀄 hanchan mode: {'pure mirror (4 learner seats)' if args.hanchan_pure else 'exp55-D four-seat table'}, "
