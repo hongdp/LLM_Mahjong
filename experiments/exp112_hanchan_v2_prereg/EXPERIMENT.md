@@ -37,7 +37,8 @@ W 从**本策略自对弈**的（局间状态 → 终局 uma）拟合，零人�
 ## Progress
 - [10-15] 基建就位（提交 `0b42cd3`+）：Rust v3rh 编码（与 Python 逐位一致，parity 测试扩展）、DealFact 场况/结局 + `deal_ends` 导出、`collect_rust --hanchan_credit wpure`（主机侧 ΔW 重写，Σ奖励 = uma − W(局首) 不变量测试通过）、`cnn_l_v3rh`（v3r ckpt widening 加载）、`scripts/fit_pure_w.py`、`scripts/hanchan_eval.py`（exp83/84/91 口径）、`scripts/hanchan_behavior_grid.py`。
 - [10-15] **起点行为分格（exp106 R 240M，2000 场镜像半庄，T=0）**：放铳率 E/top2 0.151、E/bot2 0.143、S/top2 **0.151**、S/bot2 0.143；立直率 S/top2 0.304 最高——领先时推得更凶，完全没有顺位意识（判据 3 的起点）。
-- [10-15] 纯 W 拟合中：exp106 R 镜像半庄 300k 场（≈12M 行，129 场/s）。
+- [10-15] 纯 W 拟合中：exp106 R 镜像半庄 300k 场（≈12M 行，≈120 场/s）。
+- [10-14 22:40 PDT] **起点半庄基线（exp106 R 240M vs bc49，1200 副复式牌山，seed 59300000，T=0，2.6 min）**：share **0.3942 ± 0.0141**，uma −26.5k/牌山，名次分布 22/21/25/**31**%，被飞率 31%。比此前纯血半庄最高（0.371 集成）高 2 pp——R 本身就是更强的起点；判据 2 的 0.41 相对起点只有 +1.6 pp，**H − N ≥ +3 pp 是主要判据**。
 
 ## Results
 （待）
