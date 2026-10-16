@@ -126,6 +126,15 @@ def main():
     ap.add_argument("--bf16_infer", action="store_true",
                     help="bf16 autocast in the rollout inference server "
                          "(2x-ish on attention archs; logits sampled in fp32)")
+    ap.add_argument("--fast_trunk", action="store_true",
+                    help="exp113: channels-last GEMM trunk for stem+ResBlock CNNs (float64-identical to the "
+                         "cudnn path, tests/test_fast_trunk.py); checkpoints unchanged")
+    ap.add_argument("--compile", action="store_true",
+                    help="exp113: torch.compile the fast trunk (dynamic batch dim); implies --fast_trunk")
+    ap.add_argument("--bf16_rollout", action="store_true",
+                    help="exp113: bf16 autocast for Rust-rollout inference and the pre-update value pass "
+                         "(log-softmax/sampling stay fp32; adds approxKL ~1e-4 vs the 1.4e-3 the BN "
+                         "train/eval mismatch already contributes)")
     ap.add_argument("--tf32", type=int, default=1,
                     help="TF32 matmul for the fp32 update path (default on)")
     ap.add_argument("--gpu_infer", action="store_true",
@@ -590,6 +599,13 @@ def main():
     else:
         save("games_0", 0)
     net.value_detach = bool(args.value_detach)
+    if args.fast_trunk or args.compile:
+        from src.agents.dnn.net import enable_fast_trunk
+        if not (hasattr(net, "stem") and hasattr(net, "blocks") and hasattr(net, "scalar_fc")):
+            raise SystemExit("--fast_trunk/--compile need a stem + ResBlock CnnPolicy arch")
+        enable_fast_trunk(net, compile=args.compile)
+        print(f"🚀 fast trunk (channels-last GEMM){' + torch.compile (dynamic batch)' if args.compile else ''}"
+              f"{'; bf16 rollout inference' if args.bf16_rollout else ''}", flush=True)
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
                temperature=args.temperature, gamma=args.gamma,
                games_per_worker=args.games_per_worker,
@@ -600,7 +616,7 @@ def main():
                gpu_infer=args.gpu_infer, gpu_infer_opponents=args.gpu_infer_opponents,
                infer_max_batch=args.infer_max_batch,
                infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device,
-               bf16_infer=args.bf16_infer,
+               bf16_infer=args.bf16_infer, bf16_rollout=args.bf16_rollout,
                action_space=space_of_arch(args.arch),
                cf_p=args.cf_p, cf_k=args.cf_k, cf_only_exposed=not args.cf_all,
                cf_branch_slots=(args.cf_slots or None))
@@ -795,11 +811,12 @@ def main():
             s0 = torch.where(torch.isfinite(lp0), lp0, torch.zeros_like(lp0))
             ent_before = float(-(lp0.exp() * s0).sum(1).mean())
             # V(s) for the whole batch under the SAMPLING policy
-            vals = torch.cat([
-                net.forward_with_value(planes[i:i + 8192], scal[i:i + 8192],
-                                       mask[i:i + 8192],
-                                       cfeats=cfe[i:i + 8192] if use_cf else None)[1]
-                for i in range(0, len(acts), 8192)])
+            with torch.autocast("cuda", torch.bfloat16, enabled=args.bf16_rollout and dev.type == "cuda"):
+                vals = torch.cat([
+                    net.forward_with_value(planes[i:i + 8192], scal[i:i + 8192],
+                                           mask[i:i + 8192],
+                                           cfeats=cfe[i:i + 8192] if use_cf else None)[1].float()
+                    for i in range(0, len(acts), 8192)])
         o_stats = None
         if ocrit is not None:
             with torch.no_grad():

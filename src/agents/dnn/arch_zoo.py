@@ -365,6 +365,10 @@ ZOO = {
                                      in_scalars=N_SCALARS_V3H, encoder_variant="v3rh"), False),
     "cnn_xl_v3r": (lambda: CnnPolicy(192, 6, in_planes=N_PLANES_V3R,
                                      in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp113 (2026-10-16, pure line order-of-magnitude scale): 384 channels x 12 blocks, 21M params (5.3x cnn_l).
+    # Warm-started function-preservingly from a cnn_l_v3r checkpoint by scripts/net2net_widen.py.
+    "cnn_c384b12_v3r": (lambda: CnnPolicy(384, 12, in_planes=N_PLANES_V3R,
+                                          in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
     # exp103 (2026-10-02, pure line fold option): v3r trunk + in_fold_mode scalar + ENTER_FOLD slot (375).
     # A v3r checkpoint loads through net.load_compatible: zero input column, new head row at bias -6.
     "cnn_m_v3rf": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3F,

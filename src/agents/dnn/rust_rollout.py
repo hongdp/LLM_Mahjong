@@ -215,7 +215,10 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     # with the other env's CPU step was measured 20-30% SLOWER (halved batch per
     # forward, doubled per-round overhead; the forward is only ~30% of a round),
     # and per-call pinned uploads cost more than they save. Single env it stays.
-    with torch.no_grad():
+    # exp113: bf16 autocast for the policy forwards (cfg bf16_rollout); log_softmax runs in fp32 under
+    # autocast's own policy and every recorded logprob is cast .float(), so only the matmuls are bf16.
+    amp = torch.autocast("cuda", torch.bfloat16, enabled=bool(cfg.get("bf16_rollout")) and str(dev).startswith("cuda"))
+    with torch.no_grad(), amp:
         while not env.done():
             planes, scalars, mask, seats, gids = env.observe()
             n = planes.shape[0]

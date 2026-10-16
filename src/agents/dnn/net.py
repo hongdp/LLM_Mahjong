@@ -15,6 +15,50 @@ from src.agents.dnn.encoder import (ACTION_DIM, LEGACY_ACTION_DIM, LEGACY_ACTION
                                     ACTION_TYPES, N_PLANES, N_SCALARS, TILE_TYPES)
 
 
+def _conv3_cl(x: torch.Tensor, conv: nn.Conv1d) -> torch.Tensor:
+    """Conv1d(k=3, pad=1) on a channels-last [B, L, Cin] tensor as ONE GEMM over the stacked
+    neighbours (k = 0, 1, 2). Same parameters as `conv`; float64-identical to conv(x.transpose)."""
+    xp = F.pad(x, (0, 0, 1, 1))
+    xs = torch.cat([xp[:, :-2], xp[:, 1:-1], xp[:, 2:]], dim=2)          # [B, L, 3*Cin]
+    w = conv.weight.permute(0, 2, 1).reshape(conv.weight.shape[0], -1)  # [Cout, 3*Cin], (k, cin) order
+    return F.linear(xs, w, conv.bias)
+
+
+def _bn_cl(x: torch.Tensor, bn: nn.BatchNorm1d) -> torch.Tensor:
+    B, L, C = x.shape
+    if bn.training and bn.track_running_stats and bn.num_batches_tracked is not None:
+        bn.num_batches_tracked.add_(1)      # keep the counter in step with nn.BatchNorm1d's own forward
+    return F.batch_norm(x.reshape(B * L, C), bn.running_mean, bn.running_var, bn.weight, bn.bias,
+                        bn.training or not bn.track_running_stats, bn.momentum, bn.eps).view(B, L, C)
+
+
+def trunk_channels_last(net: nn.Module, planes: torch.Tensor, scalars: torch.Tensor) -> torch.Tensor:
+    """exp113 fast path for the stem + ResBlock trunk: the whole residual stack runs channels-last so every
+    conv is a dense [B*34, 3C] x [3C, C] GEMM (tensor-core friendly; fuses well under torch.compile).
+    Output is laid out exactly like `trunk` ([B, C*34] in (C, L) order, then scalars), so heads,
+    checkpoints and every caller are unchanged. Verified float64-identical in eval and train mode
+    (tests/test_fast_trunk.py)."""
+    x = planes.transpose(1, 2)
+    h = torch.relu(_conv3_cl(x, net.stem))
+    for blk in net.blocks:
+        y = torch.relu(_bn_cl(_conv3_cl(h, blk.c1), blk.n1))
+        y = _bn_cl(_conv3_cl(y, blk.c2), blk.n2)
+        h = torch.relu(h + y)
+    return torch.cat([h.transpose(1, 2).flatten(1), net.scalar_fc(scalars)], dim=1)
+
+
+def enable_fast_trunk(net: nn.Module, compile: bool = False) -> nn.Module:
+    """exp113: switch a stem + ResBlock CnnPolicy to the channels-last GEMM trunk, optionally torch.compile'd
+    (dynamic batch dim: rollout batches change size every step; measured as fast as static shapes).
+    The compiled callable lives in the instance __dict__ (not a submodule), so state_dict / checkpoints
+    are untouched."""
+    net.fast_trunk = True
+    if compile:
+        net.__dict__["_trunk_compiled"] = torch.compile(
+            lambda p, s: trunk_channels_last(net, p, s), dynamic=True)
+    return net
+
+
 class ResBlock(nn.Module):
     def __init__(self, ch):
         super().__init__()
@@ -92,6 +136,9 @@ class MahjongPolicyNet(nn.Module):
         )
 
     def trunk(self, planes: torch.Tensor, scalars: torch.Tensor) -> torch.Tensor:
+        if getattr(self, "fast_trunk", False):
+            fn = self.__dict__.get("_trunk_compiled")          # set by enable_fast_trunk(compile=True)
+            return fn(planes, scalars) if fn is not None else trunk_channels_last(self, planes, scalars)
         h = torch.relu(self.stem(planes))
         h = self.blocks(h).flatten(1)
         return torch.cat([h, self.scalar_fc(scalars)], dim=1)
