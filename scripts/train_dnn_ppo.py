@@ -135,6 +135,10 @@ def main():
                     help="exp113: bf16 autocast for Rust-rollout inference and the pre-update value pass "
                          "(log-softmax/sampling stay fp32; adds approxKL ~1e-4 vs the 1.4e-3 the BN "
                          "train/eval mismatch already contributes)")
+    ap.add_argument("--kl_lr_target", type=float, default=0.0,
+                    help="exp113: per-iteration lr controller on the CLEAN probe KL (eval-mode policy on 2048 probe "
+                         "states before vs after the update; no BN train/eval floor). probe_kl > 1.5x target -> lr/1.5, "
+                         "< target/1.5 -> lr*1.5, multiplier capped at 1 (never above --lr). 0 = off")
     ap.add_argument("--profile_pack", action="store_true",
                     help="exp113: cuda-synchronised sub-timings of the pack stage (concat/H2D, probe+value pass, "
                          "GAE, advantage) logged as pack_parts")
@@ -507,6 +511,7 @@ def main():
               f"params={sum(q.numel() for q in ocrit.parameters())/1e6:.2f}M lr={args.oracle_lr} "
               f"epochs={args.oracle_epochs} warmup_iters={args.oracle_warmup_iters}", flush=True)
     n_upd = 0                      # optimizer updates, for --warmup_updates
+    lr_mult = 1.0                  # exp113 --kl_lr_target controller state (saved in checkpoints)
     ent_alpha = args.entropy_coef      # live coefficient (schedule/auto laws)
     noise_sigma = args.param_noise_sigma0 if args.param_noise_kl > 0 else 0.0
     if args.param_noise_kl > 0 and args.engine != "rust":
@@ -516,7 +521,7 @@ def main():
         torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                     "channels": args.channels, "blocks": args.blocks,
                     "arch": args.arch, "critic_feats": args.critic_feats,
-                    "games": games, "iter": it, "entropy_alpha": ent_alpha,
+                    "games": games, "iter": it, "entropy_alpha": ent_alpha, "lr_mult": lr_mult,
                     "param_noise_sigma": noise_sigma,
                     "optimizer": opt.state_dict()}, f"{exp_dir}/{tag}.pt")
         if ocrit is not None:
@@ -577,6 +582,11 @@ def main():
         start_games = int(blob.get("games", 0))
         start_iter = int(blob.get("iter", 0))
         ent_alpha = float(blob.get("entropy_alpha", ent_alpha) or ent_alpha)
+        if args.kl_lr_target > 0 and blob.get("lr_mult"):
+            lr_mult = float(blob["lr_mult"])
+            for g in opt.param_groups:
+                g["lr"] = args.lr * lr_mult
+            print(f"   kl_lr_target: lr multiplier restored {lr_mult:.3f}", flush=True)
         if args.param_noise_kl > 0 and blob.get("param_noise_sigma"):
             noise_sigma = float(blob["param_noise_sigma"])
         old_log = os.path.join(exp_dir, "train_log.json")
@@ -1050,6 +1060,8 @@ def main():
             lp1 = torch.log_softmax(_ffloor(net(planes[probe], scal[probe], mask[probe]), fold_floor_now), 1)
             s1 = torch.where(torch.isfinite(lp1), lp1, torch.zeros_like(lp1))
             ent_after = float(-(lp1.exp() * s1).sum(1).mean())
+            fin01 = torch.isfinite(lp0) & torch.isfinite(lp1)
+            probe_kl = float((lp0.exp() * torch.where(fin01, lp0 - lp1, torch.zeros_like(lp0))).sum(1).mean())
             ev = float(1 - (rets[idx_keep] - vals[idx_keep]).var()
                        / (rets[idx_keep].var() + 1e-9))
             ret_std = float(rets[idx_keep].std())
@@ -1104,7 +1116,7 @@ def main():
                "pack_s": round(pack_s, 2), "iter_s": round(iter_s, 2),
                **({"pack_parts": pk_parts, "pack_pre": round(pk_t[0] - t_roll0 - rollout_s, 3)} if args.profile_pack else {}),
                "pg_loss": float(np.mean(closs)), "value_loss": float(np.mean(vloss)),
-               "entropy_before": ent_before, "entropy": ent_after,
+               "entropy_before": ent_before, "entropy": ent_after, "probe_kl": probe_kl, "lr_mult": lr_mult,
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
                "explained_var": ev, "win_rate": win,
                "oracle_hide_p": cfg.get("oracle_hide_p"),
@@ -1181,6 +1193,13 @@ def main():
             row["aux_bce"] = float(np.mean(aloss))
             row["aux_sep"] = float(np.mean(asep)) if asep else 0.0
         log.append(row)
+        if args.kl_lr_target > 0:          # exp113: next iteration's lr from this iteration's clean probe KL
+            if probe_kl > 1.5 * args.kl_lr_target:
+                lr_mult = max(lr_mult / 1.5, 0.01)
+            elif probe_kl < args.kl_lr_target / 1.5:
+                lr_mult = min(lr_mult * 1.5, 1.0)
+            for g in opt.param_groups:
+                g["lr"] = args.lr * lr_mult
         for k, v in row.items():
             if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
                 writer.add_scalar(TB_TAG.get(k, k), float(v), games)
