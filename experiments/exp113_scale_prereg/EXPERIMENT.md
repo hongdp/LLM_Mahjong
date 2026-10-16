@@ -14,7 +14,7 @@ $200 计划把训练侧/价值侧/防守侧/目标侧全部判决完毕，T=0 �
 - **起点（两臂相同的策略函数）**：exp107 P `games_256000000.pt`（cnn_l_v3r，128×4，4.0M）。
   L 臂用 `scripts/net2net_widen.py` 函数保持地扩到 `cnn_c384b12_v3r`（384 通道 × 12 残差块，21.0M）：新通道输入随机、输出置零；插入的 8 个残差块末层 BN γ=β=0（恒等）；旧块位于 2/5/8/11。14,831 个真实状态上 max|logit diff| 6.1e-5、max|value diff| 5.7e-6（`tests/test_net2net_widen.py` 覆盖 float64 精确等价与新容量有梯度）。
   C 臂直接从 P 256M 续跑（cnn_l_v3r）。两臂 Adam 都重置（L 因形状变化必然重置；C 用 `--reset_optimizer` 对齐）。
-- **配方（= exp107 P，只改架构）**：`--engine rust --lr 3e-5 --entropy_schedule 0:0.003 --gamma 0.995 --gae_lambda 0.95 --target_kl 0.03 --clip_eps 0.2 --batch 4096 --ppo_epochs 1 --games_per_iter 2048 --dup_k 8 --games_per_worker 1024 --amp_update --shaping --shaping_schedule 0:1.0,400000:0.0`，周期清矩 `--reset_optimizer_every 8000000`（exp107 P 的维持平台配方）。
+- **配方（= exp107 P，只改架构；10-16 14:58 起两臂加 `--kl_lr_target 0.001`，见 Progress）**：`--engine rust --lr 3e-5 --entropy_schedule 0:0.003 --gamma 0.995 --gae_lambda 0.95 --target_kl 0.03 --clip_eps 0.2 --batch 4096 --ppo_epochs 1 --games_per_iter 2048 --dup_k 8 --games_per_worker 1024 --amp_update --shaping --shaping_schedule 0:1.0,400000:0.0`，周期清矩 `--reset_optimizer_every 8000000`（exp107 P 的维持平台配方）。
   两臂同一套性能开关 `--fast_trunk --compile --bf16_rollout`（对照公平：流水线噪声相同）。
 - **总量**：每臂 **128M 局**（256M → 384M），里程碑每 8M（264M…384M），判决窗口 = **最后 4 个里程碑（360/368/376/384M）× 2 段 seed**。
 - **评测**：T=0 duplicate 2v2 vs bc49，10k 墙 × 2 段（seed0 102224000 / 102224500），配对 exp102 A 224M 基线文件；本机 4080 自动评测器（`pairdiff_eval.py`），L 臂 384×12 推理在 4080 上实测可行。窗口均值判决，单格不下结论（seed 下限：单 ckpt ±1 pp、窗口 0.24 pp）。
@@ -60,6 +60,10 @@ $200 计划把训练侧/价值侧/防守侧/目标侧全部判决完毕，T=0 �
 - [10-16 14:31 PDT] **发射**：L `pod_run.sh L cnn_c384b12_v3r 1131`（4090 `07mwrnumw0s7k5`，157.157.221.29:31111，起点 md5 b658c920…）；C `pod_run.sh C cnn_l_v3r 1131`（RTX 4000 Ada `jsilfmaqwgai2o`，157.157.221.29:25151，起点 = exp107 P 256M md5 854c3dad…）。两臂日志确认 reset_optimizer、fast trunk + compile + bf16 rollout 生效；首 5 轮 L kl 0.0063（含新通道 BN 统计量收敛）、C kl 0.0012。拉取/心跳循环、TB 符号链接（`exp113_{L,C}_LIVE`）、本机自动评测器（每 8M 两段 10k）已挂。
 
 - [10-16 14:39 PDT] **L 臂重启一次（无结果偏离）**：首发前 30 轮只有 ≈198 局/s（打包 2.5–5.9 s 波动，基准同机 1.4 s）。容器无 ptrace（py-spy 不可用），于是加 `--profile_pack`（打包阶段分段 + cuda 同步计时，`f0a9df0`），从起点原样重启（损失 ≈8 分钟；首发目录改名 `exp113_L_v1abort`，本机镜像同名）。重启后打包稳定 1.34–1.50 s（concat/H2D 0.3 s + probe/价值前向 1.1 s），每轮 7.3–8.0 s ≈ **265 局/s = 基准**，GPU 99%。首发的慢最可能是两臂 pod 同机房同出口（157.157.221.29）、开局同时 compile 预热的 CPU 争用。C 臂 ≈700 局/s 未受影响。投影不变：L ≈136 h ≈ $121。
+
+- [10-16 14:58 PDT] **配方修正（结果前，两臂同改，从起点重发）**：L 臂 lr 3e-5 下 65 轮（≈130k 局）出现健康破线——每轮 approxKL 0.005 → 0.025（C 臂恒 ≈0.0013），熵 0.26 → 0.15（预注册健康线 0.15），有人和牌的局占比 0.87 → 0.59（流局大增 = 行为在退化，与 exp105 熵塌缩损伤同型）。原因：Adam 每参数步长相同，21M 参数（含大量零初始化的新输出权重、γ=0 的插入块）同向移动，函数改变量远大于 4M 参数的 cnn_l；且 ppo_epochs=1 时 target_kl 早停形同虚设。
+  **修正**：①新增**干净探针 KL**（同 2048 个探针状态、推理模式、更新前 vs 更新后，不含 BN 训练/推理模式差那 ≈1.3e-3 的噪声底）；②`--kl_lr_target 0.001`：探针 KL > 1.5×目标则 lr ÷1.5、< 目标/1.5 则 ×1.5，倍数上限 1（永不高于 3e-5）。目标 0.001 = C 臂自然水平（本机实测 12 轮中位数 0.00093；L 臂 0.00715 = 7.7×）。本机验证：L 倍数 5 轮内降到 0.2、20 轮到 0.13，探针 KL ≈0.001，熵 0.25 稳定、和牌局 0.88 稳定。
+  **判读含义**：两臂比较的是"每轮策略改变量相同"条件下的容量差异（C 臂几乎不受控制器影响）。两臂都从起点重发（L 第二次、C 第一次；中止目录 `exp113_L_v{1,2}abort`、`exp113_C_v1abort`，本机镜像同名），代码 `4830e16`。新增健康项：L 的 lr 倍数若 < 0.03（学习率 < 1e-6）持续 2 个里程碑 ⇒ 报告"大网络在此信任域下学不动"。
 
 ## Results
 （待）
