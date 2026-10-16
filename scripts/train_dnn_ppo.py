@@ -135,6 +135,9 @@ def main():
                     help="exp113: bf16 autocast for Rust-rollout inference and the pre-update value pass "
                          "(log-softmax/sampling stay fp32; adds approxKL ~1e-4 vs the 1.4e-3 the BN "
                          "train/eval mismatch already contributes)")
+    ap.add_argument("--profile_pack", action="store_true",
+                    help="exp113: cuda-synchronised sub-timings of the pack stage (concat/H2D, probe+value pass, "
+                         "GAE, advantage) logged as pack_parts")
     ap.add_argument("--tf32", type=int, default=1,
                     help="TF32 matmul for the fp32 update path (default on)")
     ap.add_argument("--gpu_infer", action="store_true",
@@ -758,6 +761,13 @@ def main():
         rollout_s = time.time() - t_roll0
         games += len(results)
 
+        pk_t = [time.time()]; pk_parts = {}
+
+        def pk(name):                       # --profile_pack: synchronised split of the pack stage
+            if args.profile_pack:
+                if dev.type == "cuda":
+                    torch.cuda.synchronize()
+                pk_t.append(time.time()); pk_parts[name] = round(pk_t[-1] - pk_t[-2], 3)
         cat = lambda k: np.concatenate([e[k] for e in episodes])
         if episodes and episodes[0].get("planes_log") is not None:
             # wide observations arrive as the encoder's write log (98x smaller
@@ -805,6 +815,7 @@ def main():
         if n_eff < args.batch:
             continue
 
+        pk("concat_h2d")
         with torch.no_grad():
             probe = idx_keep[torch.randperm(n_eff, device=dev)[:2048]]
             lp0 = torch.log_softmax(_ffloor(net(planes[probe], scal[probe], mask[probe]), fold_floor_now), 1)
@@ -841,6 +852,7 @@ def main():
                 o_stats["active"] = int(oracle_active)
             if args.oracle_critic == "v" and oracle_active:
                 vals = o_out                      # asymmetric baseline + bootstrap for GAE
+        pk("probe_value")
         if args.gae_lambda is not None:
             # per-episode GAE over the SAME per-step V used elsewhere. Vectorized
             # (2026-09-08): the per-step Python loop cost ~7 s per 2048-deal
@@ -868,6 +880,7 @@ def main():
             adv_raw[idx[valid]] = A[valid]
         else:
             adv_raw = rets - vals
+        pk("gae")
         cf_n, cf_sum, cf_best, cf_fold = 0, 0.0, 0, []
         if args.cf_p > 0:
             # exp72: replace the GAE advantage at counterfactually evaluated
@@ -897,6 +910,7 @@ def main():
         if args.adv_clamp:
             adv = adv.clamp(-args.adv_clamp, args.adv_clamp)
 
+        pk("adv")
         net.train()
         t_upd0 = time.time()
         pack_s = t_upd0 - t_roll0 - rollout_s      # batch packing + value forward + GAE (perf 2026-09-09)
@@ -1088,6 +1102,7 @@ def main():
         row = {"iter": it, "games": games, "wall_s": round(el, 1),
                "rollout_s": round(rollout_s, 1), "update_s": round(update_s, 1),
                "pack_s": round(pack_s, 2), "iter_s": round(iter_s, 2),
+               **({"pack_parts": pk_parts, "pack_pre": round(pk_t[0] - t_roll0 - rollout_s, 3)} if args.profile_pack else {}),
                "pg_loss": float(np.mean(closs)), "value_loss": float(np.mean(vloss)),
                "entropy_before": ent_before, "entropy": ent_after,
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
