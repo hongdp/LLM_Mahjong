@@ -24,6 +24,7 @@ Three callers share this module so train and play agree bit for bit:
 """
 from __future__ import annotations
 from typing import Iterable, Optional, Set
+import math
 import numpy as np
 import torch
 from src.agents.dnn import encoder as _enc
@@ -166,3 +167,39 @@ def fold_discard_mask(mask374: np.ndarray, genb: Optional[np.ndarray], restrict:
     if not m.any():
         m = restrict_mask(mask374, genb, restrict)
     return widen(m, False)
+
+
+def apply_floor(logits: torch.Tensor, eps: float, wall: float = 2.0) -> torch.Tensor:
+    """exp105 exploration floor on the ENTER_FOLD slot: p(ENTER) >= eps on every
+    row where it is legal. The floored logit is max(raw, lse(others) + logit(eps))
+    with a straight-through gradient, so the raw logit keeps receiving the policy
+    gradient of the floored policy (per-state signal ~ eps * advantage) instead of
+    the vanishing p_raw * advantage that killed exp103. Below `wall` nats under the
+    floor the row is a dead zone: NO gradient reaches the raw logit (symmetric). An
+    earlier version dropped only the downward components there, which rectifies
+    zero-mean noise into a net upward push (exp105 F, 2026-10-05: entry 0.3% -> 30%
+    in 0.4M games; toy: raw p 0.009 -> 0.034 at zero advantage). Applied identically in the
+    rollout (collect_rust) and the PPO loss, so the recorded logprob IS the policy
+    being trained. eps <= 0 or a non-fold head: returned unchanged."""
+    if eps <= 0 or logits.shape[1] != FOLD_ACTION_DIM:
+        return logits
+    others = logits[:, :FOLD_SLOT]
+    raw = logits[:, FOLD_SLOT]
+    legal = torch.isfinite(raw)
+    floor = (torch.logsumexp(others, 1) + math.log(eps / (1.0 - eps))).detach()
+    raw_s = torch.where(legal, raw, floor)                  # keep -inf out of the arithmetic
+    eff = raw_s + (floor - raw_s).clamp(min=0).detach()
+    eff = torch.where(raw_s.detach() < floor - wall, eff.detach(), eff)
+    return torch.cat([others, torch.where(legal, eff, raw)[:, None]], 1)
+
+
+def floor_stats(logits: torch.Tensor, eps: float) -> tuple:
+    """(n_legal, n_raw_above_floor, sum_raw_p) over rows where ENTER_FOLD is legal,
+    from UNfloored logits: how much of the entry mass the raw policy carries itself."""
+    raw = logits[:, FOLD_SLOT]
+    legal = torch.isfinite(raw)
+    if not bool(legal.any()):
+        return 0, 0, 0.0
+    lp = torch.log_softmax(logits[legal].float(), 1)[:, FOLD_SLOT]
+    above = int((lp >= math.log(max(eps, 1e-12))).sum()) if eps > 0 else 0
+    return int(legal.sum()), above, float(lp.exp().sum())

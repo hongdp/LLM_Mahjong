@@ -13,7 +13,7 @@ from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE
 
 
 def _check_obs(py, rs, pid, seed, step):
-    for variant in ("v1r", "v3r"):
+    for variant in ("v1r", "v3r", "v3rh"):
         P, S = encode_state(py, pid, variant=variant)
         rp, rsc = rs.encode(pid, variant)
         assert np.array_equal(P.numpy().reshape(-1), np.asarray(rp, dtype=np.float32)), (variant, seed, step, pid)

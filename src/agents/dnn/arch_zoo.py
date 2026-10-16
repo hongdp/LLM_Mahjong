@@ -359,6 +359,10 @@ ZOO = {
     # cnn_l_v3r 4.0M params costs ~4% rollout throughput vs cnn_m_v3r on the Rust engine; cnn_xl_v3r 6.6M costs ~40%.
     "cnn_l_v3r": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R,
                                     in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp112 (pure-line hanchan v2): cnn_l trunk + match-context scalars (within-wind round number, honba,
+    # all-last). A v3r checkpoint loads through net.load_compatible (scalar_fc gains three zero columns).
+    "cnn_l_v3rh": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R,
+                                     in_scalars=N_SCALARS_V3H, encoder_variant="v3rh"), False),
     "cnn_xl_v3r": (lambda: CnnPolicy(192, 6, in_planes=N_PLANES_V3R,
                                      in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
     # exp103 (2026-10-02, pure line fold option): v3r trunk + in_fold_mode scalar + ENTER_FOLD slot (375).

@@ -1,0 +1,16 @@
+{
+ "policy": "/home/hongdp/Workspace/LLM_Mahjong/experiments/exp102_A/games_final.pt",
+ "exp_dir": "experiments/exp109_critic_stage0_20261012_214716",
+ "iters": 1500,
+ "games_per_iter": 2048,
+ "games_per_worker": 1024,
+ "epochs": 2,
+ "batch": 4096,
+ "lr": 0.0001,
+ "channels": 128,
+ "blocks": 4,
+ "diag_every": 25,
+ "ckpt_every": 100,
+ "seed": 1091,
+ "arms": "BQ,OQ,ODQ"
+}

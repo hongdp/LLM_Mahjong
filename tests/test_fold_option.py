@@ -281,3 +281,88 @@ def test_batch_masks_matches_per_row():
                 ref = fo.widen(m[i], fo.enter_legal(m[i], int(n_opp[i]), False))
             assert np.array_equal(out[i], ref), (i, restrict, in_fold[i], n_opp[i])
             assert enter[i] == bool(ref[fo.FOLD_SLOT])
+
+
+def _fold_logits(n=64, raw_shift=-8.0, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    lg = torch.randn(n, fo.FOLD_ACTION_DIM, generator=g)
+    lg[:, fo.FOLD_SLOT] += raw_shift
+    lg[: n // 4, fo.FOLD_SLOT] = float("-inf")          # rows where ENTER_FOLD is illegal
+    lg[:, 5] = float("-inf")                             # some other illegal slot
+    return lg
+
+
+def test_floor_guarantees_eps_and_leaves_the_rest():
+    eps = 0.01
+    lg = _fold_logits()
+    out = fo.apply_floor(lg, eps)
+    p = torch.softmax(out, 1)
+    legal = torch.isfinite(lg[:, fo.FOLD_SLOT])
+    assert torch.all(p[legal, fo.FOLD_SLOT] >= eps - 1e-6)
+    assert torch.equal(out[~legal], lg[~legal]), "rows where ENTER is illegal must be untouched"
+    assert torch.equal(out[:, :fo.FOLD_SLOT], lg[:, :fo.FOLD_SLOT])
+    hi = lg.clone(); hi[:, fo.FOLD_SLOT] += 20.0          # raw already above the floor -> identity
+    assert torch.equal(fo.apply_floor(hi, eps), hi)
+    assert fo.apply_floor(lg, 0.0) is lg
+    assert fo.apply_floor(lg[:, :ACTION_DIM], eps).shape[1] == ACTION_DIM   # non-fold head: unchanged
+
+
+def test_floor_straight_through_and_wall():
+    eps, wall = 0.01, 2.0
+    lg = _fold_logits(raw_shift=0.5).requires_grad_(True)            # rows spread across above / band / below
+    out = fo.apply_floor(lg, eps, wall)
+    legal = torch.isfinite(lg[:, fo.FOLD_SLOT]).detach()
+    # maximise log p(ENTER): the raw logit must get an UPWARD gradient (descent grad < 0) even when floored
+    loss = -torch.log_softmax(out, 1)[legal, fo.FOLD_SLOT].sum()
+    loss.backward()
+    fl0 = torch.logsumexp(lg[:, :fo.FOLD_SLOT].detach(), 1) + np.log(eps / (1 - eps))
+    raw0 = lg[:, fo.FOLD_SLOT].detach()
+    band = legal & (raw0 < fl0) & (raw0 >= fl0 - wall)              # floored but inside the wall
+    assert band.any() and torch.all(lg.grad[band, fo.FOLD_SLOT] < 0) and torch.isfinite(lg.grad).all()
+    assert torch.all(lg.grad[legal & (raw0 < fl0 - wall), fo.FOLD_SLOT] == 0)
+    # rows far below the floor (beyond the wall) are a symmetric dead zone: no gradient in EITHER direction
+    lg2 = _fold_logits(raw_shift=-3.0)
+    r0 = legal.nonzero()[0, 0]
+    lg2[r0, fo.FOLD_SLOT] = torch.logsumexp(lg2[r0, :fo.FOLD_SLOT], 0) + 1.0   # one row above the floor (p ~ 0.73)
+    lg2 = lg2.detach().requires_grad_(True)
+    out2 = fo.apply_floor(lg2, eps, wall)
+    torch.log_softmax(out2, 1)[legal, fo.FOLD_SLOT].sum().backward()
+    others = lg2[:, :fo.FOLD_SLOT].detach()
+    floor = torch.logsumexp(others, 1) + np.log(eps / (1 - eps))
+    raw = lg2[:, fo.FOLD_SLOT].detach()
+    gw = lg2.grad[:, fo.FOLD_SLOT]
+    below = legal & (raw < floor - wall)
+    assert below.any() and torch.all(gw[below] == 0)
+    above = legal & (raw > floor)
+    assert above.any() and torch.all(gw[above] > 0)
+    lg2.grad = None
+    out3 = fo.apply_floor(lg2, eps, wall)
+    (-torch.log_softmax(out3, 1)[legal, fo.FOLD_SLOT].sum()).backward()   # upward pressure: still blocked below the wall
+    assert torch.all(lg2.grad[below, fo.FOLD_SLOT] == 0)
+
+
+def test_rust_rollout_floor_matches_recorded_logprobs():
+    import riichi_rs  # noqa: F401
+    from src.agents.dnn.rust_rollout import collect_rust
+    ck = "/home/hongdp/Workspace/LLM_Mahjong/experiments/exp88_Q1x/games_final.pt"
+    if not os.path.exists(ck) or not torch.cuda.is_available():
+        pytest.skip("needs a trained cnn_m_v3r checkpoint + CUDA")
+    net = ZOO["cnn_m_v3rf"][0]()
+    load_compatible(net, torch.load(ck, map_location="cpu")["state_dict"])
+    net = net.cuda().eval()
+    with torch.no_grad():
+        net.head[-1].bias[fo.FOLD_SLOT].fill_(-30.0)    # raw policy never enters; only the floor can
+    eps = 0.05
+    cfg = {"temperature": 1.0, "gamma": 0.995, "games_per_worker": 8, "encoder_variant": "v3rf", "fold_floor": eps}
+    episodes, _ = collect_rust(net, 64, cfg, 1, seeds=[7_100_000 + i for i in range(64)], device="cuda")
+    st = collect_rust.last_fold
+    assert st["unconsumed_keys"] == 0 and st["n_enter"] > 0 and st["raw_above_frac"] == 0.0, st
+    assert 0.5 * eps < st["enter_rate"] < 2.5 * eps, st
+    e = max(episodes, key=lambda x: int((x["actions"] == fo.FOLD_SLOT).sum()))
+    with torch.no_grad():
+        P = torch.from_numpy(e["planes"]).cuda().float().div_(float(riichi_rs.PLANE_Q))
+        S = torch.from_numpy(e["scalars"]).cuda()
+        M = torch.from_numpy(e["mask"]).cuda()
+        lg = fo.apply_floor(net(P, S, M), eps)
+        lp = torch.log_softmax(lg, 1).gather(1, torch.from_numpy(e["actions"]).cuda().long()[:, None]).squeeze(1)
+    assert torch.allclose(lp.cpu(), torch.from_numpy(e["old_logprobs"]).float(), atol=2e-3)

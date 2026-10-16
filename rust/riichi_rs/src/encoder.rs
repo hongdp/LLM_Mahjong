@@ -198,10 +198,12 @@ pub const N_PLANES_V3R: usize = 56;
 pub const N_SCALARS_V3: usize = 29;
 /// v3s (exp89): v3r planes + 2 style scalars (tau_d / 8, tau_a) read from Table::seat_style[pid]
 pub const N_SCALARS_V3S: usize = N_SCALARS_V3 + 2;
+/// exp112: v3r + within-wind round number / honba / all-last flag (Python `v3rh`).
+pub const N_SCALARS_V3H: usize = N_SCALARS_V3 + 3;
 
 pub fn planes_of(variant: &str) -> usize {
     match variant {
-        "v3r" | "v3s" => N_PLANES_V3R,
+        "v3r" | "v3s" | "v3rh" => N_PLANES_V3R,
         _ => N_PLANES,
     }
 }
@@ -210,6 +212,7 @@ pub fn scalars_of(variant: &str) -> usize {
     match variant {
         "v3r" => N_SCALARS_V3,
         "v3s" => N_SCALARS_V3S,
+        "v3rh" => N_SCALARS_V3H,
         _ => N_SCALARS,
     }
 }
@@ -370,6 +373,13 @@ pub fn encode_v3r(t: &Table, pid: usize, planes: &mut [f32], scalars: &mut [f32]
 pub fn encode(t: &Table, pid: usize, variant: &str, planes: &mut [f32], scalars: &mut [f32]) {
     match variant {
         "v3r" => encode_v3r(t, pid, planes, scalars),
+        "v3rh" => {
+            debug_assert!(scalars.len() == N_SCALARS_V3H);
+            encode_v3r(t, pid, planes, &mut scalars[..N_SCALARS_V3]);
+            scalars[N_SCALARS_V3] = (t.round_number as f64 / 4.0) as f32;
+            scalars[N_SCALARS_V3 + 1] = ((t.honba as f64 / 8.0).min(1.0)) as f32;
+            scalars[N_SCALARS_V3 + 2] = if t.round_wind_idx >= 1 && t.round_number >= 4 { 1.0 } else { 0.0 };
+        }
         "v3s" => {
             debug_assert!(scalars.len() == N_SCALARS_V3S);
             encode_v3r(t, pid, planes, &mut scalars[..N_SCALARS_V3]);

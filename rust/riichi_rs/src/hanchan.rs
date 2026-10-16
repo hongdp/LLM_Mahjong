@@ -14,6 +14,14 @@ pub struct DealFact {
     pub n_discards: usize,
     pub points: [i64; 4],
     pub start_points: [i64; 4],
+    // exp112: match context at the START of the deal + outcome facts (credit / behaviour grids)
+    pub dealer: usize,
+    pub rw: usize,
+    pub honba: i64,
+    pub kyotaku: i64,
+    pub n: usize,
+    pub houjuu: Option<usize>,
+    pub winners: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]

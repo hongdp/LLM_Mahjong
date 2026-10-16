@@ -164,6 +164,14 @@ impl PyTable {
         (planes, scalars)
     }
     fn potential(&self, pid: usize) -> f64 { crate::encoder::potential(&self.t, pid) }
+    /// exp109: per-34-tile immediate ron cost (reward units) if `pid` discarded it now.
+    fn ron_costs(&self, pid: usize) -> Vec<f32> { self.t.ron_costs(pid).to_vec() }
+    /// exp108: 319-dim oracle critic vector for `pid` (parity with oracle_features.py).
+    fn oracle(&self, pid: usize) -> Vec<f32> {
+        let mut f = vec![0f32; crate::oracle::ORACLE_DIM];
+        crate::oracle::oracle_vec(&self.t, pid, &mut f);
+        f
+    }
     fn win_result(&self, py: Python<'_>, pid: usize, tile: &str, is_tsumo: bool, chankan: bool) -> PyResult<Option<PyObject>> {
         let t = parse(tile).ok_or_else(|| pyo3::exceptions::PyValueError::new_err("bad tile"))?;
         match self.t.win_result(pid, norm(t), is_tsumo, chankan) {
