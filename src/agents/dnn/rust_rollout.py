@@ -105,10 +105,22 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
         from src.agents.dnn import fold_option as _fo
         fold = {"flag": np.zeros((k, 4), dtype=bool), "prev_seed": np.full(k, -2, dtype=np.int64),
                 "log": {}, "rounds": [], "n_enter": 0, "n_eligible": 0, "n_rows": 0, "fo": _fo,
-                "restrict": getattr(net, "action_space", "native_fold") != "native_fold_free"}
+                "restrict": getattr(net, "action_space", "native_fold") != "native_fold_free",
+                # exp105 exploration floor (0 = off); floor_ref only sets the "raw above eps" statistic after release
+                "floor": float(cfg.get("fold_floor", 0.0) or 0.0), "wall": float(cfg.get("fold_floor_wall", 2.0)),
+                "floor_ref": float(cfg.get("fold_floor_ref", 0.01)), "n_legal": 0, "n_raw_above": 0, "raw_p_sum": 0.0}
         variant = "v3r"
-    if variant not in ("v1r", "v3r", "v3s"):
-        raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s only)")
+    if variant not in ("v1r", "v3r", "v3s", "v3rh"):
+        raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s/v3rh only)")
+    # exp108 separate oracle critic: per observe() round the 319-dim privileged vector of every pending
+    # row (VecEnv.oracle_info), indexed per (slot, seed, seat) like the fold log; finished episodes get
+    # e["cfeats"] [T, 319] float16. Critic-only — the policy never sees it (see oracle_critic.py).
+    oracle = None
+    if cfg.get("oracle_feats") or cfg.get("ron_cost"):
+        if fold is not None:
+            raise SystemExit("collect_rust: oracle_feats/ron_cost with the fold option is not supported (episode rewrite)")
+        # exp109: ron_cost = per-row [34] immediate ron cost of each discard (engine fact, hidden state), e["ron_cost"]
+        oracle = {"rounds": [], "log": {}, "feats": bool(cfg.get("oracle_feats")), "ron": bool(cfg.get("ron_cost"))}
     # exp89 style-conditioned population: per seed, each seat draws a reward style
     # (tau_d deal-in penalty, tau_a win bonus) from the prior; seeds are shared by the
     # dup_k replicas so the (seed, seat) group baseline still compares like with like.
@@ -124,8 +136,8 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     if hanchan:
         if not cfg.get("hanchan_pure"):
             raise SystemExit("collect_rust: only --hanchan_pure (mirror) is ported; four-seat league tables need the Python engine")
-        if cfg.get("hanchan_credit", "none") != "none":
-            raise SystemExit("collect_rust: hanchan_credit must be 'none' on the Rust engine (rank/W credits are Python-only)")
+        if cfg.get("hanchan_credit", "none") not in ("none", "wpure"):
+            raise SystemExit("collect_rust: hanchan_credit must be 'none' or 'wpure' on the Rust engine (rank/W credits are Python-only)")
         if cfg.get("shaping"):
             raise SystemExit("collect_rust: PBRS shaping is per-deal and not supported across a hanchan")
         if cfg.get("league") and float(cfg.get("league_frac", 0.0) or 0.0) > 0:
@@ -213,6 +225,14 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                 P = torch.from_numpy(planes).to(dev).view(n, -1, 34).float().div_(q)
                 S = torch.from_numpy(scalars).to(dev)
                 M = torch.from_numpy(mask).to(dev)
+                if oracle is not None:
+                    o_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
+                    oracle["rounds"].append((np.asarray(env.oracle_info(), dtype=np.float16) if oracle["feats"] else None,
+                                             np.asarray(env.ron_cost_info(), dtype=np.float16) if oracle["ron"] else None))
+                    rid_o = len(oracle["rounds"]) - 1
+                    olog = oracle["log"]
+                    for i, key in enumerate(zip(np.asarray(gids).tolist(), o_seed[np.asarray(gids)].tolist(), np.asarray(seats).tolist())):
+                        olog.setdefault(key, []).append((rid_o, i))
                 if noise is not None:
                     slot_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
                     fresh = np.nonzero((slot_seed != noise["prev_seed"]) & (slot_seed >= 0))[0]
@@ -281,7 +301,18 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                     fold["n_eligible"] += int(enter.sum()); fold["n_rows"] += n
                     Mt = torch.from_numpy(M375).to(dev)
                     St = torch.cat([S, torch.from_numpy(in_fold.astype(np.float32)).to(dev)[:, None]], 1)
-                    idx, lp = net.act(P, St, Mt, temperature=temperature, check=False)
+                    raw_logits = net(P, St, Mt)
+                    fl = fold["floor"]
+                    st_ = fo.floor_stats(raw_logits, fl if fl > 0 else fold["floor_ref"])
+                    fold["n_legal"] += st_[0]; fold["n_raw_above"] += st_[1]; fold["raw_p_sum"] += st_[2]
+                    logits = fo.apply_floor(raw_logits, fl, fold["wall"])          # exp105: identity when fl == 0
+                    if temperature <= 0:
+                        idx = logits.argmax(1)
+                        lp = torch.log_softmax(logits, 1).gather(1, idx[:, None]).squeeze(1)
+                    else:                                                       # same as net.act
+                        logb = torch.log_softmax(logits / temperature, 1)
+                        idx = torch.multinomial(logb.exp(), 1).squeeze(1)
+                        lp = logb.gather(1, idx[:, None]).squeeze(1)
                     acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
                     chose = np.nonzero(acts_np == fo.FOLD_SLOT)[0]
                     pre_mask = {}; pre_lp = {}
@@ -323,7 +354,28 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
             if fold is not None:
                 for gm in new_games:
                     _rewrite_fold_episodes(gm, fold)
+            if oracle is not None:
+                R = oracle["rounds"]
+                for gm in new_games:
+                    slot, seed_ = int(gm["slot"]), int(gm["seed"])
+                    for e in gm["episodes"]:
+                        ent = oracle["log"].pop((slot, seed_, int(e["key"][1])), None)
+                        if ent is None or len(ent) != len(e["actions"]):
+                            raise RuntimeError(f"oracle_feats: step log mismatch slot {slot} seed {seed_} seat {e['key'][1]}: "
+                                               f"{0 if ent is None else len(ent)} logged vs {len(e['actions'])} recorded")
+                        if oracle["feats"]:
+                            e["cfeats"] = np.stack([R[r][0][w] for r, w in ent])
+                        if oracle["ron"]:
+                            e["ron_cost"] = np.stack([R[r][1][w] for r, w in ent])
             games.extend(new_games)
+    if hanchan and cfg.get("hanchan_credit") == "wpure":
+        # exp112: replace the engine's per-deal point deltas + lumped uma by the pure-W telescoping credit
+        from src.agents.dnn.hanchan_credit import PureW, rewrite_wpure
+        wmod = collect_rust.__dict__.setdefault("_wpure", {})
+        key = cfg.get("hanchan_w_path") or ""
+        if key not in wmod:
+            wmod[key] = PureW(cfg.get("hanchan_w_path"), device="cpu")
+        collect_rust.last_wpure = rewrite_wpure(games, wmod[key], float(cfg.get("gamma", 0.995)))
     episodes, results = [], []
     agg = new_agg()
     lg = {}
@@ -365,7 +417,9 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
     collect_rust.last_dev = None if sdev is None else {"n_dev": sdev["n_dev"], "n_multi": sdev["n_multi"]}
     collect_rust.last_fold = None if fold is None else {
         "n_enter": fold["n_enter"], "n_eligible": fold["n_eligible"], "n_rows": fold["n_rows"],
-        "enter_rate": fold["n_enter"] / max(fold["n_eligible"], 1), "unconsumed_keys": len(fold["log"])}
+        "enter_rate": fold["n_enter"] / max(fold["n_eligible"], 1), "unconsumed_keys": len(fold["log"]),
+        "floor": fold["floor"], "raw_above_frac": fold["n_raw_above"] / max(fold["n_legal"], 1),
+        "raw_p_mean": fold["raw_p_sum"] / max(fold["n_legal"], 1)}
     if noise is not None:
         collect_rust.last_noise = {"sigma": noise_sigma, "kl": noise["kl_sum"] / max(noise["rows"], 1),
                                    "greedy_change": noise["chg_sum"] / max(noise["rows"], 1),

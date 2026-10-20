@@ -12,6 +12,7 @@ pub mod vecenv;
 pub mod table;
 pub mod hanchan;
 pub mod pytable;
+pub mod oracle;
 
 fn parse_tiles(tiles: Vec<String>) -> PyResult<Vec<tiles::Tile>> {
     tiles.iter().map(|s| tiles::parse(s).ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("bad tile {s}")))).collect()

@@ -58,6 +58,7 @@ struct Game {
     ms: Option<MatchState>,
     deal_facts: Vec<DealFact>,
     deal_start_len: [usize; 4],
+    deal_ends: [Vec<(usize, usize)>; 4],
 }
 
 struct Finished {
@@ -72,6 +73,7 @@ struct Finished {
     start_points: [i64; 4],
     hanchan: Option<MatchResult>,
     deals: Vec<DealFact>,
+    deal_ends: [Vec<(usize, usize)>; 4],
 }
 
 #[pyclass(name = "VecEnv")]
@@ -103,7 +105,8 @@ fn record(table: &Table, seat: usize, cfg: &Cfg) -> (Vec<u8>, Vec<f32>, f64) {
     (planes, scalars, phi)
 }
 
-fn deal_fact(t: &Table) -> DealFact {
+fn deal_fact(t: &Table, n: usize) -> DealFact {
+    let de = t.deal_end.clone().unwrap_or_default();
     DealFact {
         result: t.result_summary.clone(),
         riichi: t.riichi,
@@ -111,6 +114,13 @@ fn deal_fact(t: &Table) -> DealFact {
         n_discards: t.discard_count.iter().sum(),
         points: t.points,
         start_points: t.start_points,
+        dealer: t.dealer,
+        rw: t.round_wind_idx,
+        honba: t.honba,
+        kyotaku: t.start_kyotaku,
+        n,
+        houjuu: de.houjuu,
+        winners: de.winners.clone(),
     }
 }
 
@@ -121,14 +131,16 @@ fn deal_done(g: &mut Game) -> bool {
     let Some(ms) = g.ms.as_mut() else { return true };
     let before = ms.points;
     ms.settle(&g.table);
+    let deal_idx = g.deal_facts.len();
     for p in 0..4 {
         if g.traj[p].len() > g.deal_start_len[p] {
             if let Some(last) = g.traj[p].last_mut() {
                 last.reward += (ms.points[p] - before[p]) as f64 * REWARD_SCALE;
             }
+            g.deal_ends[p].push((deal_idx, g.traj[p].len() - 1));   // exp112: this seat's last step of the deal
         }
     }
-    g.deal_facts.push(deal_fact(&g.table));
+    g.deal_facts.push(deal_fact(&g.table, ms.n));
     if ms.done {
         return true;
     }
@@ -196,6 +208,7 @@ fn finish(g: Game) -> Finished {
         start_points,
         hanchan,
         deals: g.deal_facts,
+        deal_ends: g.deal_ends,
     }
 }
 
@@ -332,7 +345,7 @@ impl VecEnv {
                     self.active[slot] = Some(Game {
                         table, seed, slot, traj: Default::default(), phase: Phase::Turn, guard: 0,
                         rows: Vec::new(), pending_steps: Vec::new(),
-                        ms, deal_facts: Vec::new(), deal_start_len: [0; 4],
+                        ms, deal_facts: Vec::new(), deal_start_len: [0; 4], deal_ends: Default::default(),
                     });
                     self.n_started += 1;
                 }
@@ -444,7 +457,7 @@ impl VecEnv {
             let mut g = Game {
                 table, seed: i as u64, slot: i, traj: Default::default(), phase, guard: 0,
                 rows: Vec::new(), pending_steps: Vec::new(),
-                ms: None, deal_facts: Vec::new(), deal_start_len: [0; 4],
+                ms: None, deal_facts: Vec::new(), deal_start_len: [0; 4], deal_ends: Default::default(),
             };
             if done {
                 env.finished.push(finish(g));
@@ -617,9 +630,18 @@ impl VecEnv {
                     dd.set_item("n_discards", df.n_discards)?;
                     dd.set_item("points", df.points.to_vec())?;
                     dd.set_item("start_points", df.start_points.to_vec())?;
+                    dd.set_item("dealer", df.dealer)?;
+                    dd.set_item("rw", df.rw)?;
+                    dd.set_item("honba", df.honba)?;
+                    dd.set_item("kyotaku", df.kyotaku)?;
+                    dd.set_item("n", df.n)?;
+                    dd.set_item("houjuu", df.houjuu)?;
+                    dd.set_item("winners", df.winners.clone())?;
                     deals.append(dd)?;
                 }
                 d.set_item("deals", deals)?;
+                // exp112: per seat, (deal index, this seat's last step index in its episode) for every deal it acted in
+                d.set_item("deal_ends", f.deal_ends.iter().map(|v| v.clone()).collect::<Vec<_>>())?;
             } else {
                 d.set_item("hanchan", py.None())?;
             }
@@ -661,6 +683,39 @@ impl VecEnv {
             }
         }
         Ok(PyArray1::from_vec_bound(py, out).reshape([b, 34])?)
+    }
+
+    /// exp109: per pending row (observe() order) the immediate ron cost [B, 68] of discarding each tile
+    /// ([0:34] plain, [34:68] red five; reward units; zeros on interrupt rows / nothing to ron). Critic only.
+    fn ron_cost_info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+        let b = self.total_rows();
+        let mut out = vec![0f32; b * 68];
+        let mut i = 0usize;
+        for g in self.active.iter().flatten() {
+            for r in g.rows.iter() {
+                if !r.interrupt {
+                    out[i * 68..(i + 1) * 68].copy_from_slice(&g.table.ron_costs(r.seat));
+                }
+                i += 1;
+            }
+        }
+        Ok(PyArray1::from_vec_bound(py, out).reshape([b, 68])?)
+    }
+
+    /// exp108: per pending row (observe() order) the 319-dim oracle critic vector [B, 319]
+    /// (opponents' hidden hands / waits / shanten, live wall, hidden indicators). Critic only.
+    fn oracle_info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+        let b = self.total_rows();
+        let d = crate::oracle::ORACLE_DIM;
+        let mut out = vec![0f32; b * d];
+        let mut i = 0usize;
+        for g in self.active.iter().flatten() {
+            for r in g.rows.iter() {
+                crate::oracle::oracle_vec(&g.table, r.seat, &mut out[i * d..(i + 1) * d]);
+                i += 1;
+            }
+        }
+        Ok(PyArray1::from_vec_bound(py, out).reshape([b, d])?)
     }
 
     /// exp96: per pending row (observe() order) the genbutsu mask [B, 34] — tiles safe against

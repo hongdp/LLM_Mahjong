@@ -766,6 +766,12 @@ impl Table {
 
     /// PyMahjongTable._win_result
     pub fn win_result(&self, pid: usize, win_tile: Tile, is_tsumo: bool, chankan: bool) -> Option<ScoreResult> {
+        self.win_result_red(pid, win_tile, is_tsumo, chankan, None)
+    }
+
+    /// `red_override`: evaluate a HYPOTHETICAL ron on `win_tile` discarded as a red five (Some(true)) or a plain
+    /// tile (Some(false)) instead of reading the table's last_discard_red (exp109 ron_costs). None = actual state.
+    pub fn win_result_red(&self, pid: usize, win_tile: Tile, is_tsumo: bool, chankan: bool, red_override: Option<bool>) -> Option<ScoreResult> {
         let hand = &self.hands[pid];
         let n_melds = self.melds[pid].len();
         let mut concealed: Vec<Tile>;
@@ -789,7 +795,9 @@ impl Table {
             rest.remove(pos);
         }
         let mut reds: [i32; 3] = [self.red[pid][0] as i32, self.red[pid][1] as i32, self.red[pid][2] as i32];
-        let win_red = if is_tsumo {
+        let win_red = if let Some(r) = red_override {
+            r
+        } else if is_tsumo {
             self.last_drawn_red[pid] && Some(win_tile) == self.last_drawn[pid]
         } else if chankan && self.pending_kan.is_some() {
             self.pending_kan.as_ref().unwrap().red
@@ -856,6 +864,50 @@ impl Table {
             cfg,
         };
         score::estimate(&inp)
+    }
+
+    /// exp109: immediate ron cost to `seat` for discarding each tile it holds, in REWARD units (points *
+    /// REWARD_SCALE): [0:34] plain discard, [34:68] red-five discard (the discard0 slot; +1 dora for the winner).
+    /// Mirrors settle_ron: sum over every opponent that could ron it now (furiten respected, pao ignored) of `main`.
+    /// A privileged (hidden-state) quantity: critic / advantage use only, never shown to the policy.
+    pub fn ron_costs(&self, seat: usize) -> [f32; 68] {
+        let mut out = [0f32; 68];
+        let opp: Vec<(usize, Vec<Tile>)> = (0..4)
+            .filter(|&o| o != seat && !self.is_furiten(o))
+            .map(|o| (o, self.waits(o)))
+            .filter(|(_, w)| !w.is_empty())
+            .collect();
+        if opp.is_empty() {
+            return out;
+        }
+        // hands are stored normalized; red fives live in self.red[seat][suit] as counts
+        let mut have = [0u8; 34];
+        for &h in &self.hands[seat] {
+            have[norm(h) as usize] += 1;
+        }
+        for t in 0..34u8 {
+            if have[t as usize] == 0 {
+                continue;
+            }
+            let five = !is_honor(t) && rank(t) == 5;
+            let red_n = if five { self.red[seat][suit(t) as usize] } else { 0 };
+            let plain = have[t as usize] > red_n;
+            for (red, slot) in [(false, t as usize), (true, 34 + t as usize)] {
+                if (red && red_n == 0) || (!red && !plain) {
+                    continue;
+                }
+                let mut cost = 0i64;
+                for (o, w) in &opp {
+                    if w.contains(&t) {
+                        if let Some(r) = self.win_result_red(*o, t, false, false, Some(red)) {
+                            cost += r.main;
+                        }
+                    }
+                }
+                out[slot] = (cost as f64 * REWARD_SCALE) as f32;
+            }
+        }
+        out
     }
 
     fn can_ron(&self, pid: usize, tile: Tile, chankan: bool) -> bool {
