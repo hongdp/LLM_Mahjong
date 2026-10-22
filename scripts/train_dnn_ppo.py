@@ -135,6 +135,13 @@ def main():
                     help="exp113: bf16 autocast for Rust-rollout inference and the pre-update value pass "
                          "(log-softmax/sampling stay fp32; adds approxKL ~1e-4 vs the 1.4e-3 the BN "
                          "train/eval mismatch already contributes)")
+    ap.add_argument("--posture_beta", default=None,
+                    help="exp116: 'b0,b1,b2' initial posture prior on genbutsu discards (tenpai / 1-shanten / 2+) for a "
+                         "v3rg net; applied only when the resume checkpoint has no posture_beta (fresh widening)")
+    ap.add_argument("--posture_freeze", action="store_true", help="exp116: keep posture_beta fixed (no gradient)")
+    ap.add_argument("--posture_lr", type=float, default=1e-3,
+                    help="exp116: Adam lr of the posture_beta param group (own group; the kl_lr_target multiplier and "
+                         "warmup scale every group relative to its own base lr)")
     ap.add_argument("--kl_lr_target", type=float, default=0.0,
                     help="exp113: per-iteration lr controller on the CLEAN probe KL (eval-mode policy on 2048 probe "
                          "states before vs after the update; no BN train/eval floor). probe_kl > 1.5x target -> lr/1.5, "
@@ -498,7 +505,16 @@ def main():
                                                   map_location="cpu")["state_dict"])
         print(f"⚓ warm-start {args.init}"
               + (f" (fresh: {skipped})" if skipped else ""), flush=True)
-    opt = torch.optim.Adam(net.parameters(), lr=args.lr)
+    # exp116: posture_beta (v3rg nets) gets its own param group (or is frozen); every group keeps its base lr so the
+    # warmup / kl_lr_target multipliers scale groups relative to their own base.
+    pb = getattr(net, "posture_beta", None)
+    if pb is not None and args.posture_freeze:
+        pb.requires_grad_(False)
+    main_params = [p_ for n_, p_ in net.named_parameters() if n_ != "posture_beta"]
+    groups = [{"params": main_params, "lr": args.lr, "base_lr": args.lr}]
+    if pb is not None and not args.posture_freeze:
+        groups.append({"params": [pb], "lr": args.posture_lr, "base_lr": args.posture_lr})
+    opt = torch.optim.Adam(groups, lr=args.lr)
     ocrit, oopt = None, None
     if args.oracle_critic != "none":
         if args.engine != "rust" or args.critic_feats != "none":
@@ -579,13 +595,21 @@ def main():
                 print(f"   oracle critic restored from {cpath}", flush=True)
             else:
                 print("   oracle critic starts fresh (no critic_*.pt next to the resume checkpoint)", flush=True)
+        if pb is not None and args.posture_beta and "posture_beta" not in blob["state_dict"]:
+            with torch.no_grad():
+                pb.copy_(torch.tensor([float(x) for x in args.posture_beta.split(",")], device=pb.device))
+            print(f"   posture prior initialised: beta = {pb.tolist()}" + (" (frozen)" if args.posture_freeze else
+                  f" (learnable, lr {args.posture_lr})"), flush=True)
+        elif pb is not None:
+            print(f"   posture prior from checkpoint: beta = {[round(x, 3) for x in pb.tolist()]}"
+                  + (" (frozen)" if args.posture_freeze else ""), flush=True)
         start_games = int(blob.get("games", 0))
         start_iter = int(blob.get("iter", 0))
         ent_alpha = float(blob.get("entropy_alpha", ent_alpha) or ent_alpha)
         if args.kl_lr_target > 0 and blob.get("lr_mult"):
             lr_mult = float(blob["lr_mult"])
             for g in opt.param_groups:
-                g["lr"] = args.lr * lr_mult
+                g["lr"] = g.get("base_lr", args.lr) * lr_mult
             print(f"   kl_lr_target: lr multiplier restored {lr_mult:.3f}", flush=True)
         if args.param_noise_kl > 0 and blob.get("param_noise_sigma"):
             noise_sigma = float(blob["param_noise_sigma"])
@@ -1027,7 +1051,7 @@ def main():
                     n_upd += 1
                     scale = min(1.0, n_upd / args.warmup_updates)
                     for g in opt.param_groups:
-                        g["lr"] = args.lr * scale
+                        g["lr"] = g.get("base_lr", args.lr) * scale
                 opt.step()
                 with torch.no_grad():
                     lr_ = chosen - old_lp[sel]
@@ -1117,6 +1141,7 @@ def main():
                **({"pack_parts": pk_parts, "pack_pre": round(pk_t[0] - t_roll0 - rollout_s, 3)} if args.profile_pack else {}),
                "pg_loss": float(np.mean(closs)), "value_loss": float(np.mean(vloss)),
                "entropy_before": ent_before, "entropy": ent_after, "probe_kl": probe_kl, "lr_mult": lr_mult,
+               **({f"posture_beta{i}": round(float(x), 4) for i, x in enumerate(pb.tolist())} if pb is not None else {}),
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
                "explained_var": ev, "win_rate": win,
                "oracle_hide_p": cfg.get("oracle_hide_p"),
@@ -1199,7 +1224,7 @@ def main():
             elif probe_kl < args.kl_lr_target / 1.5:
                 lr_mult = min(lr_mult * 1.5, 1.0)
             for g in opt.param_groups:
-                g["lr"] = args.lr * lr_mult
+                g["lr"] = g.get("base_lr", args.lr) * lr_mult
         for k, v in row.items():
             if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
                 writer.add_scalar(TB_TAG.get(k, k), float(v), games)

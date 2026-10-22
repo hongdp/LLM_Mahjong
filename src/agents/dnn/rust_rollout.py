@@ -110,8 +110,8 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                 "floor": float(cfg.get("fold_floor", 0.0) or 0.0), "wall": float(cfg.get("fold_floor_wall", 2.0)),
                 "floor_ref": float(cfg.get("fold_floor_ref", 0.01)), "n_legal": 0, "n_raw_above": 0, "raw_p_sum": 0.0}
         variant = "v3r"
-    if variant not in ("v1r", "v3r", "v3s", "v3rh"):
-        raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s/v3rh only)")
+    if variant not in ("v1r", "v3r", "v3s", "v3rh", "v3rg"):
+        raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s/v3rh/v3rg only)")
     # exp108 separate oracle critic: per observe() round the 319-dim privileged vector of every pending
     # row (VecEnv.oracle_info), indexed per (slot, seed, seat) like the fold log; finished episodes get
     # e["cfeats"] [T, 319] float16. Critic-only — the policy never sees it (see oracle_critic.py).

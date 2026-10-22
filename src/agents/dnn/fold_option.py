@@ -52,8 +52,10 @@ def genbutsu_34(table, pid: int) -> Optional[np.ndarray]:
         return None
     safe = np.ones(_TT, dtype=np.bool_)
     for o in opp:
-        s: Set[str] = {_norm(x) for x in table.discards[o]}
         ev = table.river_events[o]
+        # every tile o discarded counts, including ones another seat called away (still furiten for o) -- the river
+        # events keep them, table.discards does not (exp116 parity fix; VecEnv.safe_info always used the events)
+        s: Set[str] = {_norm(e[0]) for e in ev}
         ridx = next((e[4] for e in ev if e[2]), None)
         if ridx is not None:
             for p in range(4):

@@ -200,10 +200,16 @@ pub const N_SCALARS_V3: usize = 29;
 pub const N_SCALARS_V3S: usize = N_SCALARS_V3 + 2;
 /// exp112: v3r + within-wind round number / honba / all-last flag (Python `v3rh`).
 pub const N_SCALARS_V3H: usize = N_SCALARS_V3 + 3;
+/// exp116: v3r + 1 genbutsu plane (tiles safe against every riichi opponent; only filled while >= 1 opponent is in
+/// riichi and the seat itself is not) + 3 own-shanten one-hot scalars (tenpai / 1-shanten / 2+-shanten, same gate).
+/// Python `v3rg`; the genbutsu rule is VecEnv.safe_info's (fold_option.genbutsu_34 on the Python side).
+pub const N_PLANES_V3RG: usize = N_PLANES_V3R + 1;
+pub const N_SCALARS_V3G: usize = N_SCALARS_V3 + 3;
 
 pub fn planes_of(variant: &str) -> usize {
     match variant {
         "v3r" | "v3s" | "v3rh" => N_PLANES_V3R,
+        "v3rg" => N_PLANES_V3RG,
         _ => N_PLANES,
     }
 }
@@ -213,6 +219,7 @@ pub fn scalars_of(variant: &str) -> usize {
         "v3r" => N_SCALARS_V3,
         "v3s" => N_SCALARS_V3S,
         "v3rh" => N_SCALARS_V3H,
+        "v3rg" => N_SCALARS_V3G,
         _ => N_SCALARS,
     }
 }
@@ -369,6 +376,38 @@ pub fn encode_v3r(t: &Table, pid: usize, planes: &mut [f32], scalars: &mut [f32]
     scalars[28] = ((total as f64 / 70.0).min(1.0)) as f32;
 }
 
+/// Tiles safe against EVERY opponent in riichi (None when none is): the riichi player's river plus tiles the other
+/// seats discarded after the riichi declaration. Identical to VecEnv.safe_info.
+pub fn genbutsu_vs_riichi(t: &Table, seat: usize) -> Option<[bool; 34]> {
+    let mut safe = [true; 34];
+    let mut n = 0;
+    for o in 0..4 {
+        if o == seat || !t.riichi[o] {
+            continue;
+        }
+        n += 1;
+        let ridx = t.river_events[o].iter().find(|e| e.riichi).map(|e| e.idx);
+        let mut s = [false; 34];
+        for e in &t.river_events[o] {
+            s[norm(e.tile) as usize] = true;
+        }
+        if let Some(ri) = ridx {
+            for p in 0..4 {
+                if p == o {
+                    continue;
+                }
+                for e in t.river_events[p].iter().filter(|e| e.idx > ri) {
+                    s[norm(e.tile) as usize] = true;
+                }
+            }
+        }
+        for i in 0..34 {
+            safe[i] &= s[i];
+        }
+    }
+    if n == 0 { None } else { Some(safe) }
+}
+
 /// Dispatch on the encoder variant name ("v1r" | "v3r").
 pub fn encode(t: &Table, pid: usize, variant: &str, planes: &mut [f32], scalars: &mut [f32]) {
     match variant {
@@ -379,6 +418,22 @@ pub fn encode(t: &Table, pid: usize, variant: &str, planes: &mut [f32], scalars:
             scalars[N_SCALARS_V3] = (t.round_number as f64 / 4.0) as f32;
             scalars[N_SCALARS_V3 + 1] = ((t.honba as f64 / 8.0).min(1.0)) as f32;
             scalars[N_SCALARS_V3 + 2] = if t.round_wind_idx >= 1 && t.round_number >= 4 { 1.0 } else { 0.0 };
+        }
+        "v3rg" => {
+            debug_assert!(planes.len() == N_PLANES_V3RG * 34 && scalars.len() == N_SCALARS_V3G);
+            encode_v3r(t, pid, &mut planes[..N_PLANES_V3R * 34], &mut scalars[..N_SCALARS_V3]);
+            for v in planes[N_PLANES_V3R * 34..].iter_mut() { *v = 0.0; }
+            for v in scalars[N_SCALARS_V3..].iter_mut() { *v = 0.0; }
+            if !t.riichi[pid] {
+                if let Some(g) = genbutsu_vs_riichi(t, pid) {
+                    for i in 0..34 {
+                        if g[i] { planes[N_PLANES_V3R * 34 + i] = 1.0; }
+                    }
+                    let sh = t.shanten_of(&t.hands[pid], t.melds[pid].len());
+                    let b = if sh <= 0 { 0 } else if sh == 1 { 1 } else { 2 };
+                    scalars[N_SCALARS_V3 + b] = 1.0;
+                }
+            }
         }
         "v3s" => {
             debug_assert!(scalars.len() == N_SCALARS_V3S);
