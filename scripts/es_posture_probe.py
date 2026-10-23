@@ -156,6 +156,149 @@ def estimate_sub(a, net, variant, dev):
           f"frac changed {(D != 0).mean():.3f}", flush=True)
 
 
+def _tile_feats(net, P, S):
+    """trunk output split into per-tile channels [n, C, 34] (trunk lays out C*34 in (C, L) order, then scalars)."""
+    t = net.trunk(P, S)
+    C = net.stem.out_channels
+    return t, t[:, :C * 34].view(-1, C, 34)
+
+
+def play_tile(net, variant, walls, batch, seed0, dev, tile_fn, genb_stats=False):
+    """play() variant whose hook gets per-tile trunk channels: tile_fn(ht[n,C,34], g, st, b0) -> [n,34] or None
+    (added to discard and discard0 slots)."""
+    D, D0 = _consts()
+
+    import riichi_rs
+    q = float(riichi_rs.PLANE_Q)
+    deltas = []; gs = np.zeros((2, 2)); corr = []
+    for b0 in range(0, walls, batch // 2):
+        nw = min(batch // 2, walls - b0)
+        seeds = [seed0 + b0 + i for i in range(nw) for _ in range(2)]
+        env = riichi_rs.VecEnv([int(s) for s in seeds], len(seeds), 0.995, False, 1.0, True, variant)
+        res = {}
+        with torch.no_grad():
+            while not env.done():
+                planes, scalars, mask, seats, gids = env.observe()
+                n = planes.shape[0]
+                if n == 0:
+                    env.step([], [])
+                else:
+                    Pt = torch.from_numpy(planes).to(dev).view(n, -1, 34).float().div_(q)
+                    St = torch.from_numpy(scalars).to(dev); M = torch.from_numpy(mask).to(dev)
+                    g = torch.as_tensor(np.asarray(gids, dtype=np.int64), device=dev)
+                    st = torch.as_tensor(np.asarray(seats, dtype=np.int64), device=dev)
+                    t, ht = _tile_feats(net, Pt, St)
+                    base = net.head(t).float()
+                    add = tile_fn(ht, g, st, b0)
+                    logits = base.clone()
+                    if add is not None:
+                        logits[:, D:D + 34] += add; logits[:, D0:D0 + 34] += add
+                    logits = logits.masked_fill(~M, float("-inf"))
+                    idx = logits.argmax(1)
+                    if genb_stats:
+                        genb, info = env.safe_info()
+                        nr, sh = info[:, 0], info[:, 1]
+                        own = mask[:, D:D + 34].any(1) | mask[:, D0:D0 + 34].any(1)
+                        gn, sn = np.asarray(gids) % 2, np.asarray(seats)
+                        elig = (sn == 0) & (nr > 0) & (sh >= 1) & own
+                        if elig.any():
+                            ii = idx.cpu().numpy()
+                            for r in np.nonzero(elig)[0]:
+                                a_ = ii[r]
+                                tile = a_ - D if D <= a_ < D + 34 else (a_ - D0 if D0 <= a_ < D0 + 34 else -1)
+                                gs[gn[r], 1] += 1; gs[gn[r], 0] += float(tile >= 0 and genb[r, tile])
+                    lp = torch.log_softmax(logits, 1).gather(1, idx[:, None]).squeeze(1)
+                    env.step(idx.cpu().numpy().astype(np.int64).tolist(), lp.cpu().numpy().tolist())
+                for gm in env.drain_finished():
+                    res[int(gm["slot"])] = gm
+        for i in range(nw):
+            a_, bb = res[2 * i], res[2 * i + 1]
+            assert int(a_["seed"]) == int(bb["seed"])
+            deltas.append(bb["points"][0] - a_["points"][0])
+    return np.asarray(deltas, float), gs
+
+
+def tile_scale(net, variant, dev, seed0):
+    """rms of a unit-direction tile score u.h_t over seat-0 rows (for whitening sigma)."""
+    acc = []
+
+    def fn(ht, g, st, b0):
+        sel = st == 0
+        if bool(sel.any()) and len(acc) < 50:
+            acc.append(ht[sel].double().pow(2).sum(1).mean().item() / ht.shape[1])   # E[(u.h)^2] for random unit u
+        return None
+
+    play_tile(net, variant, 512, 1024, seed0, dev, fn)
+    return float(np.sqrt(np.mean(acc)))
+
+
+def estimate_tile(a, net, variant, dev):
+    """ES over a tile-shared direction u in R^C: every wall draws u_i ~ N(0, I), seat 0 adds
+    +/- sigma * (u_i . h_t) / rms to the discard logit of tile t for the whole hand (antithetic on the same wall)."""
+    C = net.stem.out_channels
+    rms = tile_scale(net, variant, dev, a.seed0 + 999_999)
+    gen = torch.Generator(device=dev)
+    Gs = torch.zeros(C, device=dev, dtype=torch.float64); Gh = [torch.zeros_like(Gs), torch.zeros_like(Gs)]
+    allD = []; t0 = time.time()
+    for c0 in range(0, a.walls, a.chunk):
+        nw = min(a.chunk, a.walls - c0)
+        gen.manual_seed(a.seed0 * 7 + c0)
+        Uu = torch.randn(nw, C, device=dev, generator=gen)
+
+        def fn(ht, g, st, b0, Uu=Uu):
+            sel = st == 0
+            if not bool(sel.any()) or a.sigma == 0:
+                return None
+            w = (g[sel] // 2) + b0
+            sign = 1.0 - 2.0 * (g[sel] % 2).float()
+            sc = torch.einsum("nct,nc->nt", ht[sel].float(), Uu[w]) / (rms * np.sqrt(C)) * a.sigma
+            out = torch.zeros(ht.shape[0], 34, device=dev); out[sel] = sc * sign[:, None]
+            return out
+
+        D, _ = play_tile(net, variant, nw, a.batch, a.seed0 + c0, dev, fn)
+        D = -D
+        Dt = torch.as_tensor(D, device=dev, dtype=torch.float64)
+        gz = Dt @ Uu.double()
+        Gs += gz; Gh[0 if c0 < a.walls // 2 else 1] += gz
+        allD.append(D)
+        print(f"  chunk {c0 + nw}/{a.walls}  changed {(D != 0).mean():.3f}  {(time.time() - t0) / 60:.1f} min", flush=True)
+    D = np.concatenate(allD)
+    cos = float((Gh[0] * Gh[1]).sum() / (Gh[0].norm() * Gh[1].norm() + 1e-12))
+    torch.save({"u": Gs.float().cpu(), "u_half": [x.float().cpu() for x in Gh], "split_cos": cos, "rms": rms,
+                "sigma": a.sigma, "walls": a.walls, "seed0": a.seed0, "ckpt": a.ckpt,
+                "frac_changed": float((D != 0).mean())}, a.out)
+    print(f"u saved -> {a.out}; split-half cosine {cos:+.4f} (null SE {1 / np.sqrt(C):.3f}); "
+          f"frac changed {(D != 0).mean():.3f}", flush=True)
+
+
+def step_tile(a, net, variant, dev):
+    """seat 0 (odd slots) adds alpha * (u_hat . h_t) / rms to every discard decision; base in even slots."""
+    Ud = torch.load(a.G, map_location=dev)
+    C = net.stem.out_channels
+    u = Ud["u"].to(dev); u = u / u.norm(); rms = Ud["rms"]
+    out = json.load(open(a.out)) if os.path.exists(a.out) else {}
+    out["_meta"] = {"u": a.G, "split_cos": Ud.get("split_cos"), "ckpt": a.ckpt, "seed0": a.seed0, "walls": a.walls}
+    for al in [float(x) for x in a.alpha.split(",")]:
+        t0 = time.time()
+
+        def fn(ht, g, st, b0, al=al):
+            sel = (st == 0) & (g % 2 == 1)
+            if not bool(sel.any()) or al == 0:
+                return None
+            o = torch.zeros(ht.shape[0], 34, device=dev)
+            o[sel] = torch.einsum("nct,c->nt", ht[sel].float(), u) / rms * al
+            return o
+
+        D, gs = play_tile(net, variant, a.walls, a.batch, a.seed0, dev, fn, genb_stats=True)
+        r = {"mean": float(D.mean()), "se": float(D.std(ddof=1) / np.sqrt(len(D))), "n": len(D),
+             "frac_changed": float((D != 0).mean()),
+             "genb_rate_base": float(gs[0, 0] / max(gs[0, 1], 1)), "genb_rate_step": float(gs[1, 0] / max(gs[1, 1], 1)),
+             "minutes": round((time.time() - t0) / 60, 1)}
+        out[f"alpha={al}"] = r; json.dump(out, open(a.out, "w"), indent=1)
+        print(f"alpha={al:<6} Δ {r['mean']:+7.1f} ± {r['se']:5.1f} pts/hand  changed {r['frac_changed']:.3f}  "
+              f"genbutsu {r['genb_rate_base']:.3f} -> {r['genb_rate_step']:.3f}  ({r['minutes']} min)", flush=True)
+
+
 def estimate(a, net, variant, dev):
     A, H = net.head[2].weight.shape
     r, sig = a.rank, a.sigma
@@ -239,7 +382,7 @@ def step(a, net, variant, dev):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["estimate", "step", "basis", "estimate_sub"])
+    ap.add_argument("mode", choices=["estimate", "step", "basis", "estimate_sub", "estimate_tile", "step_tile"])
     ap.add_argument("--basis"); ap.add_argument("--k", type=int, default=16); ap.add_argument("--m", type=int, default=16)
     ap.add_argument("--ckpt", required=True); ap.add_argument("--walls", type=int, default=400000)
     ap.add_argument("--batch", type=int, default=2048); ap.add_argument("--chunk", type=int, default=16384)
@@ -252,7 +395,8 @@ def main():
     dev = "cuda"
     net = load_dnn(a.ckpt, dev).eval()
     variant = getattr(net, "encoder_variant", "v3r")
-    {"estimate": estimate, "step": step, "basis": basis, "estimate_sub": estimate_sub}[a.mode](a, net, variant, dev)
+    {"estimate": estimate, "step": step, "basis": basis, "estimate_sub": estimate_sub,
+     "estimate_tile": estimate_tile, "step_tile": step_tile}[a.mode](a, net, variant, dev)
 
 
 if __name__ == "__main__":
