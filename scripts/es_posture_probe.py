@@ -88,6 +88,74 @@ def play(net, variant, walls, batch, seed0, dev, logit_fn, genb_stats=False):
     return np.asarray(deltas, float), gs
 
 
+def basis(a, net, variant, dev):
+    """Pure, data-derived low-dim perturbation space: top-k PCs of head features h and top-m PCs of the raw logits,
+    from the frozen policy's own self-play states (seat 0 rows, unperturbed)."""
+    Hs, Ls = [], []
+
+    def fn(h, base, g, st, b0):
+        sel = (st == 0) & (g % 2 == 0)
+        if bool(sel.any()) and sum(x.shape[0] for x in Hs) < 400000:
+            Hs.append(h[sel].double().cpu()); Ls.append(base[sel].double().cpu())
+        return base
+
+    play(net, variant, a.walls, a.batch, a.seed0, dev, fn)
+    H = torch.cat(Hs); L = torch.cat(Ls)
+    H0 = H - H.mean(0); L0 = L - L.mean(0)
+    eh, vh = torch.linalg.eigh(H0.T @ H0 / len(H0)); el, vl = torch.linalg.eigh(L0.T @ L0 / len(L0))
+    k, m = a.k, a.m
+    Bh = vh[:, -k:].flip(1); Bl = vl[:, -m:].flip(1)
+    out = {"Bh": Bh.float(), "Bu": Bl.float(), "eig_h": eh.flip(0)[:k].float(), "eig_l": el.flip(0)[:m].float(),
+           "var_frac_h": float(eh.flip(0)[:k].sum() / eh.sum()), "var_frac_l": float(el.flip(0)[:m].sum() / el.sum()),
+           "rows": len(H), "ckpt": a.ckpt, "seed0": a.seed0}
+    torch.save(out, a.out)
+    print(f"basis -> {a.out}: rows {len(H)}, var explained h {out['var_frac_h']:.3f} / logits {out['var_frac_l']:.3f}")
+
+
+def estimate_sub(a, net, variant, dev):
+    """ES in the k x m subspace: dW = Bu Z Bh^T, Z ~ N(0, I_{m x k}) per wall, antithetic +/- on the same wall."""
+    B = torch.load(a.basis, map_location=dev)
+    Bh, Bu = B["Bh"].to(dev), B["Bu"].to(dev)
+    k, m = Bh.shape[1], Bu.shape[1]
+    sd_h = B["eig_h"].to(dev).sqrt()                    # whiten so every Z entry moves logits comparably
+    gen = torch.Generator(device=dev)
+    Gs = torch.zeros(m, k, device=dev, dtype=torch.float64); Gh = [torch.zeros_like(Gs), torch.zeros_like(Gs)]
+    allD = []; t0 = time.time()
+    for c0 in range(0, a.walls, a.chunk):
+        nw = min(a.chunk, a.walls - c0)
+        gen.manual_seed(a.seed0 * 7 + c0)
+        Z = torch.randn(nw, m, k, device=dev, generator=gen)
+        scale = a.sigma / np.sqrt(k)
+
+        def fn(h, base, g, st, b0, Z=Z):
+            sel = st == 0
+            if not bool(sel.any()):
+                return base
+            w = (g[sel] // 2) + b0
+            sign = 1.0 - 2.0 * (g[sel] % 2).float()
+            ph = (h[sel] @ Bh) / sd_h                          # [n, k] whitened
+            add = torch.einsum("nk,nmk->nm", ph, Z[w]) @ Bu.T   # [n, A]
+            out = base.clone(); out[sel] += add * (scale * sign)[:, None]
+            return out
+
+        D, _ = play(net, variant, nw, a.batch, a.seed0 + c0, dev, fn)
+        D = -D
+        Dt = torch.as_tensor(D, device=dev, dtype=torch.float64)
+        gz = torch.einsum("n,nmk->mk", Dt, Z.double())
+        Gs += gz; Gh[0 if c0 < a.walls // 2 else 1] += gz
+        allD.append(D)
+        print(f"  chunk {c0 + nw}/{a.walls}  changed {(D != 0).mean():.3f}  {(time.time() - t0) / 60:.1f} min", flush=True)
+    D = np.concatenate(allD)
+    cos = float((Gh[0] * Gh[1]).sum() / (Gh[0].norm() * Gh[1].norm() + 1e-12))
+    # full-space direction for `step`: dW = Bu diag(.) Gs (Bh / sd_h)^T
+    G = (Bu.double() @ Gs @ (Bh.double() / sd_h.double()).T)
+    torch.save({"G": G.float().cpu(), "G_sub": Gs.float().cpu(), "G_half_sub": [x.float().cpu() for x in Gh],
+                "split_cos": cos, "sigma": a.sigma, "walls": a.walls, "seed0": a.seed0, "ckpt": a.ckpt,
+                "basis": a.basis, "frac_changed": float((D != 0).mean())}, a.out)
+    print(f"G saved -> {a.out}; split-half cosine {cos:+.4f} (null SE {1 / np.sqrt(m * k):.3f}); "
+          f"frac changed {(D != 0).mean():.3f}", flush=True)
+
+
 def estimate(a, net, variant, dev):
     A, H = net.head[2].weight.shape
     r, sig = a.rank, a.sigma
@@ -171,7 +239,8 @@ def step(a, net, variant, dev):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["estimate", "step"])
+    ap.add_argument("mode", choices=["estimate", "step", "basis", "estimate_sub"])
+    ap.add_argument("--basis"); ap.add_argument("--k", type=int, default=16); ap.add_argument("--m", type=int, default=16)
     ap.add_argument("--ckpt", required=True); ap.add_argument("--walls", type=int, default=400000)
     ap.add_argument("--batch", type=int, default=2048); ap.add_argument("--chunk", type=int, default=16384)
     ap.add_argument("--seed0", type=int, default=3_000_000)
@@ -183,7 +252,7 @@ def main():
     dev = "cuda"
     net = load_dnn(a.ckpt, dev).eval()
     variant = getattr(net, "encoder_variant", "v3r")
-    (estimate if a.mode == "estimate" else step)(a, net, variant, dev)
+    {"estimate": estimate, "step": step, "basis": basis, "estimate_sub": estimate_sub}[a.mode](a, net, variant, dev)
 
 
 if __name__ == "__main__":
