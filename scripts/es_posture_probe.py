@@ -1,0 +1,190 @@
+"""exp117: rule-free persistent-posture search on the policy head (frozen policy, Rust engine, all T=0, same wall).
+
+Pure-line version of exp115: instead of a hand-picked rule feature (genbutsu), every wall draws its own random
+low-rank perturbation of the LAST policy layer, dW = U V^T (U [A, r], V [512, r]), held fixed for the whole hand
+(a persistent, state-dependent "posture": logits += (h V) U^T, h = post-ReLU head features). Only seat 0 is
+perturbed; the other three seats are the frozen policy.
+
+  estimate: slots 2i / 2i+1 play the same wall with +dW_i / -dW_i (antithetic). Delta_i = seat-0 points(+) - (-).
+            G = sum_i Delta_i U_i V_i^T  (an evolution-strategies direction from common-random-number pairs).
+            Also accumulates G on the first and second half of walls separately (split-half cosine = signal check).
+  step:     W' = W + alpha * (G / ||G||_F) * ||W||_F   for each alpha; slots 2i / 2i+1 = base W / W' on fresh walls.
+            Reports Delta (W' - W) per hand, plus the genbutsu rate when seat 0 is not tenpai under riichi threat
+            (did the rule-free search rediscover exp115's direction?).  --save_step writes W' checkpoints so the
+            standard pairdiff evaluator can play them against bc49.
+
+usage: es_posture_probe.py estimate --ckpt C.pt --walls 400000 --rank 8 --sigma S --seed0 X --out G.pt
+       es_posture_probe.py step --ckpt C.pt --G G.pt --alpha 0.01,0.02 --walls 200000 --seed0 Y --out r.json
+"""
+from __future__ import annotations
+
+import argparse, json, os, sys, time
+
+import numpy as np
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _feats(net, P, S):
+    """post-ReLU input of the last policy layer, and the unperturbed (unmasked) logits."""
+    h = net.head[1](net.head[0](net.trunk(P, S)))
+    return h, net.head[2](h)
+
+
+def _consts():
+    from src.agents.dnn.encoder import TYPE_TO_ID, TILE_TYPES
+    return TYPE_TO_ID["discard"] * TILE_TYPES, TYPE_TO_ID["discard0"] * TILE_TYPES
+
+
+def play(net, variant, walls, batch, seed0, dev, logit_fn, genb_stats=False):
+    """Generic paired loop. logit_fn(h, base_logits, slot_idx[n], seats[n], wall_off) -> logits.
+    Returns per-wall seat-0 deltas (odd slot - even slot) and optional genbutsu stats per parity."""
+    import riichi_rs
+    q = float(riichi_rs.PLANE_Q)
+    D, D0 = _consts()
+    deltas = []
+    gs = np.zeros((2, 2))          # [parity][genbutsu chosen, eligible rows]
+    for b0 in range(0, walls, batch // 2):
+        nw = min(batch // 2, walls - b0)
+        seeds = [seed0 + b0 + i for i in range(nw) for _ in range(2)]
+        env = riichi_rs.VecEnv([int(s) for s in seeds], len(seeds), 0.995, False, 1.0, True, variant)
+        res = {}
+        with torch.no_grad():
+            while not env.done():
+                planes, scalars, mask, seats, gids = env.observe()
+                n = planes.shape[0]
+                if n == 0:
+                    env.step([], [])
+                else:
+                    Pt = torch.from_numpy(planes).to(dev).view(n, -1, 34).float().div_(q)
+                    St = torch.from_numpy(scalars).to(dev); M = torch.from_numpy(mask).to(dev)
+                    g = torch.as_tensor(np.asarray(gids, dtype=np.int64), device=dev)
+                    st = torch.as_tensor(np.asarray(seats, dtype=np.int64), device=dev)
+                    h, base = _feats(net, Pt, St)
+                    logits = logit_fn(h, base.float(), g, st, b0).masked_fill(~M, float("-inf"))
+                    idx = logits.argmax(1)
+                    if genb_stats:
+                        genb, info = env.safe_info()
+                        nr, sh = info[:, 0], info[:, 1]
+                        own = mask[:, D:D + 34].any(1) | mask[:, D0:D0 + 34].any(1)
+                        gn, sn = np.asarray(gids) % 2, np.asarray(seats)
+                        elig = (sn == 0) & (nr > 0) & (sh >= 1) & own
+                        if elig.any():
+                            ii = idx.cpu().numpy()
+                            for r in np.nonzero(elig)[0]:
+                                a = ii[r]
+                                tile = a - D if D <= a < D + 34 else (a - D0 if D0 <= a < D0 + 34 else -1)
+                                gs[gn[r], 1] += 1
+                                gs[gn[r], 0] += float(tile >= 0 and genb[r, tile])
+                    lp = torch.log_softmax(logits, 1).gather(1, idx[:, None]).squeeze(1)
+                    env.step(idx.cpu().numpy().astype(np.int64).tolist(), lp.cpu().numpy().tolist())
+                for gm in env.drain_finished():
+                    res[int(gm["slot"])] = gm
+        for i in range(nw):
+            a, bb = res[2 * i], res[2 * i + 1]
+            assert int(a["seed"]) == int(bb["seed"])
+            deltas.append(bb["points"][0] - a["points"][0])
+    return np.asarray(deltas, float), gs
+
+
+def estimate(a, net, variant, dev):
+    A, H = net.head[2].weight.shape
+    r, sig = a.rank, a.sigma
+    gen = torch.Generator(device=dev)
+    G = torch.zeros(A, H, device=dev, dtype=torch.float64)
+    Gh = [torch.zeros_like(G), torch.zeros_like(G)]
+    allD = []
+    t0 = time.time()
+    for c0 in range(0, a.walls, a.chunk):
+        nw = min(a.chunk, a.walls - c0)
+        gen.manual_seed(a.seed0 * 7 + c0)
+        U = torch.randn(nw, A, r, device=dev, generator=gen)
+        V = torch.randn(nw, H, r, device=dev, generator=gen)
+        scale = sig / np.sqrt(r * H)          # so (h V) U^T has logit std ~ sig * rms(h)
+
+        def fn(h, base, g, st, b0, U=U, V=V):
+            sel = st == 0
+            if not bool(sel.any()):
+                return base
+            w = (g[sel] // 2) + b0             # wall index inside this chunk
+            sign = 1.0 - 2.0 * (g[sel] % 2).float()          # even slot +dW, odd slot -dW
+            hv = torch.einsum("nh,nhr->nr", h[sel], V[w])
+            add = torch.einsum("nr,nar->na", hv, U[w]) * (scale * sign)[:, None]
+            out = base.clone(); out[sel] += add
+            return out
+
+        # play() passes b0 = wall offset inside this chunk, so b0 + slot//2 indexes U/V
+        D, _ = play(net, variant, nw, a.batch, a.seed0 + c0, dev, fn)
+        D = -D                                 # play() returns odd - even = (-dW) - (+dW); flip to (+) - (-)
+        Dt = torch.as_tensor(D, device=dev)
+        G += torch.einsum("n,nar,nhr->ah", Dt, U.double(), V.double())
+        half = 0 if c0 < a.walls // 2 else 1
+        Gh[half] += torch.einsum("n,nar,nhr->ah", Dt, U.double(), V.double())
+        allD.append(D)
+        print(f"  chunk {c0 + nw}/{a.walls}  |Δ| mean {np.abs(D).mean():.0f}  changed {(D != 0).mean():.3f}  "
+              f"{(time.time() - t0) / 60:.1f} min", flush=True)
+    D = np.concatenate(allD)
+    cos = float((Gh[0] * Gh[1]).sum() / (Gh[0].norm() * Gh[1].norm() + 1e-12))
+    torch.save({"G": G.float().cpu(), "G_half": [x.float().cpu() for x in Gh], "split_cos": cos,
+                "rank": r, "sigma": sig, "walls": a.walls, "seed0": a.seed0, "ckpt": a.ckpt,
+                "delta_mean_abs": float(np.abs(D).mean()), "frac_changed": float((D != 0).mean())}, a.out)
+    print(f"G saved -> {a.out}; split-half cosine {cos:+.4f}; frac changed {(D != 0).mean():.3f}", flush=True)
+
+
+def step(a, net, variant, dev):
+    Gd = torch.load(a.G, map_location=dev)
+    G = Gd["G"].to(dev)
+    W = net.head[2].weight.detach()
+    dir_ = G / G.norm() * W.norm()
+    out = json.load(open(a.out)) if os.path.exists(a.out) else {}
+    out["_meta"] = {"G": a.G, "split_cos": Gd.get("split_cos"), "ckpt": a.ckpt, "seed0": a.seed0, "walls": a.walls}
+    for al in [float(x) for x in a.alpha.split(",")]:
+        dW = al * dir_
+        t0 = time.time()
+
+        def fn(h, base, g, st, b0, dW=dW):
+            sel = (st == 0) & (g % 2 == 1)
+            if not bool(sel.any()) or al == 0:
+                return base
+            out_ = base.clone(); out_[sel] += h[sel] @ dW.T
+            return out_
+
+        D, gs = play(net, variant, a.walls, a.batch, a.seed0, dev, fn, genb_stats=True)
+        r = {"mean": float(D.mean()), "se": float(D.std(ddof=1) / np.sqrt(len(D))), "n": len(D),
+             "frac_changed": float((D != 0).mean()),
+             "genb_rate_base": float(gs[0, 0] / max(gs[0, 1], 1)), "genb_rate_step": float(gs[1, 0] / max(gs[1, 1], 1)),
+             "genb_rows": [int(gs[0, 1]), int(gs[1, 1])], "minutes": round((time.time() - t0) / 60, 1)}
+        out[f"alpha={al}"] = r
+        json.dump(out, open(a.out, "w"), indent=1)
+        print(f"alpha={al:<6} Δ {r['mean']:+7.1f} ± {r['se']:5.1f} pts/hand  changed {r['frac_changed']:.3f}  "
+              f"genbutsu {r['genb_rate_base']:.3f} -> {r['genb_rate_step']:.3f}  ({r['minutes']} min)", flush=True)
+        if a.save_step:
+            ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
+            ck["state_dict"]["head.2.weight"] = (W + dW).float().cpu()
+            ck.pop("optimizer", None)
+            ck["es_step"] = {"G": a.G, "alpha": al}
+            p = a.save_step.replace("{alpha}", str(al))
+            torch.save(ck, p)
+            print(f"  saved {p}", flush=True)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("mode", choices=["estimate", "step"])
+    ap.add_argument("--ckpt", required=True); ap.add_argument("--walls", type=int, default=400000)
+    ap.add_argument("--batch", type=int, default=2048); ap.add_argument("--chunk", type=int, default=16384)
+    ap.add_argument("--seed0", type=int, default=3_000_000)
+    ap.add_argument("--rank", type=int, default=8); ap.add_argument("--sigma", type=float, default=1.0)
+    ap.add_argument("--G"); ap.add_argument("--alpha", default="0,0.01,0.02,0.05")
+    ap.add_argument("--save_step", default=""); ap.add_argument("--out", required=True)
+    a = ap.parse_args()
+    from scripts.run_elo_league import load_dnn
+    dev = "cuda"
+    net = load_dnn(a.ckpt, dev).eval()
+    variant = getattr(net, "encoder_variant", "v3r")
+    (estimate if a.mode == "estimate" else step)(a, net, variant, dev)
+
+
+if __name__ == "__main__":
+    main()
