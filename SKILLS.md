@@ -389,3 +389,10 @@ community 长跑可靠性、标称核数落实，~$0.25 探针即可全部验证
 400GB≈$80/月）；SSH 走**直连**入口（`sshPublicKey` 注入的 key 只有直连认，proxy 入口
 永远 Permission denied）；pod 是容器，自停靠 `kill 1` 不靠 shutdown。价格表、
 create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_and_ops.md)。
+
+## 2026-10-25 行为探针结论要带训练规模（exp120 教训）
+- exp21（≤2M 局）"防守只能从示范来"、exp68"从零 RL 从未学会防守"被当成纯血线的定性事实沿用了两个月；
+  exp120 用同一仪器（probe_defense）对 ≈100M/384M 局的纯血模型测出 defense_iq 0.10–0.12（1M 局模型 0.00）——结论随规模翻转。
+- 规矩：① 任何"模型会/不会 X"的行为结论写进 FINDINGS 时必须带训练局数；② 新里程碑 ckpt 例行复跑历史行为探针，不沿用旧判决；
+  ③ 行为代理（现物率）与 oracle 结算（反事实荣和）可能不一致——exp120 中 π 的非现物选择在真实牌桌上几乎不被荣和，代理会低估防守。
+- 探针工程：模型代码在别的 worktree 时用 `LLM_MAHJONG_ROOT` 环境变量指路（`scripts/probe_value_1ply.py`），别把 arch 复制过来。
