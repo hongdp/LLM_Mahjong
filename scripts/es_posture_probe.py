@@ -163,6 +163,10 @@ def _tile_feats(net, P, S):
     return t, t[:, :C * 34].view(-1, C, 34)
 
 
+GATE = "none"          # exp119: "riichi" = the tile perturbation only acts when >= 1 opponent has declared riichi
+GATE_ROWS = [0, 0]     # [seat-0 own-discard rows gated on, seat-0 own-discard rows total]
+
+
 def play_tile(net, variant, walls, batch, seed0, dev, tile_fn, genb_stats=False):
     """play() variant whose hook gets per-tile trunk channels: tile_fn(ht[n,C,34], g, st, b0) -> [n,34] or None
     (added to discard and discard0 slots)."""
@@ -190,6 +194,12 @@ def play_tile(net, variant, walls, batch, seed0, dev, tile_fn, genb_stats=False)
                     t, ht = _tile_feats(net, Pt, St)
                     base = net.head(t).float()
                     add = tile_fn(ht, g, st, b0)
+                    if add is not None and GATE == "riichi":
+                        _, ginfo = env.safe_info()
+                        gmask = ginfo[:, 0] > 0
+                        own0 = (np.asarray(seats) == 0) & (mask[:, D:D + 34].any(1) | mask[:, D0:D0 + 34].any(1))
+                        GATE_ROWS[0] += int((gmask & own0).sum()); GATE_ROWS[1] += int(own0.sum())
+                        add = add * torch.from_numpy(gmask.astype(np.float32)).to(dev)[:, None]
                     logits = base.clone()
                     if add is not None:
                         logits[:, D:D + 34] += add; logits[:, D0:D0 + 34] += add
@@ -266,7 +276,8 @@ def estimate_tile(a, net, variant, dev):
     cos = float((Gh[0] * Gh[1]).sum() / (Gh[0].norm() * Gh[1].norm() + 1e-12))
     torch.save({"u": Gs.float().cpu(), "u_half": [x.float().cpu() for x in Gh], "split_cos": cos, "rms": rms,
                 "sigma": a.sigma, "walls": a.walls, "seed0": a.seed0, "ckpt": a.ckpt,
-                "frac_changed": float((D != 0).mean())}, a.out)
+                "frac_changed": float((D != 0).mean()), "gate": GATE, "gate_rows": list(GATE_ROWS)}, a.out)
+    print(f"gate={GATE}: seat-0 discard rows perturbed {GATE_ROWS[0]}/{GATE_ROWS[1]}", flush=True)
     print(f"u saved -> {a.out}; split-half cosine {cos:+.4f} (null SE {1 / np.sqrt(C):.3f}); "
           f"frac changed {(D != 0).mean():.3f}", flush=True)
 
@@ -383,6 +394,7 @@ def step(a, net, variant, dev):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["estimate", "step", "basis", "estimate_sub", "estimate_tile", "step_tile"])
+    ap.add_argument("--gate", default="none", choices=["none", "riichi"])
     ap.add_argument("--basis"); ap.add_argument("--k", type=int, default=16); ap.add_argument("--m", type=int, default=16)
     ap.add_argument("--ckpt", required=True); ap.add_argument("--walls", type=int, default=400000)
     ap.add_argument("--batch", type=int, default=2048); ap.add_argument("--chunk", type=int, default=16384)
@@ -391,6 +403,8 @@ def main():
     ap.add_argument("--G"); ap.add_argument("--alpha", default="0,0.01,0.02,0.05")
     ap.add_argument("--save_step", default=""); ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    global GATE
+    GATE = a.gate
     from scripts.run_elo_league import load_dnn
     dev = "cuda"
     net = load_dnn(a.ckpt, dev).eval()
