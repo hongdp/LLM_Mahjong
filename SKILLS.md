@@ -396,3 +396,5 @@ create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_
 - 规矩：① 任何"模型会/不会 X"的行为结论写进 FINDINGS 时必须带训练局数；② 新里程碑 ckpt 例行复跑历史行为探针，不沿用旧判决；
   ③ 行为代理（现物率）与 oracle 结算（反事实荣和）可能不一致——exp120 中 π 的非现物选择在真实牌桌上几乎不被荣和，代理会低估防守。
 - 探针工程：模型代码在别的 worktree 时用 `LLM_MAHJONG_ROOT` 环境变量指路（`scripts/probe_value_1ply.py`），别把 arch 复制过来。
+- **后见之明 max 不是收益上限（exp121 Stage 0）**：对同牌山反事实取"最优替代 − 所选"，等价替代（不可能更好）也给出 2.0 千点的"增益"——
+  任何"max over alternatives"门槛必须配等价替代对照（混沌地板）和配对系统差；单牌山局末值做逐决策金标准需 K≈(σ/Δ)² 次确定化，先算 K 再承诺。
