@@ -183,7 +183,10 @@ def probe_decision(critic, table, pid, actions, probs, chosen, src, apply_discar
         rec["cands"][t]["v0"] = v0
     if counterfactual is not None:
         for t, a in cands.items():
-            rec["cands"][t]["vcf"] = counterfactual(a)
+            vcf, vend = counterfactual(a)
+            rec["cands"][t]["vcf"] = vcf
+            if vend is not None:
+                rec["cands"][t]["vend"] = vend
     return rec
 
 
@@ -244,31 +247,40 @@ def _placeholder_step(idx=0):
                    mask=torch.zeros(1, dtype=torch.bool), action_idx=idx, logprob=0.0)
 
 
-def counterfactual_value(critic, policy, table, pid, action_xml, mask):
-    """Clone the true table, force `action_xml`, play opponents with the
-    policy until our next turn-phase decision (-> own-draw expectation)
-    or the end of the deal (-> exact final reward)."""
+def counterfactual_value(critic, policy, table, pid, action_xml, mask, to_end=False):
+    """Clone the true table, force `action_xml`, play everyone else with the
+    policy. Returns (vcf, vend):
+      vcf  = critic bootstrap at our next turn-phase decision (own-draw
+             expectation), or the exact final reward if the deal ends first
+      vend = exact final reward for `pid` when the deal is played to its end
+             (to_end=True; deterministic at T=0 on the true wall — exp121
+             Stage 0 gold standard), else None."""
     clone = copy.deepcopy(table)
     gen = play_game_gen(table=clone)
     try:
         _t, reqs = next(gen)
     except StopIteration:
-        return None
+        return None, None
     if not reqs or reqs[0][0] != pid:
-        return None
+        return None, None
+    vcf = None
     try:
         t, reqs = gen.send([(_placeholder_step(), action_xml)])
         guard = 0
-        while guard < 40:
+        while guard < 600:
             guard += 1
-            if len(reqs) == 1 and reqs[0][0] == pid and any(_is_discard(a) for a in reqs[0][1]):
+            if (vcf is None and len(reqs) == 1 and reqs[0][0] == pid
+                    and any(_is_discard(a) for a in reqs[0][1])):
                 drawn = t.last_drawn[pid]
                 if drawn is None or drawn not in t.hands[pid]:
-                    return critic.values([(t, pid)], mask)[0]
-                t.hands[pid].remove(drawn)
-                v = critic.draw_expectation(t, pid, mask)
-                t.hands[pid].append(drawn)
-                return v
+                    vcf = critic.values([(t, pid)], mask)[0]
+                else:
+                    t.hands[pid].remove(drawn)
+                    vcf = critic.draw_expectation(t, pid, mask)
+                    t.hands[pid].append(drawn)
+                    t.hands[pid].sort(key=sort_key)
+                if not to_end:
+                    return vcf, None
             replies = []
             for q, opts in reqs:
                 a, _d, _v = policy(t, q, opts)
@@ -277,11 +289,14 @@ def counterfactual_value(critic, policy, table, pid, action_xml, mask):
     except StopIteration:
         pass
     fr = clone.final_rewards
-    return float(fr[pid]) if fr else None
+    vend = float(fr[pid]) if fr else None
+    if vcf is None:                      # deal ended before our next turn
+        vcf = vend
+    return vcf, (vend if to_end else None)
 
 
 def selfplay_chunk(args):
-    ckpt, seeds, sample_p, tag = args
+    ckpt, seeds, sample_p, tag, to_end = args
     torch.set_num_threads(1)
     net = load_dnn(ckpt, "cpu")
     critic = Critic(net, "cpu")
@@ -295,17 +310,22 @@ def selfplay_chunk(args):
             table, reqs = next(gen)
         except StopIteration:
             continue
+        nstep = Counter()                 # per-seat turn-decision index (replay key)
         while True:
             replies = []
             for pid, actions in reqs:
                 chosen, dist, _v = policy(table, pid, actions)
-                if (len(reqs) == 1 and any(_is_discard(a) for a in actions)
-                        and _is_discard(chosen) and rng.random() < sample_p):
+                is_turn = len(reqs) == 1 and any(_is_discard(a) for a in actions)
+                if is_turn:
+                    nstep[pid] += 1
+                if is_turn and _is_discard(chosen) and rng.random() < sample_p:
                     mask, _ = critic.space.mask(actions)
-                    cf = lambda a, _m=mask: counterfactual_value(critic, policy, table, pid, a, _m)
+                    cf = lambda a, _m=mask: counterfactual_value(critic, policy, table, pid, a, _m, to_end)
                     rec = probe_decision(critic, table, pid, actions, dist, chosen,
                                          f"{tag}{seed}", lambda c, a: c.step(pid, a), cf)
                     if rec:
+                        rec["seed"] = seed
+                        rec["step"] = nstep[pid]
                         out.append(rec)
                 replies.append((_placeholder_step(), chosen))
             try:
@@ -333,8 +353,76 @@ def _eff_key(c, t):
     return (v["sh"], v["uk"])
 
 
+def stage0_gate(recs):
+    """exp121 Stage 0: exact same-wall counterfactual to the end of the deal.
+    Per stratum: Vend_gain = mean(max_alt vend - vend[pi pick]) (hindsight
+    upper bound of what any critic-driven search could recover), pi_end_opt =
+    fraction of decisions where pi's pick is already vend-optimal."""
+    G = {}
+    for r in recs:
+        c = r["cands"]
+        if not all(v.get("vend") is not None for v in c.values()):
+            continue
+        pt = _argmax(c, "p")
+        best = _eff_best(c)
+        if pt is None or best is None:
+            continue
+        vmax = max(v["vend"] for v in c.values())
+        gain = vmax - c[pt]["vend"]
+        opt = c[pt]["vend"] >= vmax - 1e-9
+        # chaos diagnostic: alternatives EQUIVALENT to the pick by efficiency
+        # and safety (same shanten, ukeire within 2, same genbutsu flag) can
+        # only differ in vend through the butterfly effect of a different
+        # tile hitting the river; their spread is the hindsight noise floor
+        psh, puk = _eff_key(c, pt)
+        equiv = [v["vend"] for u, v in c.items()
+                 if u != pt and v["sh"] == psh and abs(v["uk"] - puk) <= 2
+                 and v["genbutsu"] == c[pt]["genbutsu"]]
+        gain_equiv = (max(equiv) - c[pt]["vend"]) if equiv else None
+        if equiv:
+            grp = equiv + [c[pt]["vend"]]
+            mu = sum(grp) / len(grp)
+            chaos_sd = (sum((x - mu) ** 2 for x in grp) / (len(grp) - 1)) ** 0.5
+        else:
+            chaos_sd = None
+        ps = sorted((v["p"] for v in c.values()), reverse=True)
+        coin = r["threat"] != "riichi" and len(ps) >= 2 and ps[1] >= 0.30
+        strata = ["all"] + (["coinflip"] if coin else [])
+        if r["threat"] != "none":
+            strata.append(f"exposed_{r['threat']}")
+            if not c[pt]["genbutsu"] and any(v["genbutsu"] and v["sh"] == psh and abs(v["uk"] - puk) <= 2
+                                             for v in c.values()):
+                strata.append(f"exposed_{r['threat']}/safe_tie")
+        for st in strata:
+            d = G.setdefault(st, {"gain": [], "opt": [], "gain_equiv": [], "chaos_sd": []})
+            d["gain"].append(gain); d["opt"].append(opt)
+            if gain_equiv is not None:
+                d["gain_equiv"].append(gain_equiv); d["chaos_sd"].append(chaos_sd)
+    out = {}
+    def _ms(xs):
+        n = len(xs)
+        if not n:
+            return None, None
+        m = sum(xs) / n
+        sd = (sum((x - m) ** 2 for x in xs) / max(1, n - 1)) ** 0.5
+        return round(m, 4), (round(sd / n ** 0.5, 4) if n > 1 else None)
+    for st, d in G.items():
+        xs = d["gain"]; n = len(xs)
+        m, se = _ms(xs)
+        me, _ = _ms(d["gain_equiv"])
+        cs, _ = _ms(d["chaos_sd"])
+        out[st] = {"n": n, "Vend_gain": m, "se": se,
+                   "pi_end_opt": round(sum(d["opt"]) / n, 3),
+                   "gain_ge_0.5": round(sum(x >= 0.5 for x in xs) / n, 3),
+                   "gain_ge_2": round(sum(x >= 2.0 for x in xs) / n, 3),
+                   "n_with_equiv": len(d["gain_equiv"]),
+                   "gain_over_equivalents": me,       # hindsight gain from alternatives that cannot be better
+                   "chaos_sd_within_equivalents": cs}
+    return out
+
+
 def summarize(recs):
-    rankers = ["p", "v1", "vcf", "v0"]
+    rankers = ["p", "v1", "vcf", "vend", "v0"]
     S = {}
     def add(stratum, ranker, hit):
         d = S.setdefault(stratum, {}).setdefault(ranker, [0, 0])
@@ -372,6 +460,9 @@ def summarize(recs):
     for st, d in sorted(S.items()):
         table[st] = {k: {"hit": h, "n": n, "rate": round(h / n, 3) if n else None} for k, (h, n) in d.items()}
     table["paired_gaps"] = paired_gaps(recs)
+    s0 = stage0_gate(recs)
+    if s0:
+        table["stage0_gate"] = s0
     return table
 
 
@@ -393,7 +484,7 @@ def paired_gaps(recs):
         ps = sorted((v["p"] for v in c.values()), reverse=True)
         coin = r["threat"] != "riichi" and len(ps) >= 2 and ps[1] >= 0.30
         if coin and best != pt:
-            for k in ("v1", "vcf", "v0"):
+            for k in ("v1", "vcf", "vend", "v0"):
                 if c[best].get(k) is not None and c[pt].get(k) is not None:
                     add("coinflip/effbest_minus_pick", k, c[best][k] - c[pt][k])
         if r["threat"] != "none" and not c[pt]["genbutsu"]:
@@ -402,7 +493,7 @@ def paired_gaps(recs):
                    if v["genbutsu"] and v["sh"] == psh and abs(v["uk"] - puk) <= 2]
             if tie:
                 alt = max(tie)[1]
-                for k in ("v1", "vcf", "v0"):
+                for k in ("v1", "vcf", "vend", "v0"):
                     if c[alt].get(k) is not None and c[pt].get(k) is not None:
                         add(f"exposed_{r['threat']}/safe_tie/genbutsu_minus_pick", k, c[alt][k] - c[pt][k])
     out = {}
@@ -425,6 +516,9 @@ def main():
     ap.add_argument("--seed0", type=int, default=70000000)
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--cf-to-end", action="store_true",
+                    help="self-play: also play each counterfactual to the end of the deal "
+                         "(exact same-wall value `vend`; exp121 Stage 0 gate)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -437,7 +531,7 @@ def main():
     if a.games > 0:
         seeds = [a.seed0 + i for i in range(a.games)]
         n = max(1, min(a.workers, a.games))
-        chunks = [(a.ckpt, seeds[i::n], a.sample_p, "sp") for i in range(n)]
+        chunks = [(a.ckpt, seeds[i::n], a.sample_p, "sp", a.cf_to_end) for i in range(n)]
         ctx = mp.get_context("fork")
         with ctx.Pool(n) as pool:
             for part in pool.imap_unordered(selfplay_chunk, chunks):
