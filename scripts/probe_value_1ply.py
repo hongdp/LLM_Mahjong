@@ -152,9 +152,10 @@ class Critic:
 # one decision -> record
 # ----------------------------------------------------------------------
 def probe_decision(critic, table, pid, actions, probs, chosen, src, apply_discard,
-                   counterfactual=None):
+                   counterfactual=None, with_critic=True):
     """apply_discard(clone, action_xml) mutates a deep copy; counterfactual
-    (self-play only) maps action_xml -> value (float) or None."""
+    (self-play only) maps action_xml -> (vcf, vend). with_critic=False skips
+    the V1/V0 reads (cheap record: p / efficiency / genbutsu only)."""
     cands = {}
     for a in actions:
         if _is_discard(a):
@@ -163,24 +164,27 @@ def probe_decision(critic, table, pid, actions, probs, chosen, src, apply_discar
                 cands[t] = a
     if len(cands) < 2 or not _is_discard(chosen):
         return None
-    mask, _ = critic.space.mask(actions)
     eff = efficiency(table, pid)
     opps, kind = threats(table, pid)
     gb = genbutsu_set(table, opps)
     rec = {"src": src, "pid": pid, "threat": kind, "opps": opps,
            "shanten": min((v[0] for v in eff.values()), default=None),
-           "chosen": _tile(chosen), "cands": {}}
-    v0_states = []
+           "chosen": _tile(chosen), "cands": {}, "_actions": {}}
     for t, a in cands.items():
-        clone = copy.deepcopy(table)
-        apply_discard(clone, a)
-        v1 = critic.draw_expectation(clone, pid, mask)
-        v0_states.append((clone, pid))
-        rec["cands"][t] = {"p": float(probs.get(a, 0.0)), "v1": v1,
+        rec["cands"][t] = {"p": float(probs.get(a, 0.0)),
                            "sh": eff.get(t, (None, None))[0], "uk": eff.get(t, (None, None))[1],
                            "genbutsu": t in gb}
-    for (t, _a), v0 in zip(cands.items(), critic.values(v0_states, mask)):
-        rec["cands"][t]["v0"] = v0
+        rec["_actions"][t] = a
+    if with_critic:
+        mask, _ = critic.space.mask(actions)
+        v0_states = []
+        for t, a in cands.items():
+            clone = copy.deepcopy(table)
+            apply_discard(clone, a)
+            rec["cands"][t]["v1"] = critic.draw_expectation(clone, pid, mask)
+            v0_states.append((clone, pid))
+        for (t, _a), v0 in zip(cands.items(), critic.values(v0_states, mask)):
+            rec["cands"][t]["v0"] = v0
     if counterfactual is not None:
         for t, a in cands.items():
             vcf, vend = counterfactual(a)
@@ -188,6 +192,82 @@ def probe_decision(critic, table, pid, actions, probs, chosen, src, apply_discar
             if vend is not None:
                 rec["cands"][t]["vend"] = vend
     return rec
+
+
+# ----------------------------------------------------------------------
+# exp121 Stage 0 v2: K reshuffled walls (PIMC over the hidden wall)
+# ----------------------------------------------------------------------
+def reshuffle_hidden(table, rng):
+    """Reshuffle everything in the wall that nobody has seen yet: the live
+    wall plus the dead-wall slots that are neither drawn rinshan tiles
+    (0.._rinshan_idx-1) nor revealed dora indicators (4..4+n_dora-1).
+    Hidden hands are kept as they are (oracle on hands, expectation over
+    the wall). ura indicators are re-derived from the new dead wall."""
+    revealed = set(range(table._rinshan_idx)) | set(range(4, 4 + len(table.dora_indicators)))
+    hidden_idx = [i for i in range(14) if i not in revealed]
+    pool = list(table.wall) + [table.dead_wall[i] for i in hidden_idx]
+    rng.shuffle(pool)
+    n = len(table.wall)
+    table.wall = pool[:n]
+    for i, t in zip(hidden_idx, pool[n:]):
+        table.dead_wall[i] = t
+    table.ura_indicators = [table.dead_wall[9 + k] for k in range(len(table.ura_indicators))]
+
+
+def rollout_end(policy, clone, pid, action_xml):
+    """Force `action_xml` on `clone` (already copied / reshuffled) and play
+    the deal to its end with the policy; exact final reward for pid."""
+    gen = play_game_gen(table=clone)
+    try:
+        _t, reqs = next(gen)
+        if not reqs or reqs[0][0] != pid:
+            return None
+        t, reqs = gen.send([(_placeholder_step(), action_xml)])
+        guard = 0
+        while guard < 600:
+            guard += 1
+            replies = [(_placeholder_step(), policy(t, q, opts)[0]) for q, opts in reqs]
+            t, reqs = gen.send(replies)
+    except StopIteration:
+        pass
+    fr = clone.final_rewards
+    return float(fr[pid]) if fr else None
+
+
+def classify(rec):
+    """Strata of interest for the K-wall measurement."""
+    c = rec["cands"]
+    pt = _argmax(c, "p")
+    ps = sorted((v["p"] for v in c.values()), reverse=True)
+    coin = rec["threat"] != "riichi" and len(ps) >= 2 and ps[1] >= 0.30
+    safe_tie = False
+    if rec["threat"] != "none" and not c[pt]["genbutsu"]:
+        psh, puk = _eff_key(c, pt)
+        safe_tie = any(v["genbutsu"] and v["sh"] == psh and abs(v["uk"] - puk) <= 2 for v in c.values())
+    return coin, safe_tie
+
+
+def kwall_candidates(rec, max_cands):
+    """pi's pick, the efficiency-best, the best-efficiency genbutsu tie
+    alternative, then the most probable others, up to max_cands."""
+    c = rec["cands"]
+    pt = _argmax(c, "p")
+    keep = [pt]
+    best = _eff_best(c)
+    if best and best not in keep:
+        keep.append(best)
+    psh, puk = _eff_key(c, pt)
+    tie = [(v["uk"], u) for u, v in c.items() if v["genbutsu"] and v["sh"] == psh and abs(v["uk"] - puk) <= 2 and u != pt]
+    if tie:
+        alt = max(tie)[1]
+        if alt not in keep:
+            keep.append(alt)
+    for u in sorted(c, key=lambda u: -c[u]["p"]):
+        if len(keep) >= max_cands:
+            break
+        if u not in keep:
+            keep.append(u)
+    return keep
 
 
 # ----------------------------------------------------------------------
@@ -210,6 +290,7 @@ def replay_mjai_log(critic, path, tag):
                                  f"{tag}#{bot.n_decisions + 1}", apply)
             if rec:
                 rec["n"] = bot.n_decisions + 1
+                rec.pop("_actions", None)
                 out.append(rec)
         return chosen, dist, v
 
@@ -296,7 +377,8 @@ def counterfactual_value(critic, policy, table, pid, action_xml, mask, to_end=Fa
 
 
 def selfplay_chunk(args):
-    ckpt, seeds, sample_p, tag, to_end = args
+    ckpt, seeds, sample_p, tag, to_end, kw = args
+    k_coin, k_def, max_cands = kw if kw else (0, 0, 0)
     torch.set_num_threads(1)
     net = load_dnn(ckpt, "cpu")
     critic = Critic(net, "cpu")
@@ -319,14 +401,40 @@ def selfplay_chunk(args):
                 if is_turn:
                     nstep[pid] += 1
                 if is_turn and _is_discard(chosen) and rng.random() < sample_p:
-                    mask, _ = critic.space.mask(actions)
-                    cf = lambda a, _m=mask: counterfactual_value(critic, policy, table, pid, a, _m, to_end)
-                    rec = probe_decision(critic, table, pid, actions, dist, chosen,
-                                         f"{tag}{seed}", lambda c, a: c.step(pid, a), cf)
+                    if kw:                                   # K-wall mode: strata of interest only
+                        rec = probe_decision(critic, table, pid, actions, dist, chosen,
+                                             f"{tag}{seed}", None, None, with_critic=False)
+                        if rec:
+                            coin, safe_tie = classify(rec)
+                            K = max(k_coin if coin else 0, k_def if safe_tie else 0)
+                            if K > 0:
+                                rec["seed"] = seed; rec["step"] = nstep[pid]
+                                rec["coinflip"] = coin; rec["safe_tie"] = safe_tie; rec["K"] = K
+                                for t in kwall_candidates(rec, max_cands):
+                                    vals = []
+                                    for k in range(K):
+                                        clone = copy.deepcopy(table)
+                                        # same k -> same reshuffle for every candidate (common random numbers)
+                                        reshuffle_hidden(clone, random.Random(seed * 1000003 + nstep[pid] * 1009 + k))
+                                        vals.append(rollout_end(policy, clone, pid, rec["_actions"][t]))
+                                    vals = [v for v in vals if v is not None]
+                                    m = sum(vals) / len(vals) if vals else None
+                                    sd = (sum((x - m) ** 2 for x in vals) / max(1, len(vals) - 1)) ** 0.5 if len(vals) > 1 else None
+                                    rec["cands"][t]["vw"] = vals
+                                    rec["cands"][t]["vw_mean"] = m
+                                    rec["cands"][t]["vw_se"] = sd / len(vals) ** 0.5 if sd is not None else None
+                                out.append(rec)
+                    else:
+                        mask, _ = critic.space.mask(actions)
+                        cf = lambda a, _m=mask: counterfactual_value(critic, policy, table, pid, a, _m, to_end)
+                        rec = probe_decision(critic, table, pid, actions, dist, chosen,
+                                             f"{tag}{seed}", lambda c, a: c.step(pid, a), cf)
+                        if rec:
+                            rec["seed"] = seed
+                            rec["step"] = nstep[pid]
+                            out.append(rec)
                     if rec:
-                        rec["seed"] = seed
-                        rec["step"] = nstep[pid]
-                        out.append(rec)
+                        rec.pop("_actions", None)
                 replies.append((_placeholder_step(), chosen))
             try:
                 table, reqs = gen.send(replies)
@@ -463,7 +571,70 @@ def summarize(recs):
     s0 = stage0_gate(recs)
     if s0:
         table["stage0_gate"] = s0
+    kw = kwall_gate(recs)
+    if kw:
+        table["kwall_gate"] = kw
     return table
+
+
+def kwall_gate(recs):
+    """exp121 Stage 0 v2: per stratum, paired difference of K-wall means
+    (alternative - pi's pick); SE across decisions (contains the per-decision
+    MC error, so it is conservative), mean per-decision MC SE, fraction of
+    decisions where the alternative beats the pick by > 2 pooled MC SE, and
+    how often pi's pick is the best of the kept candidates."""
+    G = {}
+    def put(st, name, diff, mc_se, sig):
+        d = G.setdefault(st, {}).setdefault(name, {"diff": [], "mc": [], "sig": []})
+        d["diff"].append(diff); d["mc"].append(mc_se); d["sig"].append(sig)
+    for r in recs:
+        c = r["cands"]
+        kept = {u: v for u, v in c.items() if v.get("vw_mean") is not None}
+        if len(kept) < 2:
+            continue
+        pt = _argmax(c, "p")
+        if pt not in kept:
+            continue
+        pm, pse = kept[pt]["vw_mean"], kept[pt]["vw_se"] or 0.0
+        vmax = max(v["vw_mean"] for v in kept.values())
+        best_kept = pt if pm >= vmax - 1e-9 else max(kept, key=lambda u: kept[u]["vw_mean"])
+        strata = []
+        if r.get("coinflip"):
+            strata.append("coinflip")
+        if r.get("safe_tie"):
+            strata.append(f"safe_tie_{r['threat']}")
+        for st in strata:
+            put(st, "pick_is_best", float(best_kept == pt), 0.0, False)
+            eb = _eff_best(c)
+            if eb in kept and eb != pt:
+                mc = ((kept[eb]["vw_se"] or 0.0) ** 2 + pse ** 2) ** 0.5
+                diff = kept[eb]["vw_mean"] - pm
+                put(st, "effbest_minus_pick", diff, mc, diff > 2 * mc)
+            psh, puk = _eff_key(c, pt)
+            tie = [(v["uk"], u) for u, v in c.items()
+                   if v["genbutsu"] and v["sh"] == psh and abs(v["uk"] - puk) <= 2 and u != pt and u in kept]
+            if tie:
+                alt = max(tie)[1]
+                mc = ((kept[alt]["vw_se"] or 0.0) ** 2 + pse ** 2) ** 0.5
+                diff = kept[alt]["vw_mean"] - pm
+                put(st, "genbutsu_minus_pick", diff, mc, diff > 2 * mc)
+            # best kept alternative vs pick (hindsight over means, but means are over K walls now)
+            alts = [u for u in kept if u != pt]
+            if alts:
+                ba = max(alts, key=lambda u: kept[u]["vw_mean"])
+                mc = ((kept[ba]["vw_se"] or 0.0) ** 2 + pse ** 2) ** 0.5
+                diff = kept[ba]["vw_mean"] - pm
+                put(st, "bestalt_minus_pick", diff, mc, diff > 2 * mc)
+    out = {}
+    for st, d in G.items():
+        out[st] = {}
+        for name, x in d.items():
+            xs = x["diff"]; n = len(xs); m = sum(xs) / n
+            sd = (sum((v - m) ** 2 for v in xs) / max(1, n - 1)) ** 0.5
+            out[st][name] = {"n": n, "mean": round(m, 4), "se": round(sd / n ** 0.5, 4) if n > 1 else None,
+                             "mean_mc_se": round(sum(x["mc"]) / n, 4),
+                             "frac_sig_better": round(sum(x["sig"]) / n, 3)}
+    return out
 
 
 def paired_gaps(recs):
@@ -519,6 +690,13 @@ def main():
     ap.add_argument("--cf-to-end", action="store_true",
                     help="self-play: also play each counterfactual to the end of the deal "
                          "(exact same-wall value `vend`; exp121 Stage 0 gate)")
+    ap.add_argument("--cf-walls", type=int, default=0,
+                    help="exp121 Stage 0 v2: K reshuffled hidden walls per candidate on COIN-FLIP decisions "
+                         "(hands kept, wall reshuffled, same K shuffles for every candidate); 0 = off")
+    ap.add_argument("--cf-walls-defense", type=int, default=0,
+                    help="K for safe-tie (exposed) decisions; 0 = skip them")
+    ap.add_argument("--cf-walls-max-cands", type=int, default=6,
+                    help="candidates evaluated per decision: pick, efficiency-best, genbutsu tie alt, then top-p")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -531,7 +709,8 @@ def main():
     if a.games > 0:
         seeds = [a.seed0 + i for i in range(a.games)]
         n = max(1, min(a.workers, a.games))
-        chunks = [(a.ckpt, seeds[i::n], a.sample_p, "sp", a.cf_to_end) for i in range(n)]
+        kw = (a.cf_walls, a.cf_walls_defense, a.cf_walls_max_cands) if (a.cf_walls or a.cf_walls_defense) else None
+        chunks = [(a.ckpt, seeds[i::n], a.sample_p, "sp", a.cf_to_end, kw) for i in range(n)]
         ctx = mp.get_context("fork")
         with ctx.Pool(n) as pool:
             for part in pool.imap_unordered(selfplay_chunk, chunks):
