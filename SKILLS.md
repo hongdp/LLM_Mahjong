@@ -398,3 +398,7 @@ create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_
 - 探针工程：模型代码在别的 worktree 时用 `LLM_MAHJONG_ROOT` 环境变量指路（`scripts/probe_value_1ply.py`），别把 arch 复制过来。
 - **后见之明 max 不是收益上限（exp121 Stage 0）**：对同牌山反事实取"最优替代 − 所选"，等价替代（不可能更好）也给出 2.0 千点的"增益"——
   任何"max over alternatives"门槛必须配等价替代对照（混沌地板）和配对系统差；单牌山局末值做逐决策金标准需 K≈(σ/Δ)² 次确定化，先算 K 再承诺。
+- **提议"没试过的杠杆"前先 grep 三处台账（2026-10-29）**：同一会话两次把已判负方向当新方向——因子化短视界价值（已被 exp99/114/115/116/119 边界化，
+  在 continue-task 分支）、对手池/league/非传递性诊断/检查点集成（已被 exp82/85/87/89/92 与 09-26"博弈论防线总结"判决：非传递性未观察到、M 不可剥削、集成 +0.3 pp）。
+  用户已按错误前提批准第二项，发现后中止（$0）。台账分三个 checkout，关键判决常在综述条目而不在单 run 行里。
+  规矩：提议前 `grep -i` 主 repo + runpod worktree + continue-task 分支的 FINDINGS/INDEX 并读综述条目，命中的 exp 编号与判决写进提议；grep 为空才可说"未试过"。
