@@ -402,3 +402,8 @@ create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_
   在 continue-task 分支）、对手池/league/非传递性诊断/检查点集成（已被 exp82/85/87/89/92 与 09-26"博弈论防线总结"判决：非传递性未观察到、M 不可剥削、集成 +0.3 pp）。
   用户已按错误前提批准第二项，发现后中止（$0）。台账分三个 checkout，关键判决常在综述条目而不在单 run 行里。
   规矩：提议前 `grep -i` 主 repo + runpod worktree + continue-task 分支的 FINDINGS/INDEX 并读综述条目，命中的 exp 编号与判决写进提议；grep 为空才可说"未试过"。
+- **bf16 rollout 的 old_logprobs 对小概率动作有 ~0.1–0.2 的 log 误差（exp122，2026-10-31）**：PPO 第一个 minibatch 的 ratio 本应 ≡1，实测 π_old<0.01 的样本
+  mean|r−1| 0.14、16% 已越过 ε=0.2——裁剪在更新前就随机丢弃这些样本的梯度（对称、占全部样本 ~1%）。exp113 以此配方训完无害证据，但任何
+  "裁剪触发率 / ratio 统计"类读数必须先看 mb0 作数值地板，否则会把噪声读成策略漂移（本探针若无 mb0 对照会判 H1）。修法（若再训）：打包阶段按更新端精度重算 old_logp。
+- **训练器探针不要用 `dev` 之类的名字做局部变量**：main() 里 `dev` 是 torch.device，探针块 `dev = (ratio-1).abs()` 遮蔽后第 2 迭代 `torch.arange(device=dev)` 崩；
+  只跑 1 迭代的冒烟测不出跨迭代的遮蔽——冒烟至少 2 迭代。
