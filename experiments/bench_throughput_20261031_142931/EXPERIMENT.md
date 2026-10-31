@@ -27,6 +27,15 @@
 - [15:10] `fast_convformer.py`（批量花色卷积 + SDPA 加性偏置 + 可选 compile）；等价性 fp64 logit 7.8e-16、fp32 3e-7。
 - [15:30] 训练器补丁（`--fast_trunk/--compile` 对 ConvFormer 走新主干；`TilesTransformer.act` 补 `check` 参数，否则 Rust rollout 直接 TypeError）。
 - [15:45] C（fast+compile）训练器内首个 rollout 触发 multinomial NaN 断言；独立探针（批量 1–16384、真实 VecEnv 循环、TF32）均无法复现。compile 版 bf16 logit 与原版差 0.16–0.24（无 compile 版 0.006），数值上可疑 ⇒ **compile 判未解决、不采用**；E（fast 无 compile）rc=0。
+- [16:30] 用户问"compile 版怎么了" ⇒ 根因排查（`compile_probes/`）：
+  ①训练器内加 FC_DEBUG 逐调用对照 eager，**复现**：第 1 次调用（B=2048）编译版与 eager 隐藏层差已 0.37，第 3 次 2.6，第 90 次（B=925）42/925 行非有限，eager 同输入全有限。
+  ②把那批行导出单测：编译版 **fp32 精确**（1.7e-6），**bf16 autocast 下**错 0.72–2.4（eager bf16 0.02）；手写注意力替代 SDPA 照样错（2.4）⇒ 不是 SDPA。
+  ③逐算子（global_proj / LN / qkv / FFN / 残差加、注意力核、单个 block、stem+1 block）编译与 eager 完全一致；**stem + ≥2 个 block 放进同一张图**误差跳到 0.53；
+  只编译 6 个 block（fp32 输入）精确。误差随批量大小变（B=925 0.72、B=4096 0.02）——与"只在某些批次出 NaN"吻合。判读：torch 2.12/cu130 inductor 在
+  autocast 混合精度 stem（bf16 conv/linear 输出与 fp32 嵌入拼接）后接多 block 的融合/布局选择上的数值缺陷；模型与输入无问题（标量最大 750 但隐藏层只到 ±47，非溢出）。
+  ④**修法：stem 走 eager，只编译 6 个 block + 末层 LN**。46 个批量（1–8192）无 NaN、最大误差 0.028（eager bf16 0.028）；梯度相对误差 1.02%（eager bf16 0.95%）；
+  训练器内 FC_DEBUG 3 迭代 500+ 次调用（含更新）全有限、对 eager 最大 0.024。速度几乎不损：微基准 216k 行/s、55.9k 样本/s（全图编译 212k/56.1k）。
+- [16:50] F（fast + 修好的 compile）端到端 rc=0：rollout 2.2 / 打包 1.13 / 更新 3.3 = 6.68 s / 2048 局，307 局/s（随机初始化），比 fast 无 compile（258）快 19%。
 
 ## Results
 **1. cnn_l 每 2048 局（本机 4080，迭代 3–6 中位数，训练好的策略 ≈12.3 万样本/迭代）**
@@ -44,15 +53,18 @@ rollout 内部（cnn_l，0.94 s）：Rust step 0.38 / GPU 前向 0.27 / drain 0.
 | cnn_l fast | 775k | 162k |
 | ConvFormer 原版 | 142k | 36.4k |
 | ConvFormer fast | 186k | 44.4k |
-| ConvFormer fast + compile | 212k | 56.1k |
+| ConvFormer fast + compile（全图，**数值错误，作废**） | 212k | 56.1k |
+| ConvFormer fast + compile（只编译 block，采用） | 216k | 55.9k |
 
 **3. ConvFormer 训练器端到端（随机初始化，18.3 万样本/迭代，比训练好的策略多 49%）**
 | 配置 | rollout | 打包（价值前向） | 更新 | 合计 | 局/s |
 |---|---|---|---|---|---|
 | 原版 | 2.7 | 1.86（1.68） | 5.1 | 9.67 | 212 |
 | fast | 2.3 | 1.42（1.22） | 4.2 | 7.94 | 258 |
+| fast + compile（只编译 block） | 2.2 | 1.13 | 3.3 | 6.68 | 307 |
 
-按训练好策略的样本量（×0.67 于 GPU 段，CPU 段 0.66 s 不变）折算：fast ≈ **5.3 s / 2048 局 ≈ 386 局/s（本机 4080）**，约为 cnn_l 的 0.45×。
+按训练好策略的样本量（×0.67 于 GPU 段，CPU 段 0.66 s 不变）折算：fast ≈ **5.3 s / 2048 局 ≈ 386 局/s（本机 4080）**，约为 cnn_l 的 0.45×；
+fast + compile ≈ **4.5 s ≈ 458 局/s**（实测，替代下表"compile 修好"一行的 ×0.8 假设：GPU 段实测 ×0.82）。
 
 **4. 余量估算（ConvFormer，本机 4080，每 2048 局）**
 | 叠加 | 合计 | 局/s | 是否保持算法不变 |
@@ -70,7 +82,8 @@ rollout 内部（cnn_l，0.94 s）：Rust step 0.38 / GPU 前向 0.27 / drain 0.
 ## Artifacts
 | Path | Description |
 |---|---|
-| `fast_convformer.py` | 快速 ConvFormer 主干（state_dict 不变，可选 compile） |
+| `fast_convformer.py` | 快速 ConvFormer 主干（state_dict 不变；compile 只编译 block 栈；`FC_DEBUG=1` 逐调用对照 eager 的调试挂钩） |
+| `compile_probes/` | compile 数值缺陷的定位脚本（fc_diag / fc_variants / fc_ops / fc_ops2 / fc_fix / fc_fix2）+ 训练器内复现日志（全图 NaN / 只编 block 正常） |
 | `fast_convformer_trainer.patch` | 对 02d0cbe 的训练器 / arch_zoo 补丁（不含新文件 `fast_convformer.py`，它放 `src/agents/dnn/`） |
 | `bench_arch.py`, `bench_rollout.py` | 等价性 + 微基准 / rollout 分段计时脚本 |
 | `run_*.log`, `rollout_segments.log` | 各配置训练器日志与分段结果（train_log.json 在 scratchpad，未保留） |

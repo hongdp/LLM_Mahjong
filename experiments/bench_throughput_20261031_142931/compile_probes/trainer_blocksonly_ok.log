@@ -1,0 +1,19 @@
+🧵 cpus=24 (os.cpu_count=24) torch threads=8 RAYON_NUM_THREADS=24
+🏗 arch: convformer_m_v3r
+🚀 fast ConvFormer trunk + torch.compile
+⚡ PBRS shaping on: Phi = -2*best_shanten (memoised), scale 1.0, schedule 0:1.0,400000:0.0
+[FC_DEBUG] call 1 B=2048 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.01625 running=0.01625 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 2 B=2058 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.01877 running=0.01877 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 3 B=2061 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.01772 running=0.01877 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 50 B=2054 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.01949 running=0.02234 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 100 B=7 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.009426 running=0.02408 P[min,max]=[0,1] S[min,max]=[-0.808,500]
+[FC_DEBUG] call 150 B=4096 dtype_in=torch.float32 out=torch.float32 autocast=True grad=True finite out/ref=True/True maxdiff=0.01434 running=0.02408 P[min,max]=[0,1] S[min,max]=[-1,750]
+[   1] games=   2048    0.6min  61.3局/s pg=-0.0012 H=2.013->2.013 win=0.5% kl=0.0003 passes=1 EV=+0.021 eff=182934/182934
+[FC_DEBUG] call 200 B=2054 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.01778 running=0.02408 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 250 B=2031 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.01329 running=0.02408 P[min,max]=[0,1] S[min,max]=[-1,1e+03]
+[FC_DEBUG] call 300 B=4096 dtype_in=torch.float32 out=torch.float32 autocast=True grad=True finite out/ref=True/True maxdiff=0.01759 running=0.02408 P[min,max]=[0,1] S[min,max]=[-1,1e+03]
+[FC_DEBUG] call 350 B=2071 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.0139 running=0.02408 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 400 B=2049 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.01675 running=0.02408 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 450 B=8192 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.02375 running=0.02408 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 500 B=4096 dtype_in=torch.float32 out=torch.float32 autocast=True grad=True finite out/ref=True/True maxdiff=0.01675 running=0.02408 P[min,max]=[0,1] S[min,max]=[-1,750]
+✅ 6144 games in 1.0 min -> /tmp/claude-1000/-home-hongdp-Workspace-LLM-Mahjong--claude-worktrees-rl-model-defense-learning-8fb5c0/0e7dda85-b312-4fe2-bc01-8accfdb51f41/scratchpad/dbg2

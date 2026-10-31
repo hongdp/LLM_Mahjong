@@ -408,6 +408,9 @@ create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_
 - **训练器探针不要用 `dev` 之类的名字做局部变量**：main() 里 `dev` 是 torch.device，探针块 `dev = (ratio-1).abs()` 遮蔽后第 2 迭代 `torch.arange(device=dev)` 崩；
   只跑 1 迭代的冒烟测不出跨迭代的遮蔽——冒烟至少 2 迭代。
 - **注意力类 zoo 架构从未接过 Rust rollout（bench_throughput，2026-10-31）**：`TilesTransformer.act` 缺 `check` 参数，`--engine rust` 直接 TypeError；
-  `--fast_trunk/--compile` 原本只认 CNN。ConvFormer 快速主干（批量花色卷积 + SDPA 加性偏置）数学等价、1.5×；但 torch.compile 版在训练器内首个 rollout
-  触发 multinomial NaN、独立探针复现不了，且 bf16 logit 与原版差 0.16–0.24（无 compile 0.006）——**compile 版不过 fp64 等价测试不得上训练**。
+  `--fast_trunk/--compile` 原本只认 CNN。ConvFormer 快速主干（批量花色卷积 + SDPA 加性偏置）数学等价、1.5×。
   吞吐剖析先分段（rollout 内 Rust/GPU/传输、打包、更新），cnn_l 三段串行、CPU 与 GPU 互不重叠是下一个 ~2× 的来源。
+- **torch.compile + bf16 autocast 可以静默算错（torch 2.12/cu130，2026-10-31 定位）**：ConvFormer 整个主干一张图编译，fp32 精确，bf16 autocast 下
+  误差 0.02–0.84 随批量大小跳变、训练器内少数批次出 NaN；逐算子、单 block、stem+1 block 都对，stem（bf16 conv/linear 与 fp32 嵌入拼接）+ ≥2 block 同图就错。
+  修法：stem eager、只编译 block 栈，精度与 eager bf16 相同、速度不损。**规矩**：任何新 compile 路径上训练前，必须在真实训练器里逐调用对照 eager
+  （`FC_DEBUG` 式挂钩）跑 ≥2 迭代（含更新），并扫 ≥40 个批量大小；随机输入的微基准测不出来（本例前三轮探针全部漏掉）。
