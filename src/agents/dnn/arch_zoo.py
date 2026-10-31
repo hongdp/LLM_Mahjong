@@ -227,8 +227,8 @@ class TilesTransformer(nn.Module):
                 self.value_head(h[:, 0, :]).squeeze(-1))
 
     @torch.no_grad()
-    def act(self, planes, scalars, mask, temperature: float = 1.0):
-        if not bool(mask.any(dim=1).all()):
+    def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):
+        if check and not bool(mask.any(dim=1).all()):
             raise ValueError("act() got a row with no legal actions")
         logits = self.forward(planes, scalars, mask)
         if temperature <= 0:
@@ -927,8 +927,8 @@ class HandRiverFormer(nn.Module):
                 self.value(h).squeeze(-1))
 
     @torch.no_grad()
-    def act(self, planes, scalars, mask, temperature: float = 1.0):
-        if not bool(mask.any(dim=1).all()):
+    def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):
+        if check and not bool(mask.any(dim=1).all()):
             raise ValueError("act() got a row with no legal actions")
         logits = self.forward(planes, scalars, mask)
         if temperature <= 0:

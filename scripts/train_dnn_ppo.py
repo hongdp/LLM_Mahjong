@@ -135,6 +135,11 @@ def main():
                     help="exp113: bf16 autocast for Rust-rollout inference and the pre-update value pass "
                          "(log-softmax/sampling stay fp32; adds approxKL ~1e-4 vs the 1.4e-3 the BN "
                          "train/eval mismatch already contributes)")
+    ap.add_argument("--rollout_values", action="store_true",
+                    help="exp124: take V(s) from the rollout's own forward (same weights, same bf16 autocast) "
+                         "instead of a second full-batch value pass in the pack stage. 46-slot Rust path only")
+    ap.add_argument("--rollout_values_check", action="store_true",
+                    help="exp124: with --rollout_values, ALSO run the pack value pass and log max|dV| (equivalence check)")
     ap.add_argument("--posture_beta", default=None,
                     help="exp116: 'b0,b1,b2' initial posture prior on genbutsu discards (tenpai / 1-shanten / 2+) for a "
                          "v3rg net; applied only when the resume checkpoint has no posture_beta (fresh widening)")
@@ -636,7 +641,12 @@ def main():
     else:
         save("games_0", 0)
     net.value_detach = bool(args.value_detach)
-    if args.fast_trunk or args.compile:
+    if (args.fast_trunk or args.compile) and type(net).__name__ in ("ConvFormer", "ConvFormer46"):
+        # bench 2026-10-31: math-preserving fast ConvFormer trunk (batched suit conv + SDPA + optional compile)
+        from src.agents.dnn.fast_convformer import enable_fast_convformer
+        enable_fast_convformer(net, compile=args.compile)
+        print(f"🚀 fast ConvFormer trunk{' + torch.compile' if args.compile else ''}", flush=True)
+    elif args.fast_trunk or args.compile:
         from src.agents.dnn.net import enable_fast_trunk
         if not (hasattr(net, "stem") and hasattr(net, "blocks") and hasattr(net, "scalar_fc")):
             raise SystemExit("--fast_trunk/--compile need a stem + ResBlock CnnPolicy arch")
@@ -656,7 +666,10 @@ def main():
                bf16_infer=args.bf16_infer, bf16_rollout=args.bf16_rollout,
                action_space=space_of_arch(args.arch),
                cf_p=args.cf_p, cf_k=args.cf_k, cf_only_exposed=not args.cf_all,
-               cf_branch_slots=(args.cf_slots or None))
+               cf_branch_slots=(args.cf_slots or None),
+               rollout_values=bool(args.rollout_values))
+    if args.rollout_values and (args.engine != "rust" or getattr(net, "action_space", None) != "mortal46"):
+        raise SystemExit("--rollout_values is wired for --engine rust with a 46-slot arch only (exp124)")
     shaping_sched = []
     if args.shaping_schedule:
         shaping_sched = sorted((int(g), float(c)) for g, c in (x.split(":") for x in args.shaping_schedule.split(",")))
@@ -856,12 +869,21 @@ def main():
             s0 = torch.where(torch.isfinite(lp0), lp0, torch.zeros_like(lp0))
             ent_before = float(-(lp0.exp() * s0).sum(1).mean())
             # V(s) for the whole batch under the SAMPLING policy
-            with torch.autocast("cuda", torch.bfloat16, enabled=args.bf16_rollout and dev.type == "cuda"):
-                vals = torch.cat([
-                    net.forward_with_value(planes[i:i + 8192], scal[i:i + 8192],
-                                           mask[i:i + 8192],
-                                           cfeats=cfe[i:i + 8192] if use_cf else None)[1].float()
-                    for i in range(0, len(acts), 8192)])
+            vals_roll = (torch.from_numpy(cat("values")).to(dev).float()
+                         if args.rollout_values else None)      # exp124: same weights, from the rollout forward
+            if vals_roll is None or args.rollout_values_check:
+                with torch.autocast("cuda", torch.bfloat16, enabled=args.bf16_rollout and dev.type == "cuda"):
+                    vals = torch.cat([
+                        net.forward_with_value(planes[i:i + 8192], scal[i:i + 8192],
+                                               mask[i:i + 8192],
+                                               cfeats=cfe[i:i + 8192] if use_cf else None)[1].float()
+                        for i in range(0, len(acts), 8192)])
+            if vals_roll is not None:
+                if args.rollout_values_check:
+                    dv = (vals_roll - vals).abs()
+                    print(f"   rollout_values check: max|dV| {float(dv.max()):.5f} mean {float(dv.mean()):.6f} "
+                          f"(|V| mean {float(vals.abs().mean()):.4f}, n {len(vals)})", flush=True)
+                vals = vals_roll
         o_stats = None
         if ocrit is not None:
             with torch.no_grad():
@@ -1190,6 +1212,11 @@ def main():
             # exp112: pure-W credit diagnostics (points), per iteration
             row["wpure/mean_abs_credit_pts"] = float(_wp["mean_abs_credit_pts"]); row["wpure/paid"] = int(_wp["paid"]); row["wpure/rolled"] = int(_wp["rolled"])
             writer.add_scalar("wpure/mean_abs_credit_pts", row["wpure/mean_abs_credit_pts"], games)
+        _m4 = getattr(collector, "last_m46", None)
+        if _m4:
+            # exp124 46-slot space: share of decisions that needed a second (riichi / kan select) query
+            row["m46_second_rate"] = float(_m4["second_rate"])
+            writer.add_scalar("m46/second_rate", row["m46_second_rate"], games)
         _fd = getattr(collector, "last_fold", None)
         if _fd:
             # exp103 fold option: how often ENTER_FOLD was legal and taken this iteration
