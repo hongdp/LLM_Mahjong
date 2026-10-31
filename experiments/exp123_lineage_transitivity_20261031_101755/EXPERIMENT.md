@@ -1,6 +1,6 @@
 # exp123 — exp113 C 谱系检查点传递性梯子 + 末尾检查点权重平均的推理期增益（用户点名复测）
 
-- **Date**: 2026-10-31 10:18  **Status**: running（本地 CPU，$0）
+- **Date**: 2026-10-31 10:18  **Status**: done 11:14（本地 CPU 54 min，$0）→ **H0-a 传递、H0-b 集成无增益**
 - **Git**: 本 worktree（`scripts/run_pairwise_hanchan.py`、`scripts/avg_checkpoints.py` 新增；`scripts/run_hanchan_arena.py` 加 `--temperature/--threads/LLM_MAHJONG_ROOT`）；
   库代码（`cnn_l_v3r`、半庄驱动）取 `claude/continue-task-3da2e7` 02d0cbe 的 detached worktree
 - **Env**: 本地 24 核 CPU，6 个进程 × 4 线程；雀魂服务在跑（空闲）
@@ -35,11 +35,30 @@
 - [10:17] 建目录；W3/W5 生成；T=0 arena 冒烟 4 局通过（W3 0/4 负于 C384，样本太小不作数）。
 - [10:20] 发射 42 作业，6 并行；心跳 10 min 检查 pairs/ 新文件，30 min 无新文件报警。
 
-## Results
-（待填）
+- [11:14] 42 作业全部 rc=0（6300 半庄，54 min，比预估慢因 arena 进程间争 CPU）；心跳无报警。
+
+## Results（21 对 × 300 半庄，T=0，份额 = sign(uma) 胜份，SE ≈ 0.029）
+**Bradley–Terry 评分（Elo 单位，均值 0）**
+| L48 | L96 | L192 | C288 | C384 | W3 | W5 |
+|---|---|---|---|---|---|---|
+| −22.4 | −16.4 | −8.5 | +8.5 | +9.3 | +9.9 | +19.6 |
+
+- **传递性**：谱系顺序 L48 < L96 < L192 < C288 < C384 **严格单调**；21 对的 BT 残差 max |z| = **1.50**（门槛 2.5），**0 对**越线；"旧胜新"达 2σ 的 **0 对**。
+  唯一显著偏离 0.5 的配对是 L48 vs C384 0.425（z −2.63）；L48 vs L192 0.437（z −2.21）。相邻检查点（L96–L192、L192–C288、C288–C384）两两都在 ±1σ 内。
+- **规模的半庄刻度**：48M → 384M（8× 训练量）整条谱系只拉开 ≈ 32 Elo（半庄 2v2），L192→C384 只 18 Elo——与单局梯子上的"平台 0.455→0.47"一致。
+- **集成**：W3 vs C384 份额 0.517（z +0.58）、W5 vs C384 **0.525**（z +0.87），都低于门槛 0.56；W5 的 BT +19.6 是全表最高，比 C384 高 10 Elo，但在 1σ 内；
+  W3 vs W5 0.450（z −1.74）。方向弱正、量级 ≈ exp92 的 +0.3 pp 水平，不构成增益。
 
 ## Conclusion
-（待填）
+- **H0-a**：384M 规模的 cnn_l 纯血谱系上自对弈仍然严格传递、无循环——与 09-26 综述在 64–112M cnn_m 上的结论相同。league/对手池续训没有可修对象，
+  不写 league 预注册（$0 结束）。
+- **H0-b**：连续检查点权重平均（SWA 式）对 C384 +10 Elo（n.s.，<0.56 门槛），不上族外梯子。推理期集成这条也关。
+- 规模结论的半庄版：8× 训练量换 32 Elo（半庄），其中最后 2× 只换 18 Elo——平台在半庄刻度上同样成立。
+- 至此用户 10-29 点名的两项（对手分布诊断、检查点集成）在当前规模上复测完毕，均 H0；纯血线剩余待决仍是收官。
+
+## Next Steps
+- 无训练后续。INDEX/FINDINGS 记账；`run_pairwise_hanchan.py` 保留为族内配对梯子工具。
+- 清理 scratchpad 的 detached worktree `ct_code`（`git worktree remove`）。
 
 ## Artifacts
 | Path | Size | Description |
