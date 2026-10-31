@@ -414,3 +414,9 @@ create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_
   误差 0.02–0.84 随批量大小跳变、训练器内少数批次出 NaN；逐算子、单 block、stem+1 block 都对，stem（bf16 conv/linear 与 fp32 嵌入拼接）+ ≥2 block 同图就错。
   修法：stem eager、只编译 block 栈，精度与 eager bf16 相同、速度不损。**规矩**：任何新 compile 路径上训练前，必须在真实训练器里逐调用对照 eager
   （`FC_DEBUG` 式挂钩）跑 ≥2 迭代（含更新），并扫 ≥40 个批量大小；随机输入的微基准测不出来（本例前三轮探针全部漏掉）。
+- **Rust rollout 只认原生 374 动作空间（2026-10-31，exp124）**：`collect_rust` 对 `net.action_space` 不做任何分支，46 槽（Mortal / bc49）网络在 Rust 引擎上
+  根本跑不起来——此前所有 46 槽 RL（exp41/46/96）都走 Python 引擎。新增 `m46_native.py` 从原生掩码向量化导出 46 槽（吃只需被鸣牌 = v3r 第 13 平面）。
+  对拍时抓到的坑：吃的三种形状按"被鸣牌 ± 偏移"取原生键，花色边缘（如鸣 2m 时 high 形的键 −1）裁剪到 0 会**串到另一形状的槽**，必须按同花色判有效。
+  **规矩**：①换动作空间 / 引擎组合前先查 rollout 路径是否真支持，不信"架构在 zoo 里就能训"；②新映射必须对拍参考实现（这里是 `MortalActionSpace`），
+  用"门清向听最优"一类策略专门刷出立直 / 和牌 / 选牌，随机策略几乎碰不到；③pod 镜像的 torch 与本机不同（2.8 vs 2.12），compile 路径在 pod 上先过
+  FC_DEBUG 闸门再开训（`exp124_ops/pod_boot.sh`）。
