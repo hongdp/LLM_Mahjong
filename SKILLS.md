@@ -407,3 +407,7 @@ create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_
   "裁剪触发率 / ratio 统计"类读数必须先看 mb0 作数值地板，否则会把噪声读成策略漂移（本探针若无 mb0 对照会判 H1）。修法（若再训）：打包阶段按更新端精度重算 old_logp。
 - **训练器探针不要用 `dev` 之类的名字做局部变量**：main() 里 `dev` 是 torch.device，探针块 `dev = (ratio-1).abs()` 遮蔽后第 2 迭代 `torch.arange(device=dev)` 崩；
   只跑 1 迭代的冒烟测不出跨迭代的遮蔽——冒烟至少 2 迭代。
+- **注意力类 zoo 架构从未接过 Rust rollout（bench_throughput，2026-10-31）**：`TilesTransformer.act` 缺 `check` 参数，`--engine rust` 直接 TypeError；
+  `--fast_trunk/--compile` 原本只认 CNN。ConvFormer 快速主干（批量花色卷积 + SDPA 加性偏置）数学等价、1.5×；但 torch.compile 版在训练器内首个 rollout
+  触发 multinomial NaN、独立探针复现不了，且 bf16 logit 与原版差 0.16–0.24（无 compile 0.006）——**compile 版不过 fp64 等价测试不得上训练**。
+  吞吐剖析先分段（rollout 内 Rust/GPU/传输、打包、更新），cnn_l 三段串行、CPU 与 GPU 互不重叠是下一个 ~2× 的来源。

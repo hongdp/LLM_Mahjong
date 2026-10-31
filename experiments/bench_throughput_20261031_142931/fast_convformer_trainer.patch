@@ -1,0 +1,44 @@
+diff --git a/scripts/train_dnn_ppo.py b/scripts/train_dnn_ppo.py
+index fff717e..a22913d 100644
+--- a/scripts/train_dnn_ppo.py
++++ b/scripts/train_dnn_ppo.py
+@@ -636,7 +636,12 @@ def main():
+     else:
+         save("games_0", 0)
+     net.value_detach = bool(args.value_detach)
+-    if args.fast_trunk or args.compile:
++    if (args.fast_trunk or args.compile) and type(net).__name__ == "ConvFormer":
++        # bench 2026-10-31: math-preserving fast ConvFormer trunk (batched suit conv + SDPA + optional compile)
++        from src.agents.dnn.fast_convformer import enable_fast_convformer
++        enable_fast_convformer(net, compile=args.compile)
++        print(f"🚀 fast ConvFormer trunk{' + torch.compile' if args.compile else ''}", flush=True)
++    elif args.fast_trunk or args.compile:
+         from src.agents.dnn.net import enable_fast_trunk
+         if not (hasattr(net, "stem") and hasattr(net, "blocks") and hasattr(net, "scalar_fc")):
+             raise SystemExit("--fast_trunk/--compile need a stem + ResBlock CnnPolicy arch")
+diff --git a/src/agents/dnn/arch_zoo.py b/src/agents/dnn/arch_zoo.py
+index 61f4ea9..61158fd 100644
+--- a/src/agents/dnn/arch_zoo.py
++++ b/src/agents/dnn/arch_zoo.py
+@@ -227,8 +227,8 @@ class TilesTransformer(nn.Module):
+                 self.value_head(h[:, 0, :]).squeeze(-1))
+ 
+     @torch.no_grad()
+-    def act(self, planes, scalars, mask, temperature: float = 1.0):
+-        if not bool(mask.any(dim=1).all()):
++    def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):
++        if check and not bool(mask.any(dim=1).all()):
+             raise ValueError("act() got a row with no legal actions")
+         logits = self.forward(planes, scalars, mask)
+         if temperature <= 0:
+@@ -927,8 +927,8 @@ class HandRiverFormer(nn.Module):
+                 self.value(h).squeeze(-1))
+ 
+     @torch.no_grad()
+-    def act(self, planes, scalars, mask, temperature: float = 1.0):
+-        if not bool(mask.any(dim=1).all()):
++    def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):
++        if check and not bool(mask.any(dim=1).all()):
+             raise ValueError("act() got a row with no legal actions")
+         logits = self.forward(planes, scalars, mask)
+         if temperature <= 0:
