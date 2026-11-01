@@ -125,6 +125,10 @@ ConvFormer 每 2048 局（训练好策略的样本量）在本机 4080：已测 
   本机冒烟只跑了 4–7 迭代所以没撞到。修复：行键改为 (该槽已完成局数, slot, seat)，在 drain 时给每局盖章；回归测试强制 4 槽重放同一种子 6 次（旧代码 −10850 行报错、新代码过），
   Rust / m46 / ConvFormer 相关 46 项测试全过；代码分支 `claude/exp124-convformer-m46` **a8fef66**。处置：先停掉会在 TRAIN_FAILED 后触发 pod 自毁的 pull_loop 与 pod_run（两台 pod 保留），
   失败产物归档到 pod `/workspace/aborted_keycollision/` 与本机 `experiments/exp124_aborted_keycollision_20261031/`，两臂用 a8fef66 **从零重新部署**（重跑 compile 闸门）。损失 ≈15 分钟 × 2 台 ≈ $0.5。
+- [2026-10-31 18:33 PDT 重新发射 / 18:40 核对] 闸门 max_trunk_diff 0.0289 / 0.0292，max|dV| 0.0078。两臂越过 65 迭代（崩溃点的 3 倍）无异常，在学：
+  A（lr 1e-4）iter 65：H 1.99→1.48、win 14.7%、kl 0.0027、402 局/s；B（lr 6e-5）iter 65：H 2.01→1.64、win 9.9%、kl 0.0004、388 局/s。
+  pull_loop / watchdog / eval_loop 均在跑，TB 镜像已有事件。**成本复核**：随机初始化 ≈400 局/s ⇒ 按训练好策略样本量折算 ≈560 局/s ⇒ 192M ≈94 h ≈ **$84**，加 B 臂到 8M ≈$5 ⇒ **≈$89，贴着 $90 上限**。
+  缓解：胜臂续跑期间若 Community 4090 有货（$0.34/h），用 latest.pt 迁过去（纯血从零允许 Community），可省 ≈$50；首个 4M 里程碑读实测局/s 再定。
 
 ## Results
 
