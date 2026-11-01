@@ -420,3 +420,7 @@ create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_
   **规矩**：①换动作空间 / 引擎组合前先查 rollout 路径是否真支持，不信"架构在 zoo 里就能训"；②新映射必须对拍参考实现（这里是 `MortalActionSpace`），
   用"门清向听最优"一类策略专门刷出立直 / 和牌 / 选牌，随机策略几乎碰不到；③pod 镜像的 torch 与本机不同（2.8 vs 2.12），compile 路径在 pod 上先过
   FC_DEBUG 闸门再开训（`exp124_ops/pod_boot.sh`）。
+- **2026-10-31 exp124 发射后 5 分钟两臂同崩：种子不是局 ID**。46 槽 rollout 的行键用 (seed, slot, seat)，但 dup_k=8 下同一 VecEnv 槽位一轮内可能两次拿到同一种子 ⇒ 键撞车，
+  改写的计数校验 raise（好在是 raise 不是静默错位）。本机冒烟 4–7 迭代撞不到，pod 上 ~20 迭代必撞。修复为"该槽已完成局数"计数器（a8fef66）。
+  **规矩**：①跨步对齐的键必须用引擎/宿主自己维护的唯一局序号，不用种子（dup / 重放让种子重复）；②稀有碰撞类 bug 不能靠"冒烟跑几轮没事"，
+  要写**强制触发**的测试（这里：4 槽 × 同一种子 6 次）；③pull_loop 收到 TRAIN_FAILED 会发 PULLED_OK 让 pod 自毁——要原地修就先停 pull_loop 与 pod_run 再动手。

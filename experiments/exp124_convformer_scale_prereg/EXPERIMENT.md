@@ -115,6 +115,16 @@ ConvFormer 每 2048 局（训练好策略的样本量）在本机 4080：已测 
   完成：发射前检查（上表，无需补任何修复）；46 槽 Rust rollout + 价值复用实现并测试，分支 `claude/exp124-convformer-m46` badaad3，代码 worktree `/home/hongdp/Workspace/LLM_Mahjong_exp124`；
   本机冒烟 4 + 7 + 7 迭代 rc=0，337 局/s（随机初始化）；上云脚本 `exp124_ops/`（deploy / pod_boot 含 pod 上 compile 闸门 / 两段式 pod_run / pull_loop 心跳分相报警 / watchdog / eval_loop 用 exp101 种子）。
   **发射被 Claude Code 权限分类器拦截**（create-pod = 真实交易），RunPod 账号零 pod，$0 花费；等用户放行 create-pod 或手动开机。
+- [2026-10-31 18:21 PDT = 11-01 01:21 UTC] 用户放行 create-pod。Community 4090 在 CUDA ≥12.8 上**全部缺货**（list-gpu-types availability NONE，去掉核数过滤也开不出），按预案退到 **Secure 4090 $0.89/h**：
+  臂 A pod `vnw55zc69161cq`（exp124-A，US-NC-1，16 vCPU / 62 GB，host CUDA 13.2，ssh root@103.196.86.56 -p 11584），lr 1e-4 seed 1241；
+  臂 B pod `5we2zlqzwdjy0c`（exp124-B，US-NC-1，16 vCPU / 62 GB，ssh root@103.196.86.110 -p 38593），lr 6e-5 seed 1242。两台合计 $1.78/h；Stage 0 到 8M 后终止败臂。
+  TB：`experiments/_tb_qlearning/exp124_{A,B}_convformer46_{0-64M,p2_64-192M}_LIVE` → `experiments/exp124_{A,B}{,_p2}/tensorboard`（TB 用目录 logdir + 120 s reload，自动发现，无需重启）。
+  pod 上 compile 闸门两台都过（max_trunk_diff 0.0315 / 0.0305 < 0.06，max|dV| 0.0078 < 0.05）；cgroup v1 配额 13.6 核，训练器自动取 14 线程。随机初始化稳态 ≈385 局/s（本机 4080 同条件 337）。
+- [2026-10-31 18:28–18:33] **两臂都在 ~20 迭代处崩溃（我的 46 槽 rollout bug，不是训练数值问题）**：行键 (seed, slot, seat) 在 dup_k=8 下会撞——
+  同一个 VecEnv 槽位一轮 rollout 内可能先后两次拿到同一个种子，`_rewrite_m46` 的计数校验按设计直接 raise（−91 / −51 行"多匹配"），**没有静默错位的数据进训练**。
+  本机冒烟只跑了 4–7 迭代所以没撞到。修复：行键改为 (该槽已完成局数, slot, seat)，在 drain 时给每局盖章；回归测试强制 4 槽重放同一种子 6 次（旧代码 −10850 行报错、新代码过），
+  Rust / m46 / ConvFormer 相关 46 项测试全过；代码分支 `claude/exp124-convformer-m46` **a8fef66**。处置：先停掉会在 TRAIN_FAILED 后触发 pod 自毁的 pull_loop 与 pod_run（两台 pod 保留），
+  失败产物归档到 pod `/workspace/aborted_keycollision/` 与本机 `experiments/exp124_aborted_keycollision_20261031/`，两臂用 a8fef66 **从零重新部署**（重跑 compile 闸门）。损失 ≈15 分钟 × 2 台 ≈ $0.5。
 
 ## Results
 
