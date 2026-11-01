@@ -145,6 +145,7 @@ ConvFormer 每 2048 局（训练好策略的样本量）在本机 4080：已测 
   **选臂 A**：两臂 32M 差 +0.37 pp（z≈0.8，噪声内），A 在 24M 与两段 32M 都领先，且 lr 1e-4 = exp101 对照配方（可比性）。B 在 34.16M 终止（pod 5we2zlqzwdjy0c 删除，产物已镜像到 `experiments/exp124_B/`）。
   **成本**：两台 Secure 各 ≈21.5 h ⇒ 已花 ≈ **$38**。A 余 159M @ 440 局/s ≈ 100 h：留 Secure ≈$89（总 ≈$127，**超 $90 上限 ≈$37**）；迁 Community ≈$34（总 ≈$72）。
   用户已批准迁移；Community 4090（CUDA ≥12.8）此刻仍 **全部缺货**。已挂会话内 cron（每 30 min：巡检心跳 / 循环存活 + 查库存，有货即开 Community pod → `migrate.sh` → 删 Secure pod → 记账）。
+- [2026-11-01 15:05 PST] **用户裁定（"Yes, finish it"）：若 Community 4090 一直缺货，允许在 Secure 上超过 $90 上限跑完 192M（总价 ≈$127）**；有货仍按批准迁移省钱。上限由 $90 改为 ≈$130，不再因额度停跑。
 
 ## Results
 
