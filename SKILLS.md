@@ -424,3 +424,8 @@ create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_
   改写的计数校验 raise（好在是 raise 不是静默错位）。本机冒烟 4–7 迭代撞不到，pod 上 ~20 迭代必撞。修复为"该槽已完成局数"计数器（a8fef66）。
   **规矩**：①跨步对齐的键必须用引擎/宿主自己维护的唯一局序号，不用种子（dup / 重放让种子重复）；②稀有碰撞类 bug 不能靠"冒烟跑几轮没事"，
   要写**强制触发**的测试（这里：4 槽 × 同一种子 6 次）；③pull_loop 收到 TRAIN_FAILED 会发 PULLED_OK 让 pod 自毁——要原地修就先停 pull_loop 与 pod_run 再动手。
+- **2026-11-01 工作站无人值守重启吞掉整套监控**：内核自动更新（6.8.0-146→147）01:17 重启，exp124 的 pull_loop / watchdog / eval_loop / TensorBoard（全是 setsid nohup）
+  一起消失，pod 照常计费训练；预注册的"8M 选臂即终止败臂"因此没执行，败臂多烧 12 h ≈ $11，发现靴子落地是 13 h 后人工巡检。
+  **规矩**：①本机侧长跑监控必须抗重启——用 `systemd --user` 单元（`Restart=always` + `loginctl enable-linger`）或 `@reboot` crontab 自愈，setsid 只配短任务；
+  ②凡"到 X 里程碑自动做 Y"的关键决策（选臂 / 终止 pod），不能只靠本机循环，pod 侧也要有兜底（例如 pod_run 在里程碑后自查工作站心跳文件，超时自停）；
+  ③回来第一件事是 `uptime` + `ps` 对账，再看 pod。
