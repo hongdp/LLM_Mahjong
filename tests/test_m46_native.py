@@ -159,8 +159,29 @@ def test_m46_native_closed_policy_riichi_agari():
     assert stats[("s1", ma.IDX_AGARI)] > 10
 
 
+def test_rust_rollout_m46_repeated_seed_same_slot():
+    """exp124 arm B crash: with dup_k a VecEnv slot can host the SAME seed twice in one rollout; the
+    row key must tell those games apart (per-slot game counter, not the seed). 4 slots x 6 copies of
+    one seed forces every slot to replay it; every rewritten episode must stay inside its 46-slot mask."""
+    import pytest
+    pytest.importorskip("riichi_rs")
+    from src.agents.dnn.arch_zoo import ZOO
+    from src.agents.dnn.rust_rollout import collect_rust
+    torch.manual_seed(0)
+    net = ZOO["convformer_m_v3r_m46"][0]().eval()
+    cfg = {"temperature": 1.0, "gamma": 0.995, "shaping": False, "games_per_worker": 4,
+           "rollout_values": True}
+    episodes, results = collect_rust(net, 24, cfg, 1, [11] * 24, device="cpu")
+    assert len(results) == 24
+    for e in episodes:
+        m = np.asarray(e["mask"]); a = np.asarray(e["actions"])
+        assert m.shape[1] == 46 and m[np.arange(len(a)), a].all()
+        assert len(e["values"]) == len(a) == len(e["old_logprobs"])
+
+
 if __name__ == "__main__":
     import sys
     st = run(int(sys.argv[1]) if len(sys.argv) > 1 else 300, seed=int(sys.argv[2]) if len(sys.argv) > 2 else 0,
              policy=sys.argv[3] if len(sys.argv) > 3 else "random")
     print(dict(sorted(((str(k), v) for k, v in st.items()))))
+

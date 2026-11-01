@@ -102,9 +102,11 @@ def _sample_logits(logits: torch.Tensor, temperature: float):
 _M46_SLOT_BITS = 13
 
 
-def _m46_key(seed: np.ndarray, slot: np.ndarray, seat: np.ndarray) -> np.ndarray:
-    """int64 row key (seed, slot, seat): seeds stay far below 2**48, slots < 2**13, seats < 4."""
-    return (seed.astype(np.int64) << (_M46_SLOT_BITS + 2)) | (slot.astype(np.int64) << 2) | seat.astype(np.int64)
+def _m46_key(gen: np.ndarray, slot: np.ndarray, seat: np.ndarray) -> np.ndarray:
+    """int64 row key (gen, slot, seat): gen = how many games the slot had finished before this one (host
+    counter, < games per rollout), slots < 2**13, seats < 4. Not the seed: with dup_k a slot can host the
+    same seed twice in one rollout (exp124 arm B crashed on exactly that at iteration ~21)."""
+    return (gen.astype(np.int64) << (_M46_SLOT_BITS + 2)) | (slot.astype(np.int64) << 2) | seat.astype(np.int64)
 
 
 def _rewrite_m46(games: list, m46: dict) -> None:
@@ -114,8 +116,8 @@ def _rewrite_m46(games: list, m46: dict) -> None:
     select row's mask -- exactly selfplay._choose's DnnStep pair: reward (and terminal) on the select row,
     0 on the declare row; returns copied (the trainer's GAE runs on rewards + V). Vectorised over one
     concatenation of all rollout rounds; each episode finds its rows (round order) through a stable sort
-    of the per-row (seed, slot, seat) keys, and a key block whose length differs from the episode's step
-    count (e.g. a slot that hosted the same seed twice) raises instead of mis-aligning."""
+    of the per-row (gen, slot, seat) keys (gm["m46_gen"] stamped at drain), and a key block whose length
+    differs from the episode's step count raises instead of mis-aligning."""
     R = m46["rounds"]
     if not R:
         return
@@ -135,7 +137,7 @@ def _rewrite_m46(games: list, m46: dict) -> None:
     order = np.argsort(K, kind="stable")
     Ks = K[order]
     eps = [(gm, e) for gm in games for e in gm["episodes"]]
-    ekey = _m46_key(np.array([int(gm["seed"]) for gm, _ in eps], dtype=np.int64),
+    ekey = _m46_key(np.array([int(gm["m46_gen"]) for gm, _ in eps], dtype=np.int64),
                     np.array([int(gm["slot"]) for gm, _ in eps], dtype=np.int64),
                     np.array([int(e["key"][1]) for _, e in eps], dtype=np.int64))
     lo = np.searchsorted(Ks, ekey, "left"); hi = np.searchsorted(Ks, ekey, "right")
@@ -308,7 +310,8 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
         from src.agents.dnn import m46_native as _m46
         if k >= (1 << _M46_SLOT_BITS):
             raise SystemExit(f"collect_rust m46: {k} table slots exceed the {_M46_SLOT_BITS}-bit row key")
-        m46 = {"mod": _m46, "rounds": [], "values": bool(cfg.get("rollout_values")), "n_rows": 0, "n_fu": 0}
+        m46 = {"mod": _m46, "rounds": [], "values": bool(cfg.get("rollout_values")), "n_rows": 0, "n_fu": 0,
+               "gen": np.zeros(k, dtype=np.int64)}
     elif cfg.get("rollout_values"):
         raise SystemExit("collect_rust: --rollout_values is only wired for the 46-slot path (exp124)")
     # perf note 2026-09-09: splitting K over two VecEnvs to overlap the GPU forward
@@ -469,10 +472,9 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
                     lps_np = l1                                         # replaced by the episode rewrite
                     pos2 = np.full(n, -1, dtype=np.int64)
                     pos2[fu] = np.arange(len(fu))
-                    slot_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
                     g = np.asarray(gids, dtype=np.int64)
-                    # per-row (seed, slot, seat) key; episodes find their rows by a stable sort at the end
-                    key = _m46_key(slot_seed[g], g, np.asarray(seats, dtype=np.int64))
+                    # per-row (gen, slot, seat) key; episodes find their rows by a stable sort at the end
+                    key = _m46_key(m46["gen"][g], g, np.asarray(seats, dtype=np.int64))
                     m46["rounds"].append({"M1": M1, "s1": s1, "l1": l1, "pos2": pos2, "M2": M2,
                                           "s2": s2[fu], "l2": l2, "v": v_np, "key": key})
                     m46["n_rows"] += n; m46["n_fu"] += len(fu)
@@ -494,6 +496,10 @@ def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[Lis
             else:
                 env.step([], [])
             new_games = env.drain_finished()
+            if m46 is not None:
+                # a game finishing in this step is drained here, before its slot's next game is observed
+                for gm in new_games:
+                    s = int(gm["slot"]); gm["m46_gen"] = int(m46["gen"][s]); m46["gen"][s] += 1
             if fold is not None:
                 for gm in new_games:
                     _rewrite_fold_episodes(gm, fold)
