@@ -1,6 +1,6 @@
 # exp125 ConvFormer-XL 尺寸扫描（纯血从零，bc49 同结构只放大主干到 Mortal 参数量）
 
-- **Date**: 2026-11-01 23:10 PST 预注册；**Status**: planned（闸门：exp124 A 64M 判决读数）
+- **Date**: 2026-11-01 23:10 PST 预注册；**Status**: approved（用户 11-01 23:55 批 $120 上限；闸门：exp124 A 64M 判决读数 ≥0.46 且 ≥ 32M 均值 0.4808，过则由半小时巡检自动发射）
 - **Git**: 代码 `claude/exp124-convformer-m46` @ zoo 提交（a8fef66 之后，含 `convformer_xl_v3r_m46` / `convformer_l_v3r_m46` / `convformer_ml_v3r_m46`）；上云脚本 `experiments/exp125_ops/`（exp124 套件，架构经 `ARCH` 环境变量，Stage 0 到 64M 即停、第二段需 `EXTEND_OK` 标记）
 - **Env**: RunPod 4090（Secure $0.89/h；Community $0.34/h 有货优先），镜像 `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404`；评测本机 4080 $0
 
@@ -37,6 +37,7 @@ compile 闸门（FC_DEBUG 逐调用对照 eager）：ML maxdiff 0.0252 / max|dV|
 
 ## Progress
 - [2026-11-01 23:10] zoo 条目 + 闸门 + 吞吐基准完成（$0）；ops 脚本就绪；等 exp124 A 64M 读数（预计 11-02 09:30 PST）。
+- [2026-11-01 23:55] **用户批准额度 $120 上限**；巡检 cron 接入闸门判读与自动发射（Community 4090 优先，否则 Secure；pod 闸门 OOM 则 BATCH=2048 重部署）。
 - [2026-11-01 23:45] 用户要求主臂改为 Mortal 参数量：加 XL（288×11×9，11.37M）；本机 4096 OOM、2048 闸门过、116 局/s；预算改为 ≈$103 / 上限 $120；ops 默认 ARCH=xl。
 
 ## Results
