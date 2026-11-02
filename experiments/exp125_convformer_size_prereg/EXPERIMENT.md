@@ -1,6 +1,6 @@
 # exp125 ConvFormer-XL 尺寸扫描（纯血从零，bc49 同结构只放大主干到 Mortal 参数量）
 
-- **Date**: 2026-11-01 23:10 PST 预注册；**Status**: approved（用户 11-01 23:55 批 $120 上限；闸门：exp124 A 64M 判决读数 ≥0.46 且 ≥ 32M 均值 0.4808，过则由半小时巡检自动发射）
+- **Date**: 2026-11-01 23:10 PST 预注册；**Status**: running（11-02 10:10 PST 发射；闸门 exp124 A 64M 均值 0.4890 通过；用户批 $120 上限）
 - **Git**: 代码 `claude/exp124-convformer-m46` @ zoo 提交（a8fef66 之后，含 `convformer_xl_v3r_m46` / `convformer_l_v3r_m46` / `convformer_ml_v3r_m46`）；上云脚本 `experiments/exp125_ops/`（exp124 套件，架构经 `ARCH` 环境变量，Stage 0 到 64M 即停、第二段需 `EXTEND_OK` 标记）
 - **Env**: RunPod 4090（Secure $0.89/h；Community $0.34/h 有货优先），镜像 `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404`；评测本机 4080 $0
 
@@ -40,6 +40,7 @@ compile 闸门（FC_DEBUG 逐调用对照 eager）：ML maxdiff 0.0252 / max|dV|
 - [2026-11-01 23:55] **用户批准额度 $120 上限**；巡检 cron 接入闸门判读与自动发射（Community 4090 优先，否则 Secure；pod 闸门 OOM 则 BATCH=2048 重部署）。
 - [2026-11-01 23:45] 用户要求主臂改为 Mortal 参数量：加 XL（288×11×9，11.37M）；本机 4096 OOM、2048 闸门过、116 局/s；预算改为 ≈$103 / 上限 $120；ops 默认 ARCH=xl。
 - [2026-11-02 10:05 PST] **闸门通过**（exp124 64M 均值 0.4890 ≥ 0.4808）。Community 4090 全部缺货（含 vCPU 过滤与否），Secure 4090 带 vCPU≥12 过滤也拒，去掉过滤成功：pod **`ih7vwfbj4dxg15`**（exp125-XL，Secure $0.89/h，EUR-IS-1，64 vCPU 宿主，host CUDA 13.2，ssh root@157.157.221.29 -p 33087）。10:08 开始部署（bootstrap + compile 闸门 batch 4096）。TB：`_tb_qlearning/exp125_XL_convformerXL_0-64M_LIVE` → `experiments/exp125_XL/tensorboard`。
+- [2026-11-02 10:10 PST] **发射**：pod 闸门 batch 4096 在 24 GB 上通过（max_trunk_diff 0.0312 / max|dV| 0.0078），**配方无偏差**；`pod_run.sh XL 1e-4 1251` 起跑（18:09:56 UTC）。本机 pull_loop / watchdog / eval_loop 已挂，LAUNCHED 文件写入。预算护栏：Secure 135 h。
 
 ## Results
 
