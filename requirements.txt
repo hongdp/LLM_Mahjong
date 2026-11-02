@@ -1,19 +1,9 @@
+# Phase 2 (DNN) runtime. The Rust engine is built separately:
+#   cd rust/riichi_rs && maturin build --release -i "$(which python)" && pip install target/wheels/riichi_rs-*.whl
 torch>=2.1.0
-transformers>=4.35.0
-datasets>=2.14.0
-trl>=0.8.0 # Bumped for GRPOTrainer support
-peft>=0.6.0
-accelerate>=0.24.0
-bitsandbytes>=0.41.1
-google-cloud-aiplatform>=1.35.0
-google-cloud-storage>=2.12.0
-wandb>=0.15.12
-# Mahjong Phase 0 additions
-pymahjong
-langgraph
-langchain
-pydantic
-matplotlib
-python-dotenv
-mahjong
-tensorboard
+numpy
+mahjong            # hand calculator / shanten (src/tasks/mahjong/table.py, probes)
+tensorboard        # trainers write TB events; tools/webui reads them
+langgraph          # src/tasks/mahjong/orchestrator.py (engine-test driver, Phase 1 remnant)
+requests           # tools/majsoul_bridge/bot_llmmahjong.py
+maturin            # Rust engine build
