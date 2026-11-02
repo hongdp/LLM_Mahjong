@@ -40,8 +40,8 @@ from scripts.run_arena_dnn import load_dnn                               # noqa:
 from src.agents.dnn import mortal_action as ma                           # noqa: E402
 from src.agents.dnn.action_space import get_space                        # noqa: E402
 from src.agents.dnn.encoder import encode_state                          # noqa: E402
-from src.agents.dnn.selfplay import _choose, _resolve_claims             # noqa: E402
-from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE, norm_tile  # noqa: E402
+from src.eval.probe_loop import play_probe_game                          # noqa: E402
+from src.tasks.mahjong.table import ACTION_RE, norm_tile                 # noqa: E402
 from src.tasks.mahjong.shanten import TileEfficiency                     # noqa: E402
 
 _te = TileEfficiency()
@@ -81,95 +81,68 @@ def _unseen(tile, table, hand13):
 
 def play_chunk(args):
     ckpt, seeds, temperature = args
-    import random
     torch.set_num_threads(1)
     net = load_dnn(ckpt, "cpu")
     space = get_space(net)
     is46 = getattr(net, "action_space", None) == "mortal46"
+    variant = getattr(net, "encoder_variant", "v1")
     c = Counter()
+
+    def before_turn(table, pid, actions):
+        """Bucket the riichi option (None when riichi is not on the table)."""
+        parsed = [ACTION_RE.search(a) for a in actions]
+        types = {m.group(1) for m in parsed if m}
+        riichi_tiles = sorted({norm_tile(m.group(2)) for m in parsed if m and m.group(1) == "riichi"})  # red "0m" -> "5m"
+        if not (riichi_tiles and "tsumo" not in types and not table.riichi[pid] and not table.melds[pid]):
+            return None
+        hand14 = list(table.hands[pid])
+        best = None
+        for t in riichi_tiles:
+            h13 = list(hand14); h13.remove(t)
+            waits = _te.calculate_ukeire(h13)
+            n_unseen = sum(_unseen(w, table, h13) for w in waits)
+            if best is None or n_unseen > best[1]:
+                best = (t, n_unseen, h13, waits)
+        t, n_unseen, h13, waits = best
+        pw = WINDS[(pid - table.dealer) % 4]; rw = WINDS[table.round_wind_idx]
+        try:
+            yk = [_has_yaku_without_riichi(h13, w, pw, rw) for w in waits]
+            yaku = "all" if all(yk) else ("none" if not any(yk) else "some")
+        except Exception:
+            yaku = "err"
+        wait = "good" if n_unseen >= 5 else "bad"
+        j = table.discard_count[pid]
+        junme = "early" if j <= 5 else ("mid" if j <= 11 else "late")
+        opp = "opp" if any(table.riichi[o] for o in range(4) if o != pid) else "noopp"
+        p_r = None
+        if is46:
+            planes, scalars = encode_state(table, pid, variant=variant)
+            vmask, _ = space.mask(actions)
+            with torch.no_grad():
+                logits = net(planes[None], scalars[None], vmask[None])
+            p_r = float(torch.softmax(logits[0].float(), 0)[ma.IDX_RIICHI])
+        return (yaku, wait, junme, opp, set(riichi_tiles), p_r)
+
+    def after_turn(rec, table, pid, actions, action_str):
+        if rec is None:
+            return
+        m = ACTION_RE.search(action_str)
+        kind = m.group(1) if m else "other"
+        if kind == "riichi":
+            choice = "riichi"
+        elif kind == "discard":
+            choice = "dama" if norm_tile(m.group(2)) in rec[4] else "break"
+        else:
+            choice = "other"
+        key = f"{rec[0]}|{rec[1]}|{rec[2]}|{rec[3]}"
+        c[f"n|{key}"] += 1
+        c[f"{choice}|{key}"] += 1
+        if rec[5] is not None:
+            c[f"pr_sum|{key}"] += rec[5]
+
     for seed in seeds:
-        random.seed(seed)
-        table = PyMahjongTable(randomize_round=True)
-        table.text_obs = False
-        guard = 0
-        while not table.finished and guard < 600:
-            guard += 1
-            pid = table.turn
-            actions = table.get_legal_actions(pid)
-            if not actions:
-                break
-            parsed = [ACTION_RE.search(a) for a in actions]
-            types = {m.group(1) for m in parsed if m}
-            riichi_tiles = sorted({norm_tile(m.group(2)) for m in parsed if m and m.group(1) == "riichi"})  # red "0m" -> "5m"
-            rec = None
-            if riichi_tiles and "tsumo" not in types and not table.riichi[pid] and not table.melds[pid]:
-                hand14 = list(table.hands[pid])
-                best = None
-                for t in riichi_tiles:
-                    h13 = list(hand14); h13.remove(t)
-                    waits = _te.calculate_ukeire(h13)
-                    n_unseen = sum(_unseen(w, table, h13) for w in waits)
-                    if best is None or n_unseen > best[1]:
-                        best = (t, n_unseen, h13, waits)
-                t, n_unseen, h13, waits = best
-                pw = WINDS[(pid - table.dealer) % 4]; rw = WINDS[table.round_wind_idx]
-                try:
-                    yk = [_has_yaku_without_riichi(h13, w, pw, rw) for w in waits]
-                    yaku = "all" if all(yk) else ("none" if not any(yk) else "some")
-                except Exception:
-                    yaku = "err"
-                wait = "good" if n_unseen >= 5 else "bad"
-                j = table.discard_count[pid]
-                junme = "early" if j <= 5 else ("mid" if j <= 11 else "late")
-                opp = "opp" if any(table.riichi[o] for o in range(4) if o != pid) else "noopp"
-                p_r = None
-                if is46:
-                    planes, scalars = encode_state(table, pid, variant=getattr(net, "encoder_variant", "v1"))
-                    vmask, _ = space.mask(actions)
-                    with torch.no_grad():
-                        logits = net(planes[None], scalars[None], vmask[None])
-                    p_r = float(torch.softmax(logits[0].float(), 0)[ma.IDX_RIICHI])
-                rec = (yaku, wait, junme, opp, set(riichi_tiles), p_r)
-            _, action_str = _choose(net, table, pid, actions, temperature, "cpu", cmode="none")
-            if rec is not None:
-                m = ACTION_RE.search(action_str)
-                kind = m.group(1) if m else "other"
-                if kind == "riichi":
-                    choice = "riichi"
-                elif kind == "discard":
-                    choice = "dama" if norm_tile(m.group(2)) in rec[4] else "break"
-                else:
-                    choice = "other"
-                key = f"{rec[0]}|{rec[1]}|{rec[2]}|{rec[3]}"
-                c[f"n|{key}"] += 1
-                c[f"{choice}|{key}"] += 1
-                if rec[5] is not None:
-                    c[f"pr_sum|{key}"] += rec[5]
-            _, _, done, info = table.step(pid, action_str)
-            if done:
-                break
-            if not (info.get("discarded") or info.get("chankan")):
-                continue
-            candidates = []
-            for offset in range(1, 4):
-                other = (pid + offset) % 4
-                options = table.get_interrupt_actions(other)
-                if len(options) == 1:
-                    continue
-                _, a_str = _choose(net, table, other, options, temperature, "cpu", cmode="none")
-                mm = ACTION_RE.search(a_str)
-                candidates.append({"player_id": other, "parsed": a_str,
-                                   "type": mm.group(1) if mm else None, "reward": 0.0})
-            executed, done = _resolve_claims(table, candidates)
-            if done:
-                break
-            if not executed:
-                if table.pending_kan:
-                    table.resolve_pending_kan()
-                else:
-                    _, r_done = table.advance_turn()
-                    if r_done:
-                        break
+        play_probe_game(net, seed, temperature, "cpu",
+                        before_turn=before_turn, after_turn=after_turn)
         c["games"] += 1
     return c
 

@@ -36,9 +36,10 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.run_arena_dnn import load_dnn                      # noqa: E402
-from src.agents.dnn.encoder import encode_state, legal_mask     # noqa: E402
-from src.agents.dnn.selfplay import _choose                     # noqa: E402
-from src.tasks.mahjong.table import PyMahjongTable, ACTION_RE   # noqa: E402
+from src.agents.dnn.action_space import get_space               # noqa: E402
+from src.agents.dnn.encoder import encode_state                 # noqa: E402
+from src.eval.probe_loop import play_probe_game                 # noqa: E402
+from src.tasks.mahjong.table import ACTION_RE                   # noqa: E402
 from src.tasks.mahjong.shanten import TileEfficiency, pad_for_melds  # noqa: E402
 
 _te = TileEfficiency()
@@ -55,83 +56,50 @@ def _shanten(tiles, n_melds):
 
 def play_chunk(args):
     ckpt, seeds, temperature = args
-    import random
     torch.set_num_threads(1)
     net = load_dnn(ckpt, "cpu")
+    variant = getattr(net, "encoder_variant", "v1")
+    # value read must use the net's own action space (46-slot models crash
+    # on the raw 374 mask; exp45 BC eval, 2026-08-27)
+    space = get_space(net)
     c = Counter()
+
+    def before_turn(table, pid, actions):
+        riichi_opps = [o for o in range(4) if o != pid and table.riichi[o]]
+        exposed = bool(riichi_opps) and not table.riichi[pid]
+        hand14 = list(table.hands[pid])
+        # V threat probe (suite #3): critic's danger awareness, bucketed
+        # by own shanten so exposed/unexposed states are comparable.
+        sh_now = _shanten(hand14, len(table.melds[pid]))
+        vb = ("tenpai" if sh_now <= 0 else "mid" if sh_now == 1 else "weak")
+        planes, scalars = encode_state(table, pid, variant=variant)
+        vmask, _ = space.mask(actions)
+        with torch.no_grad():
+            _, vv = net.forward_with_value(planes[None], scalars[None],
+                                           vmask[None])
+        vkey = f"v_{'exp' if exposed else 'un'}_{vb}"
+        c[vkey + "_sum"] += float(vv)
+        c[vkey + "_n"] += 1
+        return exposed, riichi_opps, vb
+
     for seed in seeds:
-        random.seed(seed)
-        table = PyMahjongTable(randomize_round=True)
-        table.text_obs = False
         exposed_seats = set()
-        guard = 0
-        while not table.finished and guard < 600:
-            guard += 1
-            pid = table.turn
-            actions = table.get_legal_actions(pid)
-            if not actions:
-                break
-            riichi_opps = [o for o in range(4)
-                           if o != pid and table.riichi[o]]
-            exposed = bool(riichi_opps) and not table.riichi[pid]
-            hand14 = list(table.hands[pid])
-            # V threat probe (suite #3): critic's danger awareness, bucketed
-            # by own shanten so exposed/unexposed states are comparable.
-            sh_now = _shanten(hand14, len(table.melds[pid]))
-            vb = ("tenpai" if sh_now <= 0 else "mid" if sh_now == 1 else "weak")
-            planes, scalars = encode_state(
-                table, pid, variant=getattr(net, "encoder_variant", "v1"))
-            # value read must use the net's own action space (46-slot
-            # models crash on the raw 374 mask; exp45 BC eval, 2026-08-27)
-            from src.agents.dnn.action_space import get_space
-            vmask, _ = get_space(net).mask(actions)
-            with torch.no_grad():
-                _, vv = net.forward_with_value(planes[None], scalars[None],
-                                               vmask[None])
-            vkey = f"v_{'exp' if exposed else 'un'}_{vb}"
-            c[vkey + "_sum"] += float(vv)
-            c[vkey + "_n"] += 1
-            _, action_str = _choose(net, table, pid, actions, temperature,
-                                    "cpu", cmode="none")
+
+        def after_turn(ctx, table, pid, actions, action_str):
+            exposed, riichi_opps, bucket = ctx
             m = ACTION_RE.search(action_str)
             if exposed and m and m.group(1) in ("discard", "riichi"):
                 exposed_seats.add(pid)
                 tile = m.group(2)
-                bucket = vb
                 genbutsu = all(
                     tile in (t.replace("*", "") for t in table.discards[o])
                     for o in riichi_opps)
                 c[f"exp_{bucket}"] += 1
                 if genbutsu:
                     c[f"fold_{bucket}"] += 1
-            _, _, done, info = table.step(pid, action_str)
-            if done:
-                break
-            if not (info.get("discarded") or info.get("chankan")):
-                continue
-            candidates = []
-            for offset in range(1, 4):
-                other = (pid + offset) % 4
-                options = table.get_interrupt_actions(other)
-                if len(options) == 1:
-                    continue
-                _, a_str = _choose(net, table, other, options, temperature,
-                                   "cpu", cmode="none")
-                mm = ACTION_RE.search(a_str)
-                candidates.append({"player_id": other, "parsed": a_str,
-                                   "type": mm.group(1) if mm else None,
-                                   "reward": 0.0})
-            from src.agents.dnn.selfplay import _resolve_claims
-            executed, done = _resolve_claims(table, candidates)
-            if done:
-                break
-            if not executed:
-                if table.pending_kan:
-                    table.resolve_pending_kan()
-                else:
-                    _, r_done = table.advance_turn()
-                    if r_done:
-                        break
+
+        table = play_probe_game(net, seed, temperature, "cpu",
+                                before_turn=before_turn, after_turn=after_turn)
         c["games"] += 1
         c["exposed_seat_games"] += len(exposed_seats)
         for hm in HOUJUU_RE.finditer(table.result_summary or ""):

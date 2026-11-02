@@ -34,20 +34,11 @@ from src.agents.dnn.yaku_features import completion_labels
 
 def _load_policy_ckpt(path):
     """Frozen opponent loader (league): rebuilds the net from the checkpoint's
-    own arch tag and loads policy keys only (critic variants tolerated)."""
-    from src.agents.dnn.net import load_compatible
-    blob = torch.load(path, map_location="cpu")
-    if blob.get("arch"):
-        from src.agents.dnn.arch_zoo import ZOO
-        net = ZOO[blob["arch"]][0]()
-    else:
-        net = MahjongPolicyNet(channels=blob.get("channels", 64),
-                               blocks=blob.get("blocks", 3))
-    load_compatible(net, blob["state_dict"])
-    if blob.get("symmetrize"):
-        from src.agents.dnn.symmetry import maybe_symmetrize
-        net = maybe_symmetrize(net, blob["symmetrize"])
-    return net.eval()
+    own arch tag and loads policy keys only (critic variants tolerated).
+    Same loader as every evaluator (src/agents/dnn/checkpoint.py), silent
+    because it runs inside rollout workers."""
+    from src.agents.dnn.checkpoint import load_dnn
+    return load_dnn(path, "cpu", verbose=False)
 
 
 def _pad_stack(items):
