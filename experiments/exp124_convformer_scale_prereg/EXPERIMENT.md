@@ -223,3 +223,6 @@ ConvFormer 每 2048 局（训练好策略的样本量）在本机 4080：已测 
 ## Conclusion
 
 ## Artifacts
+
+## Next Steps
+- [2026-11-01 用户批准入队] ConvFormer-L 尺寸扫描（同配方只放大主干，候选 256×8 / 192×10）；门控 192M 判决；前置 zoo 条目 + 吞吐基准 + 预注册。见 TASKS.md。
