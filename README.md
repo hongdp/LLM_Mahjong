@@ -76,7 +76,11 @@ whenever champion weights are on the pod); the local RTX 4080 is for smoke tests
 
 - **Phase 1 (2026-05 → 08-14, archived)**: LLM (Qwen + LoRA) + text rollouts + PBRS/PPO. All arena results null,
   returns not decodable from hidden states → retired. Legacy: the engine, the reward registry, the arena protocol,
-  the GCP workflow. Archives: `experiments/reports/report_exp1..exp5`, `src/core/`, `scripts/phase1_ce/`.
+  the GCP workflow. Records: `experiments/reports/report_exp1..exp5`. The LLM trainer, its GCP/Vertex launchers and
+  the LLM probes were deleted on 2026-11-01 (git history before `6907cf8` has them); what remains of Phase 1 in the
+  tree is the text rollout stack (`src/tasks/mahjong/{orchestrator,batch_rollout,prompts}.py`,
+  `src/core/{chat_format,rollout}.py`) because `arena.py` / `claims.py` sit in the Elo engine fingerprint and the
+  engine tests drive it, plus the reward registry (`rewards.py`) and the heuristic teacher (`generate_sft_data.py`).
 - **Phase 2 (current)**: small dedicated networks (2–23M params) + tensor encodings + self-play PPO / BC / DQN.
 
 ## Architecture (Phase 2, active parts)
@@ -100,15 +104,25 @@ src/agents/dnn/
 ├── selfplay.py         # Python-engine self-play (play_game / generator play_game_gen) — probes and bc49 tables
 ├── rust_rollout.py     # Rust-engine rollout (collect_rust): league seats, reward styles, uint8 planes
 ├── parallel_rollout.py # multi-process Python rollout + GPU batch inference (infer_server.py)
+├── checkpoint.py       # load_dnn: the one checkpoint -> policy loader (arena, probes, bridge, league opponents)
 ├── style_stats.py      # capability metrics (win / deal-in / riichi / call rates, turns) for TB and evals
 └── mjai_bridge.py      # Majsoul live bridge (MJAI shadow table; encoder + legal actions reused unchanged)
+src/eval/
+├── vec_arena.py        # vectorised GPU arena: play_pair_vector (2v2 duplicate, single deal / hanchan) + the
+│                       #   collect_parallel config shared with the four-entity table driver
+├── arena.py            # rating v2 four-entity rotated table (play_table) writing ledger rows
+├── probe_loop.py       # Python-engine self-play loop with per-turn hooks (probe_defense / probe_riichi)
+└── ledger / registry / fits / schedule / importers / fingerprints   # rating system v2 (scripts/rating.py)
 scripts/
 ├── train_dnn_ppo.py    # PPO trainer: --engine rust, dup_k=8 duplicate-wall group baseline, GAE, entropy
 │                       #   schedules / target-entropy dual control, KL anchors, league pools, PBRS shaping,
 │                       #   deal-in penalties (global / shanten-weighted / annealed), counterfactual advantages
-├── train_dnn_bc.py     # behaviour cloning on Tenhou logs (bc49 recipe)
+├── train_human_bc.py   # behaviour cloning on Tenhou logs (bc49 recipe)
+├── train_dnn_bc.py / arch_sweep_bc.py   # BC on the heuristic teacher (generate_sft_data.py) — the bc_cnn Elo origin
 ├── train_dnn_dqn.py / train_dnn_qstitch.py   # value-method line (Double DQN on a prior; prior-anchored Q-stitch)
-├── run_elo_league.py   # anchor pool Elo (single-deal and --hanchan, vectorised GPU, engine-fingerprint guard)
+├── run_elo_league.py   # anchor pool Elo (single-deal and --hanchan, engine-fingerprint guard); stable entry
+│                       #   play_pair_vector(...) wraps src/eval/vec_arena
+├── run_arena_dnn.py    # batch-1 Python-engine arena (rule-override diagnostics); stable entry load_dnn(path, device)
 ├── rating.py           # rating system v2 (append-only ledger, four-entity tables, pt board) — epoch 7 pending
 ├── probe_*.py / eval_style_profile.py         # probe family: defence IQ, decomposition, conditional entropy, style
 ├── serve_mjai_bot.py   # HTTP agent service for the Majsoul bridge
