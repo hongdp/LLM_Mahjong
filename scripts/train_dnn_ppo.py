@@ -170,7 +170,7 @@ def main():
                          "during the previous forward, so batch size "
                          "self-balances at arrival_rate x forward_time). "
                          "Measured 2026-08-25: 0 beats the old 4.0 default by "
-                         "~10% on both a slow model (mortal_full 3599->3974 "
+                         "~10%% on both a slow model (mortal_full 3599->3974 "
                          "decisions/s) and a fast one (cnn_m_r 143->157 "
                          "games/s), and is neutral at low concurrency (batch "
                          "is 2.2 either way with 3 workers). Waiting buys a "

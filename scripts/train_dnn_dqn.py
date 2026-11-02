@@ -100,8 +100,8 @@ def parse_args():
                     help="exp60: where promoted gen_NNNN.pt land (actors read it)")
     ap.add_argument("--updates_per_iter", type=int, default=200)
     ap.add_argument("--bf16", action="store_true",
-                    help="bf16 autocast for the update forward (Q1b: +15% at "
-                         "batch 512, +50% at 2048 on a 4080); losses in fp32")
+                    help="bf16 autocast for the update forward (Q1b: +15%% at "
+                         "batch 512, +50%% at 2048 on a 4080); losses in fp32")
     ap.add_argument("--history_frac", type=float, default=0.0,
                     help="store mode: per pass, also read one random OLD shard "
                          "and add this fraction of its episodes to the ring — "
