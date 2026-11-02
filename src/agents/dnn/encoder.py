@@ -51,6 +51,8 @@ N_SCALARS_V3 = N_SCALARS + 4 + 4 + 1        # + riichi turn x4, discard count x4
 # only match context v3 scalars were missing (points/kyotaku/wind/dealer
 # are already in s[0..17]); honba lives driver-side, read via getattr
 N_SCALARS_V3H = N_SCALARS_V3 + 3
+# exp116 v3rg: v3r + genbutsu plane (vs every riichi opponent, only while >= 1 opponent is in riichi and the seat is
+# not) + own-shanten one-hot (tenpai / 1 / 2+, same gate). Rust encoder v3rg is bit-identical (tests/test_rust_encoder_parity.py).
 # v3s (exp89 style-conditioned population): v3r + [tau_d / 8, tau_a] of this
 # seat's reward style (Table.seat_style; zeros = the pure objective, used at play)
 N_SCALARS_V3S = N_SCALARS_V3 + 2
@@ -66,6 +68,8 @@ N_SCALARS_V3F = N_SCALARS_V3 + 1
 N_PLANES_RED = 6
 N_PLANES_V1R = N_PLANES + N_PLANES_RED      # 21
 N_PLANES_V3R = N_PLANES_V3 + N_PLANES_RED   # 56
+N_PLANES_V3RG = N_PLANES_V3R + 1
+N_SCALARS_V3G = N_SCALARS_V3 + 3
 # exp68 oracle POLICY guiding (Suphx-style, pure line): 8 hidden-state planes
 # appended to v1r — 3 opponents' concealed hand counts /4, 3 opponents' wait
 # masks, live wall counts /4, hidden ura indicator one-hot. They are filled
@@ -103,6 +107,7 @@ VARIANT_SHAPE = {                            # encoder variant -> (planes, scala
     "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
     "v3r2": (N_PLANES_V3R2, N_SCALARS_V3),
     "v3rh": (N_PLANES_V3R, N_SCALARS_V3H),
+    "v3rg": (N_PLANES_V3RG, N_SCALARS_V3G),
     "v3s": (N_PLANES_V3R, N_SCALARS_V3S),      # exp89 style-conditioned (v3r + 2 style scalars)
     "v3rf": (N_PLANES_V3R, N_SCALARS_V3F),     # exp103 fold option (v3r + in_fold_mode scalar)
     "v4": (N_PLANES_V4, N_SCALARS_V3),
@@ -129,7 +134,7 @@ def variant_of_arch(arch: str) -> str:
     arch = re.sub(r"_m\d+$", "", arch)
     if arch.startswith("mortal_full"):
         return "mortal_v3_pure" if "_pure" in arch else "mortal_v3"
-    for suf, v in (("_v4", "v4"), ("_v3rh", "v3rh"), ("_v3rfl", "v3rf"), ("_v3rf", "v3rf"), ("_v3r", "v3r"),
+    for suf, v in (("_v4", "v4"), ("_v3rg", "v3rg"), ("_v3rh", "v3rh"), ("_v3rfl", "v3rf"), ("_v3rf", "v3rf"), ("_v3r", "v3r"),
                    ("_v3", "v3"), ("_ro", "v1ro"), ("_rh", "v1rh"), ("_r", "v1r")):
         if arch.endswith(suf):
             return v
@@ -380,6 +385,19 @@ def encode_state(table, player_id: int,
         f = getattr(table, "fold_mode", None)
         ex = np.array([1.0 if (f is not None and f[player_id]) else 0.0], dtype=np.float32)
         return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
+                torch.from_numpy(np.concatenate([sc, ex])))
+    if variant == "v3rg":
+        P, sc = _encode_v3(table, player_id, as_numpy=True)
+        g = np.zeros((1, TILE_TYPES), dtype=np.float32)
+        ex = np.zeros(3, dtype=np.float32)
+        if not table.riichi[player_id]:
+            from src.agents.dnn.fold_option import genbutsu_34
+            gb = genbutsu_34(table, player_id)
+            if gb is not None:
+                g[0] = gb.astype(np.float32)
+                sh = int(table._shanten(table.hands[player_id], len(table.melds[player_id])))
+                ex[0 if sh <= 0 else (1 if sh == 1 else 2)] = 1.0
+        return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id), g])),
                 torch.from_numpy(np.concatenate([sc, ex])))
     if variant == "v3rh":
         P, sc = _encode_v3(table, player_id, as_numpy=True)

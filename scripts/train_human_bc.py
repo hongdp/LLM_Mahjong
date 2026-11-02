@@ -85,7 +85,7 @@ def main():
     ap.add_argument("--arch", required=True)
     ap.add_argument("--raw", default="data/tenhou/raw")
     ap.add_argument("--limit_games", type=int, default=0,
-                    help="cap on TRAIN games (holdout always full 10%)")
+                    help="cap on TRAIN games (holdout always full 10%%)")
     ap.add_argument("--max_epochs", type=int, default=30)
     ap.add_argument("--patience", type=int, default=3,
                     help="stop after this many epochs without >min_delta gain")

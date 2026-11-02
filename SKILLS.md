@@ -53,7 +53,7 @@
 - **Algorithm stack**: PBRS potential rewards (telescoping-consistent, unfarmable) + optional dora value term; PPO (no critic, KL early stop) or REINFORCE; optional initial-hand covariate baseline. 47 unit tests.
 - **Throughput stack**: batched parallel rollout (near-linear to 24 games), bf16 LoRA on A100 (+55% over nf4), fast-path kernels; per-game cost 525s → 100s (5.2×).
 - **Next majors queued** (TASKS.md): v3 threaded-context architecture (design doc ready), critic head vs duplicate-deal decision pending variance decomposition from the current fleet's data.
-- **Repo layout**: legacy `checkpoints/`/`logs/` and `src/data_loader.py`/`src/models/` stubs unchanged (archive/delete manually when convenient).
+- **Repo layout**: legacy `checkpoints/`/`logs/` and `src/data_loader.py`/`src/models/` stubs unchanged (archive/delete manually when convenient). → `src/data_loader.py` and the whole LLM stack were deleted 2026-11-01 (see that entry); `checkpoints/`/`logs/` stay frozen on disk, untracked.
 
 ### Ops Lessons (Aug 2026, GCP session)
 > The generalizable GCP practices from this project (and the other workspace trainers) are consolidated in the shared **`gcp-trainer`** skill (`~/Workspace/SKILLS/gcp-trainer`, loaded via `~/.claude/skills`) — consult it first when launching cloud runs; new *generalizable* lessons go there, project-specific facts stay here.
@@ -702,3 +702,42 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
 - exp112：exp106 R 同一 ckpt 半庄 vs bc49（T=0，2v2 duplicate，1200 墙）seed 59300000 读 0.394±0.014、seed 59310000 读 0.369±0.014；差 2.5 pp ≈ 1.8× 单段 SE。
   原因：一墙半庄 = 8–12 局串行相关，份额按墙 0/1 记，SE 公式低估段间差。
 - 规则：半庄读数一律两段（2400 墙）合并再比；配对差（同墙）比绝对份额稳得多（N−R 两段 −6.0 / −1.9，合并 −3.9±1.3）。单段跌破早停线不触发，合并才算。
+
+## 2026-10-16 大网络（20M 级 CNN）上云前先做性能工程 + 实测选机（exp113）
+- **瓶颈在 PPO 更新，不在 rollout**：384×12 在 4080 上 bf16 推理 66–90k 样本/s，训练步只有 17k；每局 ≈60 个训练样本，更新占一半以上墙钟。
+- **三项零算法改动的提速**（端到端 105 → 207 局/s）：①Conv1d(k=3) 改写为通道在后的 GEMM（`--fast_trunk`，float64 逐位等价、ckpt 不变）；②`torch.compile(dynamic=True)`（rollout 每步 batch 不同，动态形状实测与静态一样快；max-autotune 在消费卡上会报 triton 资源不足，用默认模式）；③rollout 与价值前向 bf16（`--bf16_rollout`）。
+- **bf16 对 PPO 的影响先量化再上**：同状态同权重下，流水线 approxKL 噪声底的主项是 BN 训练/推理模式差（1.3e-3，随机 minibatch；按局顺序切块会假性放大到 4e-2），bf16 rollout 只加 1.3e-4。
+- **选机看"每美元局数"实测，不看理论 TFLOPS**：4090 Secure（$0.89）261 局/s ≈ L40S（$1.09）265、RTX 6000 Ada 180、H100 PCIe 323 但被 CPU 侧 rollout 卡住（每美元只有 4090 的 38%）。消费卡 bf16 累加半速的担心在这个负载上不成立（4090 训练步 36.5k > L40S 32k）。小网络对照臂 CPU 主导，RTX 4000 Ada（$0.28）每美元局数是 4090 的 8 倍。
+- 基准方法：每台候选 pod 跑 GPU 微基准 + 6 轮真实训练迭代取第 3–6 轮中位数；赢家 pod 原地复用为正式训练机（代码和起点已就位）。
+- **net2net 函数保持热启动**：新通道输入随机、输出置零；插入块末层 BN γ=β=0；真实状态 max|logit diff| 6e-5。新通道 BN running stats 起步不对，但输出权重为零所以不影响函数，首轮内收敛。
+- 运维：`pkill -f <含目标串>` 又一次自匹配杀掉了自己的 shell（exit 144）——规则不变：kill 单独成调用、命令里不出现目标字符串明文（用 pgrep 的 `[x]` 技巧取 PID 再 kill）。
+
+## 2026-10-19 RunPod Secure pod 也会被无声整体重启：长跑必须能自动续跑
+- exp113 L 臂（Secure 4090）在第 3 天被容器重启：进程和外层 wrapper 全没、自毁/握手逻辑一起丢，日志无报错；`/workspace` 与已装的 Python 包都还在。
+- 心跳 30 分钟 STALL 能发现，但到人工续跑已过 1.6 h。规则：①checkpoint 存 Adam 状态与控制器状态（lr 倍数）以便无损续跑；②每个长跑配本机看门狗（pod 可达 + 无训练进程 + 无结束标记 ⇒ 用 resume 版 wrapper 自动续跑）；③等待脚本只看心跳的新增行，旧 ALERT 行会让后续 waiter 立刻退出。
+
+## 2026-10-23 ES/随机扰动搜索先做功效计算（exp117）
+- 进化策略方向估计需要 N·SNR² ≳ d（N 配对样本、SNR = 单样本信号/噪声、d 扰动维度）。麻将单墙 Δ 噪声数千分、可改进量数十分，40 万墙只够 d ≈ 10²。全头 19 万维扰动注定无检出力——预注册前先算，别在结果后才发现。
+- 半样本余弦是廉价的信号检验（零假设 SE = 1/√d）；但"有信号"不等于"有好方向"，必须接新鲜牌山步长扫描。
+- 按方差选的子空间会错过稀有局势（受威胁远手只占少数决策）。
+
+## 2026-11-01 仓库结构清理：删 Phase 1 LLM 遗留、评测公共逻辑下沉 src/
+- **删了什么**（每项 grep 零代码引用，或引用方同批删除）：`src/core/{trainer,registry,task,ppo,value_head}.py`、`src/tasks/mahjong/task.py`、
+  `src/data_loader.py`、`scripts/{run_arena,probe_value_decodability,probe_engine_feature_value,probe_teacher_agreement,audit_think_accuracy,
+  analyze_defense_probe}.py`、`scripts/{phase0_local,phase1_ce,phase2_vertex}/`、`Dockerfile`（CMD 指向不存在的 `src/train_rlhf.py`）、
+  `tests/{test_ppo,test_value_head}.py`、`run_arena_dnn.py` 的 LoRA adapter 分支、`requirements.txt` 里的 transformers/trl/peft/bitsandbytes 等。
+  为什么：Qwen+QLoRA 路线 08-14 已退役，这些入口只服务它；留着会让 grep/依赖安装/`--help` 继续撞上 peft/langchain。
+- **为什么没删干净**：`src/tasks/mahjong/arena.py` 在 `run_elo_league.ENGINE_FILES` 指纹集合里（内容 sha256，不是 git commit），**改一个字节 =
+  引擎纪元错配、Elo 池全部作废**；它 import 的 LLM 批量 rollout（`batch_rollout.py` → `prompts.py`/`chat_format.py`/`core/rollout.py`）因此全部保留，
+  `claims.py` 同理（import `chat_format.visible_text`）。`orchestrator.py`（LangGraph）仍是 `tests/test_engine.py` 的引擎驱动，没动。
+  `rewards.py`（LLM 文本 reward registry）和 `generate_sft_data.py`（启发式教师，`bc_cnn` 原点锚的来源）有非 legacy 引用，列入待裁定。
+  教训：想瘦身"被指纹冻结"的模块，只能等下一次纪元重校时一起做，并把指纹文件表写进 PR。
+- **复用到哪里**：`src/agents/dnn/checkpoint.load_dnn`（原 `run_arena_dnn.load_dnn`，后者改为同签名薄包装；`mjai_bridge.load_policy`、
+  `src/eval/arena._cfg`、`parallel_rollout._load_policy_ckpt` 都改走它，消掉了 `src` → `scripts` 的反向 import）；`src/eval/vec_arena.py`
+  （`play_pair_vector` 本体 + 与四实体同桌共用的 `base_cfg`；`run_elo_league.play_pair_vector` 保留同名同签名包装）；`src/eval/probe_loop.play_probe_game`
+  （`probe_defense`/`probe_riichi` 各自复制的自对弈循环，探针只剩统计回调和 CLI）。
+- **等价验证方法**：改前改后同种子同 ckpt 跑 `play_pair_vector` 64 墙（T=0）、`probe_defense --games 8`、`probe_riichi --games 8`，JSON 逐字节比对；
+  两个驱动的 `collect_parallel` 配置字典与旧内联字典 `==`；`tests/test_entry_points.py` 用 `inspect.signature` 钉住稳定入口，并断言探针循环在 T=0 下
+  与 `selfplay.play_game` 复现同一局。T=1 探针因 fork 子进程继承父进程随机 torch 种子，跑两次本就不等，对拍一律 T=0。
+- 常驻进程（雀魂服务、exp124 评测循环）跑在各自 worktree（`LLM_Mahjong_exp124`、`rl-model-defense-learning-*`），合并不影响它们；
+  但以后改入口前先 `ls -l /proc/*/cwd` 看谁在用哪棵树。

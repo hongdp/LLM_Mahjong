@@ -2,19 +2,19 @@
 
 在这个仓库工作前，必须先读 [SKILLS.md](SKILLS.md)（教训/方法论/硬件约束）和 [README.md](README.md)（架构与运行方式）；当前实验状态看 [experiments/INDEX.md](experiments/INDEX.md) 与 [experiments/FINDINGS.md](experiments/FINDINGS.md)。
 
-## 项目地图（顶层目录职责，2026-08-30 审定）
+## 项目地图（顶层目录职责，2026-08-30 审定；2026-11-01 结构清理后更新）
 | 目录 | 职责 | git |
 |---|---|---|
-| `src/` | 库代码（引擎 `src/tasks/mahjong/`、DNN `src/agents/dnn/`）；只放可复用模块 | ✅ |
-| `scripts/` | 入口与驱动（训练/评测/云发射/数据管道）；一次性探针放 scratchpad 不入库 | ✅ |
+| `src/` | 库代码（引擎 `src/tasks/mahjong/`、DNN `src/agents/dnn/`、评测 `src/eval/`）；只放可复用模块。脚本间共用的逻辑一律下沉到这里（checkpoint 加载 `agents/dnn/checkpoint.py`、向量竞技场 `eval/vec_arena.py`、探针循环 `eval/probe_loop.py`），脚本只留参数解析与调用；`src` 不得 import `scripts` | ✅ |
+| `scripts/` | 入口与驱动（训练/评测/云发射/数据管道）；一次性探针放 scratchpad 不入库。**稳定入口**（常驻进程/运维脚本在用，路径与签名不得改）：`train_dnn_ppo.py` 全部 flag、`run_elo_league.play_pair_vector(path_a, path_b, deals, seed0, parallel, device, temp_a, temp_b, hanchan)`、`run_arena_dnn.load_dnn(path, device)`、`probe_defense.py`/`probe_riichi.py` 命令行、`src/eval/arena._cfg`/`play_table`、`parallel_rollout.collect_parallel`、`rust_rollout.collect_rust`、`arch_zoo.ZOO`、`tools/majsoul_bridge` 入口（`tests/test_entry_points.py` 钉死） | ✅ |
 | `tests/` | pytest 全部在此；金样本数据 `tests/data/` | ✅ |
 | `experiments/` | 实验记录与工件（细分见下表）；整体 gitignore、记录文件白名单 | 部分 |
 | `docs/` | 长期参考（**冠军模型卡/部署手册**、引擎已知问题、总设计书、GCP 成本、路线图、交接） | ✅ |
 | `data/` | 语料与外部资产（`tenhou/raw`、SFT jsonl、`mortal_ext/`——Mortal 权重不得再分发） | ❌ |
 | `tools/` | 外围工具（majsoul_bridge、tenhou 下载器、webui） | ✅ |
 | `paper/` | 论文素材（`.git/info/exclude` 屏蔽，发布前不入库） | ❌ |
-| `checkpoints/`、`logs/` | LLM 时代遗留工件目录，已冻结，勿新增 | ❌ |
-| 顶层文件 | 仅限：CLAUDE/SKILLS/TASKS/README(.zh)/Dockerfile/requirements.txt；**禁止把输出文件丢在顶层** | ✅ |
+| `checkpoints/`、`logs/` | LLM 时代遗留工件目录，已冻结，勿新增；仓库内已无代码读写它们 | ❌ |
+| 顶层文件 | 仅限：CLAUDE/SKILLS/TASKS/README(.zh)/requirements.txt（Dockerfile 随 Vertex 路径于 2026-11-01 删除）；**禁止把输出文件丢在顶层** | ✅ |
 
 ## 写入规则（什么内容写到哪里）
 | 内容 | 位置 |
@@ -47,7 +47,7 @@
 - 本地 GPU（RTX 4080 16GB）只做冒烟/debug/benchmark；小时级训练一律上云。LLM 验证仅 Qwen2.5-0.5B + QLoRA，Gemma 会 OOM。
 - 评测协议：终审一律 T=0 + 族外梯子 + 半庄 n≥300；T=1 族内曲线不得单独下结论。
 - **冠军易主 / 纪元重校 / 部署形态变更 ⇒ 同一 PR 内更新 [docs/champion_model.md](docs/champion_model.md)**（§1 速览、§2 ckpt 路径、§5 配方、§8 历史）+ LEADERBOARD + README(.zh) 状态行 + 桥接 runbook 的 ckpt 行，并把新权重上传 `gs://llm-mahjong-experiments/checkpoints/<谱系>/`；加冕判据=双方 T=0 头对头显著为正，梯子分只排名不加冕（T=0 候选对 T=1 锚有系统性高估）。
-- 奖励逻辑必须模块化（registry + BaseRewardModel），不得硬编码进训练循环。
+- 奖励逻辑必须模块化（registry + BaseRewardModel），不得硬编码进训练循环。注：`src/tasks/mahjong/rewards.py` 的 registry 是 LLM 文本接口；DNN 线的奖励塑形在 `src/agents/dnn/selfplay.potential` 与 Rust VecEnv 的 reward styles——新奖励加在那里并保持可注册。
 - kill 命令必须单独成调用且不含目标字符串明文（pkill 自匹配史）；生成代码后必须**独立**跑一次 ast/语法校验。
 - 有新教训/架构决策 → 追加 SKILLS.md（带日期）；有新结果 → FINDINGS.md / 对应 EXPERIMENT.md，不进 SKILLS。
 - **等待运行结果时不空转（用户规则 2026-09-06）**：任何等待期（云训练、长评测、后台任务）都要主动巡检**所有**已启动的训练任务：

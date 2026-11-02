@@ -126,6 +126,34 @@ def main():
     ap.add_argument("--bf16_infer", action="store_true",
                     help="bf16 autocast in the rollout inference server "
                          "(2x-ish on attention archs; logits sampled in fp32)")
+    ap.add_argument("--fast_trunk", action="store_true",
+                    help="exp113: channels-last GEMM trunk for stem+ResBlock CNNs (float64-identical to the "
+                         "cudnn path, tests/test_fast_trunk.py); checkpoints unchanged")
+    ap.add_argument("--compile", action="store_true",
+                    help="exp113: torch.compile the fast trunk (dynamic batch dim); implies --fast_trunk")
+    ap.add_argument("--bf16_rollout", action="store_true",
+                    help="exp113: bf16 autocast for Rust-rollout inference and the pre-update value pass "
+                         "(log-softmax/sampling stay fp32; adds approxKL ~1e-4 vs the 1.4e-3 the BN "
+                         "train/eval mismatch already contributes)")
+    ap.add_argument("--rollout_values", action="store_true",
+                    help="exp124: take V(s) from the rollout's own forward (same weights, same bf16 autocast) "
+                         "instead of a second full-batch value pass in the pack stage. 46-slot Rust path only")
+    ap.add_argument("--rollout_values_check", action="store_true",
+                    help="exp124: with --rollout_values, ALSO run the pack value pass and log max|dV| (equivalence check)")
+    ap.add_argument("--posture_beta", default=None,
+                    help="exp116: 'b0,b1,b2' initial posture prior on genbutsu discards (tenpai / 1-shanten / 2+) for a "
+                         "v3rg net; applied only when the resume checkpoint has no posture_beta (fresh widening)")
+    ap.add_argument("--posture_freeze", action="store_true", help="exp116: keep posture_beta fixed (no gradient)")
+    ap.add_argument("--posture_lr", type=float, default=1e-3,
+                    help="exp116: Adam lr of the posture_beta param group (own group; the kl_lr_target multiplier and "
+                         "warmup scale every group relative to its own base lr)")
+    ap.add_argument("--kl_lr_target", type=float, default=0.0,
+                    help="exp113: per-iteration lr controller on the CLEAN probe KL (eval-mode policy on 2048 probe "
+                         "states before vs after the update; no BN train/eval floor). probe_kl > 1.5x target -> lr/1.5, "
+                         "< target/1.5 -> lr*1.5, multiplier capped at 1 (never above --lr). 0 = off")
+    ap.add_argument("--profile_pack", action="store_true",
+                    help="exp113: cuda-synchronised sub-timings of the pack stage (concat/H2D, probe+value pass, "
+                         "GAE, advantage) logged as pack_parts")
     ap.add_argument("--tf32", type=int, default=1,
                     help="TF32 matmul for the fp32 update path (default on)")
     ap.add_argument("--gpu_infer", action="store_true",
@@ -142,7 +170,7 @@ def main():
                          "during the previous forward, so batch size "
                          "self-balances at arrival_rate x forward_time). "
                          "Measured 2026-08-25: 0 beats the old 4.0 default by "
-                         "~10% on both a slow model (mortal_full 3599->3974 "
+                         "~10%% on both a slow model (mortal_full 3599->3974 "
                          "decisions/s) and a fast one (cnn_m_r 143->157 "
                          "games/s), and is neutral at low concurrency (batch "
                          "is 2.2 either way with 3 workers). Waiting buys a "
@@ -482,7 +510,16 @@ def main():
                                                   map_location="cpu")["state_dict"])
         print(f"⚓ warm-start {args.init}"
               + (f" (fresh: {skipped})" if skipped else ""), flush=True)
-    opt = torch.optim.Adam(net.parameters(), lr=args.lr)
+    # exp116: posture_beta (v3rg nets) gets its own param group (or is frozen); every group keeps its base lr so the
+    # warmup / kl_lr_target multipliers scale groups relative to their own base.
+    pb = getattr(net, "posture_beta", None)
+    if pb is not None and args.posture_freeze:
+        pb.requires_grad_(False)
+    main_params = [p_ for n_, p_ in net.named_parameters() if n_ != "posture_beta"]
+    groups = [{"params": main_params, "lr": args.lr, "base_lr": args.lr}]
+    if pb is not None and not args.posture_freeze:
+        groups.append({"params": [pb], "lr": args.posture_lr, "base_lr": args.posture_lr})
+    opt = torch.optim.Adam(groups, lr=args.lr)
     ocrit, oopt = None, None
     if args.oracle_critic != "none":
         if args.engine != "rust" or args.critic_feats != "none":
@@ -495,6 +532,7 @@ def main():
               f"params={sum(q.numel() for q in ocrit.parameters())/1e6:.2f}M lr={args.oracle_lr} "
               f"epochs={args.oracle_epochs} warmup_iters={args.oracle_warmup_iters}", flush=True)
     n_upd = 0                      # optimizer updates, for --warmup_updates
+    lr_mult = 1.0                  # exp113 --kl_lr_target controller state (saved in checkpoints)
     ent_alpha = args.entropy_coef      # live coefficient (schedule/auto laws)
     noise_sigma = args.param_noise_sigma0 if args.param_noise_kl > 0 else 0.0
     if args.param_noise_kl > 0 and args.engine != "rust":
@@ -504,7 +542,7 @@ def main():
         torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                     "channels": args.channels, "blocks": args.blocks,
                     "arch": args.arch, "critic_feats": args.critic_feats,
-                    "games": games, "iter": it, "entropy_alpha": ent_alpha,
+                    "games": games, "iter": it, "entropy_alpha": ent_alpha, "lr_mult": lr_mult,
                     "param_noise_sigma": noise_sigma,
                     "optimizer": opt.state_dict()}, f"{exp_dir}/{tag}.pt")
         if ocrit is not None:
@@ -562,9 +600,22 @@ def main():
                 print(f"   oracle critic restored from {cpath}", flush=True)
             else:
                 print("   oracle critic starts fresh (no critic_*.pt next to the resume checkpoint)", flush=True)
+        if pb is not None and args.posture_beta and "posture_beta" not in blob["state_dict"]:
+            with torch.no_grad():
+                pb.copy_(torch.tensor([float(x) for x in args.posture_beta.split(",")], device=pb.device))
+            print(f"   posture prior initialised: beta = {pb.tolist()}" + (" (frozen)" if args.posture_freeze else
+                  f" (learnable, lr {args.posture_lr})"), flush=True)
+        elif pb is not None:
+            print(f"   posture prior from checkpoint: beta = {[round(x, 3) for x in pb.tolist()]}"
+                  + (" (frozen)" if args.posture_freeze else ""), flush=True)
         start_games = int(blob.get("games", 0))
         start_iter = int(blob.get("iter", 0))
         ent_alpha = float(blob.get("entropy_alpha", ent_alpha) or ent_alpha)
+        if args.kl_lr_target > 0 and blob.get("lr_mult"):
+            lr_mult = float(blob["lr_mult"])
+            for g in opt.param_groups:
+                g["lr"] = g.get("base_lr", args.lr) * lr_mult
+            print(f"   kl_lr_target: lr multiplier restored {lr_mult:.3f}", flush=True)
         if args.param_noise_kl > 0 and blob.get("param_noise_sigma"):
             noise_sigma = float(blob["param_noise_sigma"])
         old_log = os.path.join(exp_dir, "train_log.json")
@@ -590,6 +641,18 @@ def main():
     else:
         save("games_0", 0)
     net.value_detach = bool(args.value_detach)
+    if (args.fast_trunk or args.compile) and type(net).__name__ in ("ConvFormer", "ConvFormer46"):
+        # bench 2026-10-31: math-preserving fast ConvFormer trunk (batched suit conv + SDPA + optional compile)
+        from src.agents.dnn.fast_convformer import enable_fast_convformer
+        enable_fast_convformer(net, compile=args.compile)
+        print(f"🚀 fast ConvFormer trunk{' + torch.compile' if args.compile else ''}", flush=True)
+    elif args.fast_trunk or args.compile:
+        from src.agents.dnn.net import enable_fast_trunk
+        if not (hasattr(net, "stem") and hasattr(net, "blocks") and hasattr(net, "scalar_fc")):
+            raise SystemExit("--fast_trunk/--compile need a stem + ResBlock CnnPolicy arch")
+        enable_fast_trunk(net, compile=args.compile)
+        print(f"🚀 fast trunk (channels-last GEMM){' + torch.compile (dynamic batch)' if args.compile else ''}"
+              f"{'; bf16 rollout inference' if args.bf16_rollout else ''}", flush=True)
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
                temperature=args.temperature, gamma=args.gamma,
                games_per_worker=args.games_per_worker,
@@ -600,10 +663,13 @@ def main():
                gpu_infer=args.gpu_infer, gpu_infer_opponents=args.gpu_infer_opponents,
                infer_max_batch=args.infer_max_batch,
                infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device,
-               bf16_infer=args.bf16_infer,
+               bf16_infer=args.bf16_infer, bf16_rollout=args.bf16_rollout,
                action_space=space_of_arch(args.arch),
                cf_p=args.cf_p, cf_k=args.cf_k, cf_only_exposed=not args.cf_all,
-               cf_branch_slots=(args.cf_slots or None))
+               cf_branch_slots=(args.cf_slots or None),
+               rollout_values=bool(args.rollout_values))
+    if args.rollout_values and (args.engine != "rust" or getattr(net, "action_space", None) != "mortal46"):
+        raise SystemExit("--rollout_values is wired for --engine rust with a 46-slot arch only (exp124)")
     shaping_sched = []
     if args.shaping_schedule:
         shaping_sched = sorted((int(g), float(c)) for g, c in (x.split(":") for x in args.shaping_schedule.split(",")))
@@ -742,6 +808,13 @@ def main():
         rollout_s = time.time() - t_roll0
         games += len(results)
 
+        pk_t = [time.time()]; pk_parts = {}
+
+        def pk(name):                       # --profile_pack: synchronised split of the pack stage
+            if args.profile_pack:
+                if dev.type == "cuda":
+                    torch.cuda.synchronize()
+                pk_t.append(time.time()); pk_parts[name] = round(pk_t[-1] - pk_t[-2], 3)
         cat = lambda k: np.concatenate([e[k] for e in episodes])
         if episodes and episodes[0].get("planes_log") is not None:
             # wide observations arrive as the encoder's write log (98x smaller
@@ -789,17 +862,28 @@ def main():
         if n_eff < args.batch:
             continue
 
+        pk("concat_h2d")
         with torch.no_grad():
             probe = idx_keep[torch.randperm(n_eff, device=dev)[:2048]]
             lp0 = torch.log_softmax(_ffloor(net(planes[probe], scal[probe], mask[probe]), fold_floor_now), 1)
             s0 = torch.where(torch.isfinite(lp0), lp0, torch.zeros_like(lp0))
             ent_before = float(-(lp0.exp() * s0).sum(1).mean())
             # V(s) for the whole batch under the SAMPLING policy
-            vals = torch.cat([
-                net.forward_with_value(planes[i:i + 8192], scal[i:i + 8192],
-                                       mask[i:i + 8192],
-                                       cfeats=cfe[i:i + 8192] if use_cf else None)[1]
-                for i in range(0, len(acts), 8192)])
+            vals_roll = (torch.from_numpy(cat("values")).to(dev).float()
+                         if args.rollout_values else None)      # exp124: same weights, from the rollout forward
+            if vals_roll is None or args.rollout_values_check:
+                with torch.autocast("cuda", torch.bfloat16, enabled=args.bf16_rollout and dev.type == "cuda"):
+                    vals = torch.cat([
+                        net.forward_with_value(planes[i:i + 8192], scal[i:i + 8192],
+                                               mask[i:i + 8192],
+                                               cfeats=cfe[i:i + 8192] if use_cf else None)[1].float()
+                        for i in range(0, len(acts), 8192)])
+            if vals_roll is not None:
+                if args.rollout_values_check:
+                    dv = (vals_roll - vals).abs()
+                    print(f"   rollout_values check: max|dV| {float(dv.max()):.5f} mean {float(dv.mean()):.6f} "
+                          f"(|V| mean {float(vals.abs().mean()):.4f}, n {len(vals)})", flush=True)
+                vals = vals_roll
         o_stats = None
         if ocrit is not None:
             with torch.no_grad():
@@ -824,6 +908,7 @@ def main():
                 o_stats["active"] = int(oracle_active)
             if args.oracle_critic == "v" and oracle_active:
                 vals = o_out                      # asymmetric baseline + bootstrap for GAE
+        pk("probe_value")
         if args.gae_lambda is not None:
             # per-episode GAE over the SAME per-step V used elsewhere. Vectorized
             # (2026-09-08): the per-step Python loop cost ~7 s per 2048-deal
@@ -851,6 +936,7 @@ def main():
             adv_raw[idx[valid]] = A[valid]
         else:
             adv_raw = rets - vals
+        pk("gae")
         cf_n, cf_sum, cf_best, cf_fold = 0, 0.0, 0, []
         if args.cf_p > 0:
             # exp72: replace the GAE advantage at counterfactually evaluated
@@ -880,6 +966,7 @@ def main():
         if args.adv_clamp:
             adv = adv.clamp(-args.adv_clamp, args.adv_clamp)
 
+        pk("adv")
         net.train()
         t_upd0 = time.time()
         pack_s = t_upd0 - t_roll0 - rollout_s      # batch packing + value forward + GAE (perf 2026-09-09)
@@ -986,7 +1073,7 @@ def main():
                     n_upd += 1
                     scale = min(1.0, n_upd / args.warmup_updates)
                     for g in opt.param_groups:
-                        g["lr"] = args.lr * scale
+                        g["lr"] = g.get("base_lr", args.lr) * scale
                 opt.step()
                 with torch.no_grad():
                     lr_ = chosen - old_lp[sel]
@@ -1019,6 +1106,8 @@ def main():
             lp1 = torch.log_softmax(_ffloor(net(planes[probe], scal[probe], mask[probe]), fold_floor_now), 1)
             s1 = torch.where(torch.isfinite(lp1), lp1, torch.zeros_like(lp1))
             ent_after = float(-(lp1.exp() * s1).sum(1).mean())
+            fin01 = torch.isfinite(lp0) & torch.isfinite(lp1)
+            probe_kl = float((lp0.exp() * torch.where(fin01, lp0 - lp1, torch.zeros_like(lp0))).sum(1).mean())
             ev = float(1 - (rets[idx_keep] - vals[idx_keep]).var()
                        / (rets[idx_keep].var() + 1e-9))
             ret_std = float(rets[idx_keep].std())
@@ -1071,8 +1160,10 @@ def main():
         row = {"iter": it, "games": games, "wall_s": round(el, 1),
                "rollout_s": round(rollout_s, 1), "update_s": round(update_s, 1),
                "pack_s": round(pack_s, 2), "iter_s": round(iter_s, 2),
+               **({"pack_parts": pk_parts, "pack_pre": round(pk_t[0] - t_roll0 - rollout_s, 3)} if args.profile_pack else {}),
                "pg_loss": float(np.mean(closs)), "value_loss": float(np.mean(vloss)),
-               "entropy_before": ent_before, "entropy": ent_after,
+               "entropy_before": ent_before, "entropy": ent_after, "probe_kl": probe_kl, "lr_mult": lr_mult,
+               **({f"posture_beta{i}": round(float(x), 4) for i, x in enumerate(pb.tolist())} if pb is not None else {}),
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
                "explained_var": ev, "win_rate": win,
                "oracle_hide_p": cfg.get("oracle_hide_p"),
@@ -1121,6 +1212,11 @@ def main():
             # exp112: pure-W credit diagnostics (points), per iteration
             row["wpure/mean_abs_credit_pts"] = float(_wp["mean_abs_credit_pts"]); row["wpure/paid"] = int(_wp["paid"]); row["wpure/rolled"] = int(_wp["rolled"])
             writer.add_scalar("wpure/mean_abs_credit_pts", row["wpure/mean_abs_credit_pts"], games)
+        _m4 = getattr(collector, "last_m46", None)
+        if _m4:
+            # exp124 46-slot space: share of decisions that needed a second (riichi / kan select) query
+            row["m46_second_rate"] = float(_m4["second_rate"])
+            writer.add_scalar("m46/second_rate", row["m46_second_rate"], games)
         _fd = getattr(collector, "last_fold", None)
         if _fd:
             # exp103 fold option: how often ENTER_FOLD was legal and taken this iteration
@@ -1149,6 +1245,13 @@ def main():
             row["aux_bce"] = float(np.mean(aloss))
             row["aux_sep"] = float(np.mean(asep)) if asep else 0.0
         log.append(row)
+        if args.kl_lr_target > 0:          # exp113: next iteration's lr from this iteration's clean probe KL
+            if probe_kl > 1.5 * args.kl_lr_target:
+                lr_mult = max(lr_mult / 1.5, 0.01)
+            elif probe_kl < args.kl_lr_target / 1.5:
+                lr_mult = min(lr_mult * 1.5, 1.0)
+            for g in opt.param_groups:
+                g["lr"] = g.get("base_lr", args.lr) * lr_mult
         for k, v in row.items():
             if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
                 writer.add_scalar(TB_TAG.get(k, k), float(v), games)

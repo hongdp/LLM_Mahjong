@@ -22,21 +22,17 @@ DRIVER = "vec-table/1"
 
 
 def _cfg(paths, temps, device, seed0, parallel):
-    from scripts.run_arena_dnn import load_dnn
+    """Rollout config for one four-entity table: the shared vectorised-arena
+    base (src/eval/vec_arena.base_cfg) plus the table seating keys."""
+    from src.agents.dnn.checkpoint import load_dnn
+    from src.eval.vec_arena import base_cfg
     net = load_dnn(paths[0], "cpu")
     blob = torch.load(paths[0], map_location="cpu", weights_only=False)
-    return net, dict(
-        channels=blob.get("channels", 64), blocks=blob.get("blocks", 3),
-        arch=blob.get("arch"), temperature=1.0, gamma=1.0,
-        games_per_worker=16, rollout_temps=None, shaping=False, seed=seed0,
-        critic_feats="none", gpu_infer=True, gpu_infer_opponents=True,
-        infer_max_batch=128, infer_wait_ms=0.0, infer_device=device,
-        bf16_infer=False, no_episodes=True, league_frac=1.0,
-        table=True, hanchan=True, hanchan_w_path=None,
-        table_temps=[float(t) for t in temps],
-        league=[{"name": f"e{i+1}", "path": p} for i, p in enumerate(paths[1:])],
-        encoder_variant=getattr(net, "encoder_variant", "v1"),
-        action_space=getattr(net, "action_space", "native"))
+    cfg = base_cfg(net, blob, device, seed0)
+    cfg.update(table=True, hanchan=True,
+               table_temps=[float(t) for t in temps],
+               league=[{"name": f"e{i+1}", "path": p} for i, p in enumerate(paths[1:])])
+    return net, cfg
 
 
 def play_table(eids, walls, seed0, device="cuda", parallel=20,

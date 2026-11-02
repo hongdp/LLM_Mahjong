@@ -20,7 +20,7 @@ import torch.nn.functional as F
 
 from src.agents.dnn.mortal_obs import MORTAL_V3_PLANES
 from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
-from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
+from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES, N_PLANES_V3RG, N_SCALARS_V3G,
                                     N_PLANES_V1R, N_PLANES_V3R, N_PLANES_V3R2,
                                     N_PLANES_V2, N_PLANES_V3, N_SCALARS,
                                     N_SCALARS_V3, N_SCALARS_V3H, N_SCALARS_V3S, N_SCALARS_V3F, TILE_TYPES)
@@ -32,8 +32,11 @@ class CnnPolicy(MahjongPolicyNet):
 
     def __init__(self, channels=64, blocks=3, in_planes=N_PLANES,
                  in_scalars=N_SCALARS, encoder_variant="v1", aux_waits=False,
-                 action_dim=None, action_space=None):
+                 action_dim=None, action_space=None, posture_prior=False):
         nn.Module.__init__(self)
+        # exp116: learnable posture prior beta[tenpai, 1-shanten, 2+-shanten] on genbutsu discards (v3rg input only)
+        if posture_prior:
+            self.posture_beta = nn.Parameter(torch.zeros(3))
         self.encoder_variant = encoder_variant
         self.in_planes = in_planes
         if action_space is not None:          # exp103: native_fold (375 slots); default stays native
@@ -224,8 +227,8 @@ class TilesTransformer(nn.Module):
                 self.value_head(h[:, 0, :]).squeeze(-1))
 
     @torch.no_grad()
-    def act(self, planes, scalars, mask, temperature: float = 1.0):
-        if not bool(mask.any(dim=1).all()):
+    def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):
+        if check and not bool(mask.any(dim=1).all()):
             raise ValueError("act() got a row with no legal actions")
         logits = self.forward(planes, scalars, mask)
         if temperature <= 0:
@@ -365,6 +368,15 @@ ZOO = {
                                      in_scalars=N_SCALARS_V3H, encoder_variant="v3rh"), False),
     "cnn_xl_v3r": (lambda: CnnPolicy(192, 6, in_planes=N_PLANES_V3R,
                                      in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp113 (2026-10-16, pure line order-of-magnitude scale): 384 channels x 12 blocks, 21M params (5.3x cnn_l).
+    # Warm-started function-preservingly from a cnn_l_v3r checkpoint by scripts/net2net_widen.py.
+    "cnn_c384b12_v3r": (lambda: CnnPolicy(384, 12, in_planes=N_PLANES_V3R,
+                                          in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp116 (2026-10-21, rule-feature prior arm -- NOT pure-leaderboard): cnn_l on v3rg (+ genbutsu plane, + shanten
+    # one-hot) with the learnable posture prior beta on genbutsu discards. A v3r checkpoint widens into it by
+    # net.load_compatible (zero input channel / zero scalar columns; beta set by the trainer's --posture_beta).
+    "cnn_l_v3rg": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3RG, in_scalars=N_SCALARS_V3G,
+                                     encoder_variant="v3rg", posture_prior=True), False),
     # exp103 (2026-10-02, pure line fold option): v3r trunk + in_fold_mode scalar + ENTER_FOLD slot (375).
     # A v3r checkpoint loads through net.load_compatible: zero input column, new head row at bias -6.
     "cnn_m_v3rf": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3F,
@@ -915,8 +927,8 @@ class HandRiverFormer(nn.Module):
                 self.value(h).squeeze(-1))
 
     @torch.no_grad()
-    def act(self, planes, scalars, mask, temperature: float = 1.0):
-        if not bool(mask.any(dim=1).all()):
+    def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):
+        if check and not bool(mask.any(dim=1).all()):
             raise ValueError("act() got a row with no legal actions")
         logits = self.forward(planes, scalars, mask)
         if temperature <= 0:

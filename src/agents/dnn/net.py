@@ -14,6 +14,52 @@ import torch.nn.functional as F
 from src.agents.dnn.encoder import (ACTION_DIM, LEGACY_ACTION_DIM, LEGACY_ACTION_TYPES,  # noqa: F401
                                     ACTION_TYPES, N_PLANES, N_SCALARS, TILE_TYPES)
 
+_POSTURE_SLOTS = (ACTION_TYPES.index("discard") * TILE_TYPES, ACTION_TYPES.index("discard0") * TILE_TYPES)
+
+
+def _conv3_cl(x: torch.Tensor, conv: nn.Conv1d) -> torch.Tensor:
+    """Conv1d(k=3, pad=1) on a channels-last [B, L, Cin] tensor as ONE GEMM over the stacked
+    neighbours (k = 0, 1, 2). Same parameters as `conv`; float64-identical to conv(x.transpose)."""
+    xp = F.pad(x, (0, 0, 1, 1))
+    xs = torch.cat([xp[:, :-2], xp[:, 1:-1], xp[:, 2:]], dim=2)          # [B, L, 3*Cin]
+    w = conv.weight.permute(0, 2, 1).reshape(conv.weight.shape[0], -1)  # [Cout, 3*Cin], (k, cin) order
+    return F.linear(xs, w, conv.bias)
+
+
+def _bn_cl(x: torch.Tensor, bn: nn.BatchNorm1d) -> torch.Tensor:
+    B, L, C = x.shape
+    if bn.training and bn.track_running_stats and bn.num_batches_tracked is not None:
+        bn.num_batches_tracked.add_(1)      # keep the counter in step with nn.BatchNorm1d's own forward
+    return F.batch_norm(x.reshape(B * L, C), bn.running_mean, bn.running_var, bn.weight, bn.bias,
+                        bn.training or not bn.track_running_stats, bn.momentum, bn.eps).view(B, L, C)
+
+
+def trunk_channels_last(net: nn.Module, planes: torch.Tensor, scalars: torch.Tensor) -> torch.Tensor:
+    """exp113 fast path for the stem + ResBlock trunk: the whole residual stack runs channels-last so every
+    conv is a dense [B*34, 3C] x [3C, C] GEMM (tensor-core friendly; fuses well under torch.compile).
+    Output is laid out exactly like `trunk` ([B, C*34] in (C, L) order, then scalars), so heads,
+    checkpoints and every caller are unchanged. Verified float64-identical in eval and train mode
+    (tests/test_fast_trunk.py)."""
+    x = planes.transpose(1, 2)
+    h = torch.relu(_conv3_cl(x, net.stem))
+    for blk in net.blocks:
+        y = torch.relu(_bn_cl(_conv3_cl(h, blk.c1), blk.n1))
+        y = _bn_cl(_conv3_cl(y, blk.c2), blk.n2)
+        h = torch.relu(h + y)
+    return torch.cat([h.transpose(1, 2).flatten(1), net.scalar_fc(scalars)], dim=1)
+
+
+def enable_fast_trunk(net: nn.Module, compile: bool = False) -> nn.Module:
+    """exp113: switch a stem + ResBlock CnnPolicy to the channels-last GEMM trunk, optionally torch.compile'd
+    (dynamic batch dim: rollout batches change size every step; measured as fast as static shapes).
+    The compiled callable lives in the instance __dict__ (not a submodule), so state_dict / checkpoints
+    are untouched."""
+    net.fast_trunk = True
+    if compile:
+        net.__dict__["_trunk_compiled"] = torch.compile(
+            lambda p, s: trunk_channels_last(net, p, s), dynamic=True)
+    return net
+
 
 class ResBlock(nn.Module):
     def __init__(self, ch):
@@ -92,6 +138,9 @@ class MahjongPolicyNet(nn.Module):
         )
 
     def trunk(self, planes: torch.Tensor, scalars: torch.Tensor) -> torch.Tensor:
+        if getattr(self, "fast_trunk", False):
+            fn = self.__dict__.get("_trunk_compiled")          # set by enable_fast_trunk(compile=True)
+            return fn(planes, scalars) if fn is not None else trunk_channels_last(self, planes, scalars)
         h = torch.relu(self.stem(planes))
         h = self.blocks(h).flatten(1)
         return torch.cat([h, self.scalar_fc(scalars)], dim=1)
@@ -99,13 +148,26 @@ class MahjongPolicyNet(nn.Module):
     def forward(self, planes: torch.Tensor, scalars: torch.Tensor,
                 mask: torch.Tensor) -> torch.Tensor:
         """planes [B,P,34], scalars [B,S], mask [B,A] -> masked logits [B,A]."""
-        logits = self.head(self.trunk(planes, scalars))
+        logits = self._posture(self.head(self.trunk(planes, scalars)), planes, scalars)
         # -inf on illegal actions so softmax/sampling can never pick them
         return logits.masked_fill(~mask, float("-inf"))
 
+    def _posture(self, logits, planes, scalars):
+        """exp116 posture prior (v3rg nets only): + beta[shanten bucket] on the genbutsu discard slots (discard and
+        discard0). The genbutsu plane is the LAST input plane and the shanten one-hot the LAST 3 scalars; both are
+        zero unless an opponent is in riichi and the seat is not, so the prior is inert elsewhere."""
+        beta = getattr(self, "posture_beta", None)
+        if beta is None:
+            return logits
+        add = (scalars[:, -3:].to(beta.dtype) @ beta)[:, None] * planes[:, -1, :].to(beta.dtype)     # [B, 34]
+        add = add.to(logits.dtype)
+        d, d0 = _POSTURE_SLOTS
+        return torch.cat([logits[:, :d] , logits[:, d:d + TILE_TYPES] + add, logits[:, d + TILE_TYPES:d0],
+                          logits[:, d0:d0 + TILE_TYPES] + add, logits[:, d0 + TILE_TYPES:]], dim=1)
+
     def forward_with_value(self, planes, scalars, mask, cfeats=None):
         h = self.trunk(planes, scalars)
-        logits = self.head(h).masked_fill(~mask, float("-inf"))
+        logits = self._posture(self.head(h), planes, scalars).masked_fill(~mask, float("-inf"))
         if self.hazard:
             v = self.value(h).squeeze(-1) + self.hazard_head.value_component(cfeats)
         elif self.critic_feat_dim:
@@ -202,13 +264,15 @@ def load_compatible(net: nn.Module, state: dict) -> list:
              for k, v in state.items()}
     state = {k: _widen_scalar_input(k, v, model_sd[k]) if k in model_sd else v
              for k, v in state.items()}
+    state = {k: _widen_plane_input(k, v, model_sd[k]) if k in model_sd else v
+             for k, v in state.items()}
     state = {k: _widen_fold_head(k, v, model_sd[k]) if k in model_sd else v
              for k, v in state.items()}
     ok = {k: v for k, v in state.items()
           if k in model_sd and tuple(model_sd[k].shape) == tuple(v.shape)}
     net.load_state_dict(ok, strict=False)
     bad = [k for k in model_sd if k not in ok
-           and not k.startswith(("value", "hazard_head"))]
+           and not k.startswith(("value", "hazard_head", "posture_beta"))]
     if bad:
         raise RuntimeError(f"policy keys failed to load: {bad[:5]}")
     return [k for k in model_sd if k not in ok]
@@ -228,6 +292,17 @@ def _widen_fold_head(k: str, v, target):
         out[:ACTION_DIM] = v
         if v.dim() == 1:
             out[ACTION_DIM] = FOLD_SLOT_INIT_BIAS
+        return out
+    return v
+
+
+def _widen_plane_input(k: str, v, target):
+    """exp116: a v3r checkpoint (56 planes) loading into a v3rg net (57): the stem conv gains a zero input channel
+    for the genbutsu plane, so the loaded net is exactly the old one until training moves those weights."""
+    if (k.endswith("stem.weight") and v.dim() == 3 and target.dim() == 3
+            and v.shape[0] == target.shape[0] and v.shape[1] < target.shape[1] and v.shape[2] == target.shape[2]):
+        out = torch.zeros_like(target)
+        out[:, :v.shape[1]] = v
         return out
     return v
 

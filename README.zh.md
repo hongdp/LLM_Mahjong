@@ -54,7 +54,10 @@ exp70–exp97 的结论：
 ## 两个阶段
 
 - **Phase 1（2026-05 → 08-14，已归档）**：LLM（Qwen + LoRA）+ 文本 rollout + PBRS/PPO。竞技场全 null、回报不可解码 → 退役。
-  遗产：引擎、奖励 registry、竞技场协议、GCP 工作流。档案：`experiments/reports/report_exp1..exp5`、`src/core/`、`scripts/phase1_ce/`。
+  遗产：引擎、奖励 registry、竞技场协议、GCP 工作流。记录：`experiments/reports/report_exp1..exp5`。LLM 训练器、GCP/Vertex 发射脚本与
+  LLM 探针已于 2026-11-01 删除（`6907cf8` 之前的 git 历史仍有）；树里剩下的 Phase 1 代码只有文本 rollout 栈
+  （`src/tasks/mahjong/{orchestrator,batch_rollout,prompts}.py`、`src/core/{chat_format,rollout}.py`）——因为 `arena.py`/`claims.py`
+  在 Elo 引擎指纹集合内、引擎测试也靠它驱动——以及奖励 registry（`rewards.py`）和启发式教师（`generate_sft_data.py`）。
 - **Phase 2（当前）**：小型专用网络（2–23M 参数）+ 张量编码 + 自对弈 PPO / BC / DQN。
 
 ## 架构（Phase 2 活跃部分）
@@ -77,14 +80,22 @@ src/agents/dnn/
 ├── selfplay.py         # Python 引擎自对弈（play_game / 生成器 play_game_gen）——探针与 bc49 桌
 ├── rust_rollout.py     # Rust 引擎 rollout（collect_rust）：联赛席位、奖励风格、uint8 平面
 ├── parallel_rollout.py # 多进程 Python rollout + GPU 批推理（infer_server.py）
+├── checkpoint.py       # load_dnn：唯一的 checkpoint → 策略网加载器（竞技场/探针/桥接/联赛对手共用）
 ├── style_stats.py      # 能力指标（和牌/放铳/立直/副露率、巡目）——TB 与评测共用
 └── mjai_bridge.py      # 雀魂实战桥接（MJAI 影子桌；编码器与合法动作零改动复用）
+src/eval/
+├── vec_arena.py        # 向量化 GPU 竞技场：play_pair_vector（2v2 duplicate，单局/半庄）+ 与四实体同桌驱动共用的 collect_parallel 配置
+├── arena.py            # 评分体系 v2 四实体轮转同桌（play_table），直接写账本行
+├── probe_loop.py       # 带逐巡回调的 Python 引擎自对弈循环（probe_defense / probe_riichi 共用）
+└── ledger / registry / fits / schedule / importers / fingerprints   # 评分体系 v2（scripts/rating.py）
 scripts/
 ├── train_dnn_ppo.py    # PPO 训练器：--engine rust、dup_k=8 复式牌组基线、GAE、熵时间表/目标熵对偶控制、
 │                       #   KL 锚、联赛池、PBRS 塑形、放铳惩罚（全局/向听加权/退火）、反事实优势
-├── train_dnn_bc.py     # 天凤牌谱行为克隆（bc49 配方）
+├── train_human_bc.py   # 天凤牌谱行为克隆（bc49 配方）
+├── train_dnn_bc.py / arch_sweep_bc.py   # 对启发式教师（generate_sft_data.py）做 BC——Elo 原点锚 bc_cnn 的来源
 ├── train_dnn_dqn.py / train_dnn_qstitch.py   # 价值方法线（先验上 Double DQN；先验锚定 Q-stitch）
-├── run_elo_league.py   # 锚池 Elo（单局与 --hanchan，向量化 GPU，引擎指纹守卫）
+├── run_elo_league.py   # 锚池 Elo（单局与 --hanchan，引擎指纹守卫）；稳定入口 play_pair_vector(...) 包装 src/eval/vec_arena
+├── run_arena_dnn.py    # Python 引擎 batch-1 竞技场（规则覆盖诊断）；稳定入口 load_dnn(path, device)
 ├── rating.py           # 评分体系 v2（只追加账本、四实体同桌、pt 主榜）——纪元 7 待开
 ├── probe_*.py / eval_style_profile.py         # 探针族：防守 IQ、牌效拆分、条件熵、风格
 ├── serve_mjai_bot.py   # 雀魂桥接用 HTTP 代理服务
