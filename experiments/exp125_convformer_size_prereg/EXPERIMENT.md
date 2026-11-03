@@ -42,6 +42,7 @@ compile 闸门（FC_DEBUG 逐调用对照 eager）：ML maxdiff 0.0252 / max|dV|
 - [2026-11-02 10:05 PST] **闸门通过**（exp124 64M 均值 0.4890 ≥ 0.4808）。Community 4090 全部缺货（含 vCPU 过滤与否），Secure 4090 带 vCPU≥12 过滤也拒，去掉过滤成功：pod **`ih7vwfbj4dxg15`**（exp125-XL，Secure $0.89/h，EUR-IS-1，64 vCPU 宿主，host CUDA 13.2，ssh root@157.157.221.29 -p 33087）。10:08 开始部署（bootstrap + compile 闸门 batch 4096）。TB：`_tb_qlearning/exp125_XL_convformerXL_0-64M_LIVE` → `experiments/exp125_XL/tensorboard`。
 - [2026-11-02 10:10 PST] **发射**：pod 闸门 batch 4096 在 24 GB 上通过（max_trunk_diff 0.0312 / max|dV| 0.0078），**配方无偏差**；`pod_run.sh XL 1e-4 1251` 起跑（18:09:56 UTC）。本机 pull_loop / watchdog / eval_loop 已挂，LAUNCHED 文件写入。预算护栏：Secure 135 h。
 - [2026-11-02 16:40 PST] **在轨评测加密到每 2M 局**（用户要求，与 exp124 同一机制 `latest_eval_loop.sh`）：按 `latest.pt` 快照、2000 牌山、行标 `latest@<games>`；4M×8 里程碑与 32/64M 判决读数不变。
+- [2026-11-02 23:25 PST] **8M 健康读数：0.4417 ± 0.0106**（2000 牌山）vs exp124 M 8M 0.4412 ⇒ 成功判据 2（≥ M − 2 pp）通过，两者此刻持平；4M 0.420 vs M 0.406、6.55M 快照 0.425。速度 172 局/s（64M ≈104 h ≈ $92，上限内）；熵 1.03、KL 0.011 健康。
 
 ## Results
 
