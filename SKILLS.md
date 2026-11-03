@@ -447,3 +447,6 @@ exp124（bc49 同结构 ConvFormer46 纯血从零）32M 局读数 0.481，比 cn
 ② 宣布"方法平台"前必须在目标规模上换过模型类（≥1 个非当前主干跑到 ≥50M）；③ zoo 里上不了快引擎的架构在台账标"无法在规模上检验"而非判负；
 ④ 一个 regime 的强结果自动登记为另一 regime 的待检假设；⑤ 10-29 grep 规矩修订：grep 命中 ≠ 方向关闭，命中后必须核对范围戳。
 仍待检：主干 vs 动作头的贡献（Stage 2 消融）、192M 终点判决；上述流程错误与 192M 结果无关，已成立。
+- **2026-11-02 Community pod 可能没有公网 TCP（只能走 ssh.runpod.io 代理）**：exp124 迁移订到的 Community 4090 runtime 只映射了 http 端口，`ssh.direct` 永远为空；
+  RunPod 代理只给交互式 PTY，`ssh host cmd`、scp、rsync 一律失败 ⇒ 依赖 rsync 的 deploy/migrate 流程整个不可用。**规矩**：开机后 2 分钟内看 `runtime.ports` 有没有 `22/tcp` 公网映射，
+  没有就直接 delete 再等（$0.02），不要试图改走代理；create-pod 没有"要求公网 IP"的过滤项。
