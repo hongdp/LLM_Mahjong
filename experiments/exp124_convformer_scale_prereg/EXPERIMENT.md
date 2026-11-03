@@ -221,6 +221,7 @@ ConvFormer 每 2048 局（训练好策略的样本量）在本机 4080：已测 
   在轨 2000 牌山读数 40M 0.473 / 48M 0.503 / 56M 0.482 围绕 0.48–0.49 波动。成功判据 2（早停：64M ≤ 0.423）远未触发。第二段已由 pod_run 自动起跑（09:50 PST，lr 3e-5，seed 1341，`exp124_A_p2`，目标 192M）。
   **exp125 闸门通过**（≥0.46 且 ≥ 0.4808）⇒ 按用户批准自动发射 XL（见 exp125 prereg）。
 - [2026-11-02 16:10 PST] Community 4090 终于订到一台（CUDA 13.0 池，pod 7gfadmm9t39z6p，$0.34/h，25 vCPU），但该宿主**不提供公网 TCP 端口**（runtime 只有 http 19123 映射，无 22/tcp），只能走 ssh.runpod.io 代理；代理仅支持交互式 PTY，`ssh host cmd` 与 rsync 都失败（"Your SSH client doesn't support PTY" / "protocol version mismatch"）⇒ migrate.sh 无法推送检查点，**未动 Secure**，2.5 分钟后删除该 pod（≈$0.02）。继续等有公网 TCP 的 Community 宿主。
+- [2026-11-02 16:40 PST] **用户要求在轨评测加密到每 2M 局**：新增 `exp124_ops/latest_eval_loop.sh`——每 10 min 读镜像的 `latest.pt`（每 400 迭代 ≈0.8M 局存一次），越过下一个 2M 边界就快照并跑 2000 牌山 T=0 vs bc49（种子 101112000），行标 `latest@<games>`、按实际局数标注（如 74.6M），不改里程碑、不重启训练器；判决读数（112/160/192M 2×10k）不变。
 
 ## Results
 
