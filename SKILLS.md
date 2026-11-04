@@ -464,3 +464,4 @@ exp124（bc49 同结构 ConvFormer46 纯血从零）32M 局读数 0.481，比 cn
 - **2026-11-03 流式 rollout 三个坑**：①torch.compile 不是线程安全的，dynamic=True 仍对批量 0/1 特化——后台线程里遇到 1 行的批次会现场编译，曾在块尾卡死一次；所有图必须在主线程预热（`StreamActor.warmup`）。
   ②训练器 `if n_eff < batch: continue` 会静默丢弃不足一个 minibatch 的数据，小块场景下丢一半；切分要按 round(n/batch) 均分。③每个小迭代都全量重写 train_log.json 是平方级，6400 块后每迭代多 40 ms；按 2048 局聚合。
   另：流式的数据过时度由演员并发 K 和队列深度决定（稳态一局寿命 ≈ K / 每步消费局数），不是由演员速度决定；估算时别假设演员不受限速。
+- **2026-11-04 解析标记行别用 `cut -d= -fN`**：exp126 完成标记 "TRAIN_DONE arm=async md5=…" 含两个等号，`cut -d= -f2` 取到 "async md5"，md5 握手失败 20 分钟，pod 差点空等 3 小时。按键名解析（`sed 's/.*md5=//'`）；改运行中的 bash 脚本要写新文件再 mv（bash 边执行边读原文件）。

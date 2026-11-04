@@ -3,6 +3,12 @@
 从 SKILLS.md 迁入（2026-08-30）：**结果**住这里，**教训**留在 SKILLS.md。
 逐实验完整记录见各 `experiments/*_prereg/EXPERIMENT.md` 与 `experiments/INDEX.md`。
 
+## 2026-11-04 exp126：数据新鲜度影响每局学习效率——流式（每步刷新）16M 比同步高 +1.96 pp，异步（落后一迭代）不劣
+- **范围戳**：ConvFormer46 2.0M，exp124 第一段配方（lr 1e-4、batch 4096、1 epoch、target_kl 0.03、dup_k 8），纯血自对弈 0–16M，3090 单卡，T=0 复式 2×1 万牌山对 bc49；单种子。不覆盖 CNN、BC 初始化 RL、第二段 lr 3e-5、>16M。
+- 16M：同步 0.4551、异步 0.4547（−0.04）、流式 0.4747（+1.96，≈4σ）。异步早期落后 2.5–2.9 pp（KL 翻倍、约 5% 更新被 target_kl 截断），12M 前追平。
+- 解读：同步 PPO 的批内落后（平均 ≈16 个优化器步）有代价；流式把落后降到 ≈11 步、approx_kl 低于同步。混杂：流式按 ≈9k 行分块做优势归一化、每块均分 minibatch，二者未与新鲜度分离。
+- 失效/待检：第二种子复核；分离"分块归一化 + 均分 minibatch"；更大规模是否保持。
+
 ## 2026-11-03 perf_rollout_overlap：rollout 是 GPU 受限；策略梯度每迭代全是噪声；价值梯度主导共享主干（待检）
 - **范围戳**：ConvFormer46 2.0M（exp124 配方：batch 4096、1 epoch、Adam、clip_grad_norm 1.0、value_coef 0.5），纯血自对弈 8M–112M 局检查点，本机 4080 单次 rollout 估计；不覆盖 CNN 线、BC 初始化 RL、其他 value_coef。失效条件：换架构/损失权重/回报尺度后需重测。
 - rollout 分段：GPU 前向 54%（含 46 槽第二次查询 15%）、Rust 引擎 ≈25%、Python 胶水 ≈20%。前向 ≥1024 行算力受限（≈20 万行/s）。`--m46_one_forward`（复用原始 logits）+9%，`--async_rollout`（演员落后 1 次更新，高优先级 stream）合计 1.53×；之后 GPU 是唯一瓶颈。
