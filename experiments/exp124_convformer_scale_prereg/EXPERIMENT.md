@@ -238,6 +238,10 @@ ConvFormer 每 2048 局（训练好策略的样本量）在本机 4080：已测 
 - [2026-11-03 01:15 PST] **雀魂 maka 全量（用户给出）：74.5M 快照自 11-02 晚换挂以来 10 局 = B, B, S-, S-, C, A, A, S-, A-, B-**（此前零散报的 A / S- / A- / B- 是其中一部分，以本条为准）。
   排序：C, B-, B, B, A-, A, A, S-, S-, S- ⇒ **中位 A-/A，众数 S-（3 局）**，分布 S-×3 / A×2 / A-×1 / B×2 / B-×1 / C×1。对照：32M 两局 B+ / A-；exp113 C 384M 一局 B；bc49 两轮 S+。
   n=10 仍不够定档（刻度规矩 ≥30 半庄），但中位 A-/A、三成局进 S 档，可以说纯血线已从"B 档"进到"A 档、偶尔 S"。
+- [2026-11-03 16:55 PST] **迁移到 Community 完成**：pod **`ew1ajtgeammdvr`**（Community 4090 $0.34/h，CUDA 12.8 宿主，32 vCPU/28 有效核，ssh root@38.65.239.38 -p 24673）。
+  第一次 migrate 在 bootstrap 失败（宿主连不上 sh.rustup.rs → 无 cargo → 无 riichi_rs wheel，SRC 未动）；从 Secure pod 拷来 cp312 wheel 并让 ops 脚本随附预编译 wheel 后第二次通过（闸门 maxdiff 0.0289 / dV 0.0078）。
+  **切换损失 ≈0.7M 局**：migrate.sh 盯的是第一段目录的 latest.pt（已不更新），40 min 超时后在 112.10M 停 SRC，DST 从 `exp124_A_p2/latest.pt` 的 **111.41M** 续训（已修：改盯活动目录）。
+  games_112000000.pt 在停机前已落盘并镜像（判决评测照常）。Secure pod vnw55zc69161cq 已删除：运行 ≈71.5 h × $0.89 ≈ **$64**（加 B 臂 ≈$19，exp124 至此 ≈$83）；余 ≈80M 局在 Community ≈52 h ≈ **$18** ⇒ exp124 全程预计 ≈$101（原 Secure 全程估 $127）。
 
 ## Results
 
