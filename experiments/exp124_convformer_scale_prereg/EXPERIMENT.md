@@ -248,6 +248,11 @@ ConvFormer 每 2048 局（训练好策略的样本量）在本机 4080：已测 
   成本重算：余 ≈80.5M 局——Community @90 局/s ≈ 250 h ≈ 10.4 天 ≈ **$85**；Secure @432 局/s ≈ 52 h ≈ **$46**。Community 要 >165 局/s 才比 Secure 便宜。迁移目的（省钱）落空，且慢 5 倍。
   处置：决定迁回 Secure（用户 11-01 "Yes, finish it" 已授权 Secure 跑完 192M）。create-pod 被 auto 模式分类器拦截（真实交易），**需用户手动放行/开 Secure 4090 pod**；Community pod 继续跑着等（每小时 $0.34，不丢进度）。
 
+- [2026-11-03 19:30 PST] **迁回 Secure 完成（用户"迁回secure"）**：Secure 4090 库存只剩 16 vCPU 宿主（开了又删，$0），≥24 vCPU 的 4090 无货；改开 **Secure RTX 3090 pod `gl4em4glhe44rp`**（EU-CZ-1，32 vCPU，$0.50/h，ssh root@213.192.2.116 -p 40071）——rollout 是 CPU 瓶颈，卡型用 3090 足够。
+  `migrate.sh` 新增"latest.pt 不满 15 min 直接切"（Community 上两次存盘相隔 2.4 h，老逻辑会等 40 min 超时）；切点 112.28M（latest.pt 112.26M，损失 ≈0.02M 局）。push rsync 因新 pod /workspace 禁 chown 返回 23 退出（文件已传齐），手工用 `-rlt` 补完，源/目 latest.pt md5 一致；脚本已改 `rsync -rlt`。
+  **新机吞吐 309 局/s**（Community 96，旧 Secure 4090 432），GPU 利用 36%。余 ≈79.7M 局 ≈72 h ≈ **$36**（比留 4090 Secure 的 $46 还省）。Community pod 已删（2.6 h ≈ $1）。exp124 累计 ≈$84，全程预计 ≈$120。
+  巡检 cron 重建（af6f920d）：host/port 换新机、去掉库存监视、加 3090 吞吐低于 200 局/s 连续两次报警。
+
 ## Results
 
 ## Conclusion

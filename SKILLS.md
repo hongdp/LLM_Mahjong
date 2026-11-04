@@ -455,3 +455,5 @@ exp124（bc49 同结构 ConvFormer46 纯血从零）32M 局读数 0.481，比 cn
 - **2026-11-03 Community ≠ 便宜：先量吞吐再定去留**。exp124 迁到 Community 4090（$0.34/h）后吞吐 89 局/s vs Secure 432 局/s（宿主 EPYC 7B13、cgroup 27 核、单核慢；load avg 从 75 降到 15 后速度不变 ⇒ 结构性）。
   Rust 自对弈 rollout 是 CPU 密集，Community 卡价格只省 GPU 不省 CPU：余 80M 局 Community ≈$85/10 天 vs Secure ≈$46/52 h。**规矩**：迁移后首 10 分钟必读 `局/s`，低于 Secure 的 40%（本项目 ≈170 局/s）即迁回；
   `migrate.sh` 之前先在目标机跑 1 迭代 bench（`pod_boot.sh` 的 gate 已有 4096 局计时：gate 5.6 min ≈ 12 局/s 的 gate 数字只测编译不测吞吐，不要拿它当吞吐）。create-pod 可能被 auto 模式分类器拦截，迁回要用户放行。
+- **2026-11-03 迁机三条补充**：①挑机器看 vCPU 不看卡型——同一时刻 Secure 4090 只有 16 vCPU 宿主而 3090 有 32 vCPU，3090 $0.50/h 跑出 309 局/s（4090/55 核 432、Community/27 核 89）；`create-pod` 用 `gpu.minVcpuCountPerGpu` 过滤，缺货就换卡型再试。
+  ②RunPod 有的宿主 /workspace 禁 chown：`rsync -a` 会以 rc=23 退出（文件其实传齐），脚本里一律 `rsync -rlt`。③迁移脚本的"等下一次存盘"要带新鲜度短路：慢机上两次 latest.pt 相隔数小时，否则白等 40 min 还丢进度。
