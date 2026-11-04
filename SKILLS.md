@@ -452,3 +452,6 @@ exp124（bc49 同结构 ConvFormer46 纯血从零）32M 局读数 0.481，比 cn
   没有就直接 delete 再等（$0.02），不要试图改走代理；create-pod 没有"要求公网 IP"的过滤项。
 - **2026-11-03 迁移两坑**：①Community 宿主可能连不上 sh.rustup.rs（curl 443 超时）⇒ bootstrap 装不了 cargo 就编不出 riichi_rs wheel；ops 现随附预编译 cp312 wheel（`exp124_ops/riichi_rs-*.whl`，pod_boot 优先用它）。
   ②migrate.sh"等下一次 latest.pt 存盘再停源机"盯错了目录（第一段 `exp124_A/` 已不更新，活动目录是 `_p2`），40 min 超时后硬停，丢 0.7M 局；已改为自动选活动目录。**规矩**：任何"等文件更新"的守候都先确认盯的是当前写入的文件。
+- **2026-11-03 Community ≠ 便宜：先量吞吐再定去留**。exp124 迁到 Community 4090（$0.34/h）后吞吐 89 局/s vs Secure 432 局/s（宿主 EPYC 7B13、cgroup 27 核、单核慢；load avg 从 75 降到 15 后速度不变 ⇒ 结构性）。
+  Rust 自对弈 rollout 是 CPU 密集，Community 卡价格只省 GPU 不省 CPU：余 80M 局 Community ≈$85/10 天 vs Secure ≈$46/52 h。**规矩**：迁移后首 10 分钟必读 `局/s`，低于 Secure 的 40%（本项目 ≈170 局/s）即迁回；
+  `migrate.sh` 之前先在目标机跑 1 迭代 bench（`pod_boot.sh` 的 gate 已有 4096 局计时：gate 5.6 min ≈ 12 局/s 的 gate 数字只测编译不测吞吐，不要拿它当吞吐）。create-pod 可能被 auto 模式分类器拦截，迁回要用户放行。

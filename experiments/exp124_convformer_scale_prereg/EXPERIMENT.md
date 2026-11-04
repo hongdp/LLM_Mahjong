@@ -244,6 +244,10 @@ ConvFormer 每 2048 局（训练好策略的样本量）在本机 4080：已测 
   games_112000000.pt 在停机前已落盘并镜像（判决评测照常）。Secure pod vnw55zc69161cq 已删除：运行 ≈71.5 h × $0.89 ≈ **$64**（加 B 臂 ≈$19，exp124 至此 ≈$83）；余 ≈80M 局在 Community ≈52 h ≈ **$18** ⇒ exp124 全程预计 ≈$101（原 Secure 全程估 $127）。
 - [2026-11-03 17:05 PST] **112M 判决里程碑（2×10k，exp101 种子）：0.5019 ± 0.0046 / 0.5003 ± 0.0046，均值 0.5011**；cnn_l 同点 0.4497 ⇒ **+5.1 pp**（32M +5.0、64M +5.1、112M +5.1：优势随规模恒定，未缩未扩）。第二段 2000 牌山在轨读数 72–111M 均值 ≈0.51，与判决读数一致。
 
+- [2026-11-03 17:15 PST] **Community pod 吞吐只有 Secure 的 ~1/5**：续训 20 min 累计 89 局/s（Secure 同一 ckpt 432 局/s）；每迭代 rollout 15 s / update 3.7 s（Secure rollout 2.5 s）。宿主 AMD EPYC 7B13 64 核，cgroup 配额 27.2 核（Secure 55 核），开机时 load avg 75，20 min 后 load avg 降到 13–15 **速度仍 ~95 局/s** ⇒ 不是瞬时争用，是该宿主单核慢 + 核数一半的结构性问题。
+  成本重算：余 ≈80.5M 局——Community @90 局/s ≈ 250 h ≈ 10.4 天 ≈ **$85**；Secure @432 局/s ≈ 52 h ≈ **$46**。Community 要 >165 局/s 才比 Secure 便宜。迁移目的（省钱）落空，且慢 5 倍。
+  处置：决定迁回 Secure（用户 11-01 "Yes, finish it" 已授权 Secure 跑完 192M）。create-pod 被 auto 模式分类器拦截（真实交易），**需用户手动放行/开 Secure 4090 pod**；Community pod 继续跑着等（每小时 $0.34，不丢进度）。
+
 ## Results
 
 ## Conclusion
