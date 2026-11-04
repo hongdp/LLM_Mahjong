@@ -461,3 +461,6 @@ exp124（bc49 同结构 ConvFormer46 纯血从零）32M 局读数 0.481，比 cn
   Community 宿主慢的真因是单核慢拖累前向的 kernel 派发 + Rust step。**规矩**：吞吐问题先用计时包装（monkeypatch VecEnv 方法 + cuda 同步计时前向）分段，再提方案。
   异步重叠的关键是给 rollout 的 CUDA stream 高优先级（priority=-1）：普通优先级时后台 rollout 被更新抢 GPU 拖慢 1.8× 成关键路径（4.30 s/迭代），高优先级后 3.55 s。
 - **2026-11-03 梯度噪声探针**（`--grad_noise_probe`，分支 claude/perf-rollout-overlap）：回答"batch 该多大"先测 B_simple 再花钱。exp124 的策略梯度在每迭代全部数据量上都是纯噪声（|g|∝1/√b），价值梯度在共享主干上大 12–21×、clip 每步生效。
+- **2026-11-03 流式 rollout 三个坑**：①torch.compile 不是线程安全的，dynamic=True 仍对批量 0/1 特化——后台线程里遇到 1 行的批次会现场编译，曾在块尾卡死一次；所有图必须在主线程预热（`StreamActor.warmup`）。
+  ②训练器 `if n_eff < batch: continue` 会静默丢弃不足一个 minibatch 的数据，小块场景下丢一半；切分要按 round(n/batch) 均分。③每个小迭代都全量重写 train_log.json 是平方级，6400 块后每迭代多 40 ms；按 2048 局聚合。
+  另：流式的数据过时度由演员并发 K 和队列深度决定（稳态一局寿命 ≈ K / 每步消费局数），不是由演员速度决定；估算时别假设演员不受限速。
