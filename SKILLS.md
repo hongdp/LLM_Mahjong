@@ -457,3 +457,7 @@ exp124（bc49 同结构 ConvFormer46 纯血从零）32M 局读数 0.481，比 cn
   `migrate.sh` 之前先在目标机跑 1 迭代 bench（`pod_boot.sh` 的 gate 已有 4096 局计时：gate 5.6 min ≈ 12 局/s 的 gate 数字只测编译不测吞吐，不要拿它当吞吐）。create-pod 可能被 auto 模式分类器拦截，迁回要用户放行。
 - **2026-11-03 迁机三条补充**：①挑机器看 vCPU 不看卡型——同一时刻 Secure 4090 只有 16 vCPU 宿主而 3090 有 32 vCPU，3090 $0.50/h 跑出 309 局/s（4090/55 核 432、Community/27 核 89）；`create-pod` 用 `gpu.minVcpuCountPerGpu` 过滤，缺货就换卡型再试。
   ②RunPod 有的宿主 /workspace 禁 chown：`rsync -a` 会以 rc=23 退出（文件其实传齐），脚本里一律 `rsync -rlt`。③迁移脚本的"等下一次存盘"要带新鲜度短路：慢机上两次 latest.pt 相隔数小时，否则白等 40 min 还丢进度。
+- **2026-11-03 rollout 剖析纠错：先分段再下结论**。我曾对用户说"Rust 引擎吃 CPU"，分段后发现 exp124 rollout 54% 是 GPU 前向（46 槽立直/杠第二次查询对同一观测重算整网占 15%），Rust 只占 ≈25%。
+  Community 宿主慢的真因是单核慢拖累前向的 kernel 派发 + Rust step。**规矩**：吞吐问题先用计时包装（monkeypatch VecEnv 方法 + cuda 同步计时前向）分段，再提方案。
+  异步重叠的关键是给 rollout 的 CUDA stream 高优先级（priority=-1）：普通优先级时后台 rollout 被更新抢 GPU 拖慢 1.8× 成关键路径（4.30 s/迭代），高优先级后 3.55 s。
+- **2026-11-03 梯度噪声探针**（`--grad_noise_probe`，分支 claude/perf-rollout-overlap）：回答"batch 该多大"先测 B_simple 再花钱。exp124 的策略梯度在每迭代全部数据量上都是纯噪声（|g|∝1/√b），价值梯度在共享主干上大 12–21×、clip 每步生效。

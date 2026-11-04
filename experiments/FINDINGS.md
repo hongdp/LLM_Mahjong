@@ -3,6 +3,12 @@
 从 SKILLS.md 迁入（2026-08-30）：**结果**住这里，**教训**留在 SKILLS.md。
 逐实验完整记录见各 `experiments/*_prereg/EXPERIMENT.md` 与 `experiments/INDEX.md`。
 
+## 2026-11-03 perf_rollout_overlap：rollout 是 GPU 受限；策略梯度每迭代全是噪声；价值梯度主导共享主干（待检）
+- **范围戳**：ConvFormer46 2.0M（exp124 配方：batch 4096、1 epoch、Adam、clip_grad_norm 1.0、value_coef 0.5），纯血自对弈 8M–112M 局检查点，本机 4080 单次 rollout 估计；不覆盖 CNN 线、BC 初始化 RL、其他 value_coef。失效条件：换架构/损失权重/回报尺度后需重测。
+- rollout 分段：GPU 前向 54%（含 46 槽第二次查询 15%）、Rust 引擎 ≈25%、Python 胶水 ≈20%。前向 ≥1024 行算力受限（≈20 万行/s）。`--m46_one_forward`（复用原始 logits）+9%，`--async_rollout`（演员落后 1 次更新，高优先级 stream）合计 1.53×；之后 GPU 是唯一瓶颈。
+- 梯度噪声尺度（McCandlish B_simple）：策略梯度 |g_b| 严格 ∝ 1/√b，b=512…13 万行全在噪声区 ⇒ 加大 global batch 在 Adam 下只换平滑不换速度（理论，未实测）。价值梯度临界 batch 7k→40k 行（随训练增长）。
+- **主干上价值梯度 = 策略梯度 12–21×**，总梯度范数 4–12 使 clip=1.0 每步生效（裁剪系数由价值定）。exp46 的 `--value_detach` 结论（BC 初始化 RL，≤2M 局）不覆盖纯血从零；纯血线 exp101/113/124/125 均未开 ⇒ 列为纯血规模待检假设（云 A/B 待批）。
+
 ## 2026-08-24 候选配方：handset + 恒定低熵 = 自组织分阶段探索（首个"有效 recipe"候选）
 exp31-4ext（handset_xl，熵系数恒定 0.01，无 schedule，2.0M 局）观察到完整的自组织探索周期：
 熵平台 ~0.7（孵化）→ 立直风格成型 → 熵降至 0.51（变现，T1 1044.4@1.6M，超冠军 schedule 配方 1031.9）→
