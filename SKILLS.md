@@ -465,4 +465,4 @@ exp124（bc49 同结构 ConvFormer46 纯血从零）32M 局读数 0.481，比 cn
   ②训练器 `if n_eff < batch: continue` 会静默丢弃不足一个 minibatch 的数据，小块场景下丢一半；切分要按 round(n/batch) 均分。③每个小迭代都全量重写 train_log.json 是平方级，6400 块后每迭代多 40 ms；按 2048 局聚合。
   另：流式的数据过时度由演员并发 K 和队列深度决定（稳态一局寿命 ≈ K / 每步消费局数），不是由演员速度决定；估算时别假设演员不受限速。
 - **2026-11-04 解析标记行别用 `cut -d= -fN`**：exp126 完成标记 "TRAIN_DONE arm=async md5=…" 含两个等号，`cut -d= -f2` 取到 "async md5"，md5 握手失败 20 分钟，pod 差点空等 3 小时。按键名解析（`sed 's/.*md5=//'`）；改运行中的 bash 脚本要写新文件再 mv（bash 边执行边读原文件）。
-- **2026-11-05 镜像循环会被 pod 端改动覆盖**：pull_loop 用 `rsync -a --inplace` 每 10 分钟镜像整个 run 目录，若 pod/宿主被入侵、旧检查点在 pod 上被改，本地镜像会被静默覆盖。最低限度：巡检比对旧里程碑 mtime（已加入 cron）；更稳的做法是里程碑文件只拉一次（`--ignore-existing`），只让 latest.pt 和日志保持更新，拉到后记 md5。
+- **2026-11-05 镜像循环会被 pod 端改动覆盖**：pull_loop 用 `rsync -a --inplace` 每 10 分钟镜像整个 run 目录，若 pod/宿主被入侵、旧检查点在 pod 上被改，本地镜像会被静默覆盖。最低限度：巡检比对旧里程碑 mtime（已加入 cron）；更稳的做法是里程碑文件只拉一次（`--ignore-existing`），只让 latest.pt 和日志保持更新，拉到后记 md5。**已于 11-05 在 exp124/125 pull_loop 落地**：里程碑须在 pod 上静置 ≥2 min（`find -mmin +2`）才拉，防止拉到写了一半的文件后永不更新。
