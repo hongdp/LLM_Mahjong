@@ -43,6 +43,9 @@ ConvFormer-M 2.0M / cnn_l 4.0M（含 46 槽变体 3.84M），v3r 编码，exp124
 
 - [2026-11-06 03:13 PST] **B1 发射**：pod v4onbm14zjcs0d（exp127-B1，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.74:40168，仅 22/tcp）；start.pt = exp124_A_p2 games_160000000.pt（md5 校验通过），确认从 160,002,048 局续训，流式落后 ≈11 步；循环 + TB `exp127_B1_stream_160-192M_LIVE` 已起。B2：同轮 3090/A40 无货，继续重试。
 
+- [2026-11-06 03:44 PST] **B2 发射，四臂全部在跑**：pod 9499s5utscnk4p（exp127-B2，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.68:40188，仅 22/tcp）；start.pt md5 校验通过，确认从 160,002,048 局续训，`--value_detach` 已生效（config）；循环 + TB `exp127_B2_stream_vdetach_160-192M_LIVE` 已起。重试 cron 已删除。
+  在跑：A1 cnn_l+46（≈735 局/s）、A2 ConvFormer+374（≈310 局/s）、B1 流式（≈405 局/s）、B2 流式+价值截断。四台合计 $2.00/h。
+
 ## Results
 
 ## Conclusion
