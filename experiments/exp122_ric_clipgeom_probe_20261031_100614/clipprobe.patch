@@ -1,0 +1,102 @@
+--- /tmp/claude-1000/-home-hongdp-Workspace-LLM-Mahjong--claude-worktrees-rl-model-defense-learning-8fb5c0/0e7dda85-b312-4fe2-bc01-8accfdb51f41/scratchpad/ct_code/scripts/train_dnn_ppo.py	2026-10-31 10:09:53.164817885 -0700
++++ /tmp/claude-1000/-home-hongdp-Workspace-LLM-Mahjong--claude-worktrees-rl-model-defense-learning-8fb5c0/0e7dda85-b312-4fe2-bc01-8accfdb51f41/scratchpad/train_dnn_ppo_clipprobe.py	2026-10-31 10:13:49.291031508 -0700
+@@ -30,7 +30,9 @@
+ import numpy as np
+ import torch
+ 
+-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++# exp122 clip-geometry probe copy: library code lives in the runpod worktree
++sys.path.insert(0, os.environ.get("LLM_MAHJONG_ROOT")
++                or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ from src.agents.dnn.net import MahjongPolicyNet                      # noqa: E402
+ from src.agents.dnn.rust_rollout import collect_rust, widen_planes   # noqa: E402
+@@ -90,6 +92,10 @@
+     ap.add_argument("--entropy_coef", type=float, default=0.03)
+     ap.add_argument("--value_coef", type=float, default=0.5)
+     ap.add_argument("--clip_eps", type=float, default=0.2)
++    ap.add_argument("--clip_probe_out", default=None,
++                    help="exp122: dump per-pi_old-stratum clip statistics here and exit "
++                         "after --clip_probe_iters iterations (no checkpoint is written)")
++    ap.add_argument("--clip_probe_iters", type=int, default=4)
+     ap.add_argument("--ppo_epochs", type=int, default=4)
+     ap.add_argument("--target_kl", type=float, default=0.02)
+     ap.add_argument("--arch", default=None,
+@@ -743,6 +749,7 @@
+     n_iter_run = 0
+     next_opt_reset = (start_games + args.reset_optimizer_every) if args.reset_optimizer_every > 0 else None
+     n_opt_resets = 0
++    clip_probe = {}                       # exp122 per-stratum clip statistics
+     while games < args.total_games:
+         it += 1
+         n_iter_run += 1
+@@ -971,6 +978,46 @@
+                 chosen = logp.gather(1, acts[sel][:, None]).squeeze(1)
+                 ratio = torch.exp(chosen - old_lp[sel])
+                 a = adv[sel]
++                if args.clip_probe_out:
++                    # exp122: how often does the fixed-eps clip actually bite, by pi_old
++                    # stratum, and what would RIC's sqrt(delta/pi_old) bound do instead
++                    with torch.no_grad():
++                        p_old = torch.exp(old_lp[sel])
++                        rdev = (ratio - 1.0).abs()      # NOT `dev`: that is the torch.device in this scope
++                        mb_i = lo // args.batch
++                        mb_b = "mb0" if mb_i == 0 else "mb1-4" if mb_i <= 4 else "mb5+"
++                        edges = [0.0, 0.01, 0.05, 0.1, 0.5, 1.01]
++                        names = ["<0.01", "0.01-0.05", "0.05-0.1", "0.1-0.5", ">=0.5"]
++                        up = (a > 0) & (ratio > 1 + args.clip_eps)
++                        dn = (a < 0) & (ratio < 1 - args.clip_eps)
++                        act_fixed = up | dn
++                        ric = {}
++                        for dl in (0.02, 0.05, 0.08):
++                            e_r = torch.sqrt(dl / p_old.clamp(min=1e-8))
++                            ric[dl] = (((a > 0) & (ratio > 1 + e_r)) | ((a < 0) & (ratio < 1 - e_r)),
++                                       e_r > args.clip_eps)
++                        for s_lo, s_hi, nm in zip(edges[:-1], edges[1:], names):
++                            m = (p_old >= s_lo) & (p_old < s_hi)
++                            n = int(m.sum())
++                            if n == 0:
++                                continue
++                            key = f"{nm}|{mb_b}"
++                            c = clip_probe.setdefault(key, {"n": 0, "sum_dev": 0.0, "sum_dev2": 0.0,
++                                                            "dev>0.05": 0, "dev>0.1": 0, "dev>0.2": 0, "dev>0.5": 0,
++                                                            "act_fixed": 0, "act_fixed_up": 0, "act_fixed_dn": 0,
++                                                            "adv_pos": 0, "max_dev": 0.0})
++                            d = rdev[m]
++                            c["n"] += n
++                            c["sum_dev"] += float(d.sum()); c["sum_dev2"] += float((d * d).sum())
++                            c["max_dev"] = max(c["max_dev"], float(d.max()))
++                            for th in (0.05, 0.1, 0.2, 0.5):
++                                c[f"dev>{th}"] += int((d > th).sum())
++                            c["act_fixed"] += int(act_fixed[m].sum())
++                            c["act_fixed_up"] += int(up[m].sum()); c["act_fixed_dn"] += int(dn[m].sum())
++                            c["adv_pos"] += int((a[m] > 0).sum())
++                            for dl, (act_r, looser) in ric.items():
++                                c[f"act_ric{dl}"] = c.get(f"act_ric{dl}", 0) + int(act_r[m].sum())
++                                c[f"ric{dl}_looser"] = c.get(f"ric{dl}_looser", 0) + int(looser[m].sum())
+                 unclipped = ratio * a
+                 clipped = ratio.clamp(1 - args.clip_eps, 1 + args.clip_eps) * a
+                 pg = -torch.min(unclipped, clipped).mean()
+@@ -1064,6 +1111,22 @@
+             if stop:
+                 break
+ 
++        if args.clip_probe_out:
++            clip_probe_iters_done = clip_probe.get("_iters", 0) + 1
++            clip_probe["_iters"] = clip_probe_iters_done
++            clip_probe.setdefault("_iter_kl", []).append(kls[-1] if kls else None)
++            clip_probe.setdefault("_iter_n_eff", []).append(int(n_eff))
++            clip_probe.setdefault("_iter_minibatches", []).append(int((n_eff + args.batch - 1) // args.batch))
++            print(f"[clip-probe] iter {clip_probe_iters_done}/{args.clip_probe_iters} kl={kls[-1]:.5f} "
++                  f"n_eff={n_eff} mbs={(n_eff + args.batch - 1) // args.batch}", flush=True)
++            if clip_probe_iters_done >= args.clip_probe_iters:
++                clip_probe["_args"] = {k: v for k, v in vars(args).items()
++                                       if isinstance(v, (int, float, str, bool, type(None)))}
++                clip_probe["_resume_games"] = start_games
++                json.dump(clip_probe, open(args.clip_probe_out, "w"), indent=1)
++                print(f"[clip-probe] wrote {args.clip_probe_out}; exiting without checkpoint", flush=True)
++                sys.exit(0)           # atexit removes RUNNING.lock
++
+         if ocrit is not None:
+             ocrit.train(); o_losses = []
+             for _ep in range(args.oracle_epochs):

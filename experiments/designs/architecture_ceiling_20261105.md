@@ -1,0 +1,44 @@
+# 能否用更灵活的 transformer 架构抬高纯血平台？（2026-11-05 设计梳理）
+
+用户 11-05 问：是否有更灵活的 transformer 架构能提高模型平台上限。本文汇总本项目证据（带范围戳）、外部参照，给出候选与验证顺序。
+
+## 1. 现有证据
+
+| 证据 | 结果 | 范围戳 |
+|---|---|---|
+| exp124 ConvFormer-M+46 vs exp101 cnn_l+374 | 每个里程碑 +4–5 pp；ConvFormer 约 1 亿局追平 bc49 | 0–160M，exp124/101 配方；**主干与动作头未分离** |
+| exp124 第二段（lr 3e-5） | 72M 起平台 0.50–0.51，112→160M −0.4 pp（cnn_l 同期 +1.0） | 同上 |
+| exp125 ConvFormer-XL（11.4M）vs M（2.0M） | 4–56M 平均差 ≈ +0.6 pp（≈1σ）；32M 判决 −0.5；32M 四人桌不显著 | 0–56M，同配方 |
+| 噪声探针 | 策略梯度在 ≤13 万行全为噪声；主干上价值梯度 = 策略梯度 12–21× | exp124 8–112M 检查点 |
+| exp126 | 流式（落后 ≈11 步）16M +1.96 pp；异步（≈48 步）不劣 | 0–16M，单种子 |
+| 早期注意力架构（vit / HandSet / HRF / Mortal 主干） | RL 均在 ≤2M 局判"上限"；HRF 吃人类牌谱后防守最强（defense_iq 0.172），hrfC BC 准确率 0.796 | **≤2M 局**——按 11-01 规则不覆盖大规模 |
+
+读法：架构类别（CNN→ConvFormer）决定了平台高度；同类加宽加深（XL）到 56M 无可分辨收益；平台何时出现更像受优化信号限制（噪声、价值主导、数据落后）。
+
+## 2. 外部参照
+
+- **Ataraxos（Stratego，arXiv 2511.07312，2025）**：规模与我们相当（1.63 亿局，16×H100 一周，<$8k）。走子网络是 encoder-only transformer，token = 可落子格 + 1 个价值 token；策略用 key-query 矩阵积（"比简单参数化学得快"）。关键训练手段：正则与学习率按幂律退火、对数据采集策略的反向 KL、比率裁剪、梯度裁剪（"动态阻尼自对弈"）；**只用优势绝对值大的位置训练**，单迭代墙钟 2.5× 且样本效率更高。belief 网络对搜索很重要，但时空注意力的增益在 RL 里因运行成本没兑现。
+- **Kanachan**：把局面编码为集合 token（场风、局、宝牌、手牌）+ 序列 token（各家按时间顺序的弃牌与副露）+ 数值，目标是比 NAGA/Suphx 的 ResNet 更有表达力的 transformer；以 BC + 离线 RL 为主，无公开强度结果。
+- **Tjong**：中国麻将上的 transformer + 分层决策，PPO 训练（规则不同，仅作参考）。
+- **Mortal**：ResNet 主干（v4 观测 1012×34，46 槽动作）+ dueling DQN 头 + GRP 名次模型；非 transformer。
+
+## 3. 候选（按"预期收益 / 成本"排序）
+
+1. **事件序列 transformer（HRF 路线，最"灵活"）**：手牌实例 token 交叉注意各家牌河事件序列（时间顺序、摸切、立直宣言、被鸣），这是 v3r 平面编码丢掉的信息（v3r 只给每种牌一个顺序值，丢了同种牌多次出现的时序）。证据：HRF 在 BC 上读河能力最强；RL 结论只在 ≤2M 局。
+   成本：需要把 v4 事件编码移植进 Rust 引擎（约 1–2 天，含与 Python 编码逐位对拍），并把模型缩到 M 级（≈2–3M 参数）以免吞吐崩掉；原 HRF 23M 太贵。
+   验证：HRF-M 从零到 32M，对照 exp124 M 32M 判决 0.4808，判据 ≥ +1.0 pp。
+2. **解耦评论家（双主干 / PPG 式）**：价值用独立的小网络，主干只学策略。直接针对"价值梯度 12–21× 主导主干"。成本约 1.3× 计算。exp127 B2（value_detach）是零成本代理：B2 若比 B1 好，就上双主干。
+3. **全 key-query 动作头**：吃/碰/杠/立直也改成"动作 token × 状态 token"打分。ConvFormer46 已对 34 张牌做 token 打分，预期增益小，可与 1 合并做。
+4. **继续放大同类主干（XL）**：目前证据为负，暂不追加。
+5. **跨局记忆 / 名次感知**：对单局点差目标无帮助；属于"半庄名次奖励"那条线，另议。
+
+训练侧可同时借鉴 Ataraxos：优势过滤（直接针对我们策略梯度信噪比低的问题）、幂律退火。
+
+## 4. 建议顺序
+
+1. 先跑已批准的 exp127（A：主干 vs 动作头；B：流式 / 价值截断续训）——它决定 1 和 2 哪个更值得做。
+2. 并行做工程：Rust v4 事件编码 + HRF-M 本机吞吐基准（$0）。
+3. 按 exp127 结果：A 显示主干是主因 ⇒ 上 HRF-M 32M 测试；B2 > B1 ⇒ 上双主干。
+4. 优势过滤作为独立的低成本训练实验（可在 ConvFormer-M 上做 16M 对照）。
+
+参考：[Ataraxos](https://arxiv.org/abs/2511.07312)、[Kanachan](https://github.com/Cryolite/kanachan)、[Tjong](https://www.researchgate.net/publication/379145586_Tjong_A_transformer-based_Mahjong_AI_via_hierarchical_decision-making_and_fan_backward)、[Suphx](https://arxiv.org/abs/2003.13590)、[Mortal 衍生模型卡](https://huggingface.co/Yuchen1457/mortal-582500)。

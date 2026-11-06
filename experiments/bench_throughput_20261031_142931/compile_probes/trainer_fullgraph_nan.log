@@ -1,0 +1,27 @@
+🧵 cpus=24 (os.cpu_count=24) torch threads=8 RAYON_NUM_THREADS=24
+🏗 arch: convformer_m_v3r
+🚀 fast ConvFormer trunk + torch.compile
+⚡ PBRS shaping on: Phi = -2*best_shanten (memoised), scale 1.0, schedule 0:1.0,400000:0.0
+[FC_DEBUG] call 1 B=2048 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.3708 running=0.3708 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 2 B=2058 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=0.4243 running=0.4243 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 3 B=2061 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=2.559 running=2.559 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 50 B=2054 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=True/True maxdiff=3.55 running=4.603 P[min,max]=[0,1] S[min,max]=[-1,750]
+[FC_DEBUG] call 90 B=925 dtype_in=torch.float32 out=torch.float32 autocast=True grad=False finite out/ref=False/True maxdiff=nan running=4.603 P[min,max]=[0,1] S[min,max]=[-1,750]
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-hongdp-Workspace-LLM-Mahjong--claude-worktrees-rl-model-defense-learning-8fb5c0/0e7dda85-b312-4fe2-bc01-8accfdb51f41/scratchpad/ct_code/scripts/train_dnn_ppo.py", line 1274, in <module>
+    main()
+  File "/tmp/claude-1000/-home-hongdp-Workspace-LLM-Mahjong--claude-worktrees-rl-model-defense-learning-8fb5c0/0e7dda85-b312-4fe2-bc01-8accfdb51f41/scratchpad/ct_code/scripts/train_dnn_ppo.py", line 796, in main
+    episodes, results = collect_rust(net, len(seeds), cfg, args.workers, seeds, device=args.train_device)
+  File "/tmp/claude-1000/-home-hongdp-Workspace-LLM-Mahjong--claude-worktrees-rl-model-defense-learning-8fb5c0/0e7dda85-b312-4fe2-bc01-8accfdb51f41/scratchpad/ct_code/src/agents/dnn/rust_rollout.py", line 340, in collect_rust
+    idx, lp = net.act(P, S, M, temperature=temperature, check=False)   # legality checked on host
+  File "/home/hongdp/miniconda3/envs/rlhf_mahjong/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "/tmp/claude-1000/-home-hongdp-Workspace-LLM-Mahjong--claude-worktrees-rl-model-defense-learning-8fb5c0/0e7dda85-b312-4fe2-bc01-8accfdb51f41/scratchpad/ct_code/src/agents/dnn/arch_zoo.py", line 233, in act
+    logits = self.forward(planes, scalars, mask)
+  File "/tmp/claude-1000/-home-hongdp-Workspace-LLM-Mahjong--claude-worktrees-rl-model-defense-learning-8fb5c0/0e7dda85-b312-4fe2-bc01-8accfdb51f41/scratchpad/ct_code/src/agents/dnn/arch_zoo.py", line 212, in forward
+    h = self.trunk(planes, scalars)
+  File "/tmp/claude-1000/-home-hongdp-Workspace-LLM-Mahjong--claude-worktrees-rl-model-defense-learning-8fb5c0/0e7dda85-b312-4fe2-bc01-8accfdb51f41/scratchpad/ct_code/src/agents/dnn/fast_convformer.py", line 42, in <lambda>
+    net.trunk = types.MethodType(lambda self, p, s: self.__dict__["_fast_trunk_fn"](p, s), net)
+  File "/tmp/claude-1000/-home-hongdp-Workspace-LLM-Mahjong--claude-worktrees-rl-model-defense-learning-8fb5c0/0e7dda85-b312-4fe2-bc01-8accfdb51f41/scratchpad/ct_code/src/agents/dnn/fast_convformer.py", line 73, in dbg
+    raise RuntimeError(f"FC_DEBUG: compiled trunk non-finite on {int(bad.sum())}/{p.shape[0]} rows (eager finite={fin_r})")
+RuntimeError: FC_DEBUG: compiled trunk non-finite on 42/925 rows (eager finite=True)

@@ -741,3 +741,101 @@ bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我�
   与 `selfplay.play_game` 复现同一局。T=1 探针因 fork 子进程继承父进程随机 torch 种子，跑两次本就不等，对拍一律 T=0。
 - 常驻进程（雀魂服务、exp124 评测循环）跑在各自 worktree（`LLM_Mahjong_exp124`、`rl-model-defense-learning-*`），合并不影响它们；
   但以后改入口前先 `ls -l /proc/*/cwd` 看谁在用哪棵树。
+
+## RunPod 成为算力选项，账户已充值（2026-08-30）
+web_canvas 项目充值并实测了 RunPod 后不再使用，余额留给本项目。**判决（补查 vCPU 后）：
+按保证值打不过 g4-48**——RunPod 每 GPU 只配 9（A40）～16（PRO 6000/A100）个保证核，
+而本负载瓶颈是 rollout CPU；同卡每美元 44 vs g4 的 124 局/s，A40 community 每美元 +20%
+但单 run 5.4× 慢。**例外是 RTX 3090 community：16 核/$0.22，
+叠 3 张 = 48 核 $0.66/h——g4 同核数 29% 价，估算局/s 每 $ 3.4×**（前提：每核速率、
+community 长跑可靠性、标称核数落实，~$0.25 探针即可全部验证）。burst 是普适变数
+（实测 nproc=128 但非合同）。3090 探针不达标则余额只适合短平快活（评测/探针），
+按秒计费占优。运维三条铁律：**用完删 pod 别停**（container disk 停机费率翻倍，
+400GB≈$80/月）；SSH 走**直连**入口（`sshPublicKey` 注入的 key 只有直连认，proxy 入口
+永远 Permission denied）；pod 是容器，自停靠 `kill 1` 不靠 shutdown。价格表、
+create-pod 参数、全部坑见 [docs/runpod_cost_and_ops.md](docs/runpod_cost_and_ops.md)。
+
+## 2026-10-25 行为探针结论要带训练规模（exp120 教训）
+- exp21（≤2M 局）"防守只能从示范来"、exp68"从零 RL 从未学会防守"被当成纯血线的定性事实沿用了两个月；
+  exp120 用同一仪器（probe_defense）对 ≈100M/384M 局的纯血模型测出 defense_iq 0.10–0.12（1M 局模型 0.00）——结论随规模翻转。
+- 规矩：① 任何"模型会/不会 X"的行为结论写进 FINDINGS 时必须带训练局数；② 新里程碑 ckpt 例行复跑历史行为探针，不沿用旧判决；
+  ③ 行为代理（现物率）与 oracle 结算（反事实荣和）可能不一致——exp120 中 π 的非现物选择在真实牌桌上几乎不被荣和，代理会低估防守。
+- 探针工程：模型代码在别的 worktree 时用 `LLM_MAHJONG_ROOT` 环境变量指路（`scripts/probe_value_1ply.py`），别把 arch 复制过来。
+- **后见之明 max 不是收益上限（exp121 Stage 0）**：对同牌山反事实取"最优替代 − 所选"，等价替代（不可能更好）也给出 2.0 千点的"增益"——
+  任何"max over alternatives"门槛必须配等价替代对照（混沌地板）和配对系统差；单牌山局末值做逐决策金标准需 K≈(σ/Δ)² 次确定化，先算 K 再承诺。
+- **提议"没试过的杠杆"前先 grep 三处台账（2026-10-29）**：同一会话两次把已判负方向当新方向——因子化短视界价值（已被 exp99/114/115/116/119 边界化，
+  在 continue-task 分支）、对手池/league/非传递性诊断/检查点集成（已被 exp82/85/87/89/92 与 09-26"博弈论防线总结"判决：非传递性未观察到、M 不可剥削、集成 +0.3 pp）。
+  用户已按错误前提批准第二项，发现后中止（$0）。台账分三个 checkout，关键判决常在综述条目而不在单 run 行里。
+  规矩：提议前 `grep -i` 主 repo + runpod worktree + continue-task 分支的 FINDINGS/INDEX 并读综述条目，命中的 exp 编号与判决写进提议；grep 为空才可说"未试过"。
+  **11-01 修订**：grep 命中不等于方向关闭——先读命中判决的范围戳（架构 / 信号源 / 规模），戳与提议不匹配（如 ≤2M 局的架构判决 vs 100M 目标）时，"在目标范围复测"本身就是合法提议；exp124 证明被这条规矩压住的架构轴正是突破口。
+- **bf16 rollout 的 old_logprobs 对小概率动作有 ~0.1–0.2 的 log 误差（exp122，2026-10-31）**：PPO 第一个 minibatch 的 ratio 本应 ≡1，实测 π_old<0.01 的样本
+  mean|r−1| 0.14、16% 已越过 ε=0.2——裁剪在更新前就随机丢弃这些样本的梯度（对称、占全部样本 ~1%）。exp113 以此配方训完无害证据，但任何
+  "裁剪触发率 / ratio 统计"类读数必须先看 mb0 作数值地板，否则会把噪声读成策略漂移（本探针若无 mb0 对照会判 H1）。修法（若再训）：打包阶段按更新端精度重算 old_logp。
+- **训练器探针不要用 `dev` 之类的名字做局部变量**：main() 里 `dev` 是 torch.device，探针块 `dev = (ratio-1).abs()` 遮蔽后第 2 迭代 `torch.arange(device=dev)` 崩；
+  只跑 1 迭代的冒烟测不出跨迭代的遮蔽——冒烟至少 2 迭代。
+- **注意力类 zoo 架构从未接过 Rust rollout（bench_throughput，2026-10-31）**：`TilesTransformer.act` 缺 `check` 参数，`--engine rust` 直接 TypeError；
+  `--fast_trunk/--compile` 原本只认 CNN。ConvFormer 快速主干（批量花色卷积 + SDPA 加性偏置）数学等价、1.5×。
+  吞吐剖析先分段（rollout 内 Rust/GPU/传输、打包、更新），cnn_l 三段串行、CPU 与 GPU 互不重叠是下一个 ~2× 的来源。
+- **torch.compile + bf16 autocast 可以静默算错（torch 2.12/cu130，2026-10-31 定位）**：ConvFormer 整个主干一张图编译，fp32 精确，bf16 autocast 下
+  误差 0.02–0.84 随批量大小跳变、训练器内少数批次出 NaN；逐算子、单 block、stem+1 block 都对，stem（bf16 conv/linear 与 fp32 嵌入拼接）+ ≥2 block 同图就错。
+  修法：stem eager、只编译 block 栈，精度与 eager bf16 相同、速度不损。**规矩**：任何新 compile 路径上训练前，必须在真实训练器里逐调用对照 eager
+  （`FC_DEBUG` 式挂钩）跑 ≥2 迭代（含更新），并扫 ≥40 个批量大小；随机输入的微基准测不出来（本例前三轮探针全部漏掉）。
+- **Rust rollout 只认原生 374 动作空间（2026-10-31，exp124）**：`collect_rust` 对 `net.action_space` 不做任何分支，46 槽（Mortal / bc49）网络在 Rust 引擎上
+  根本跑不起来——此前所有 46 槽 RL（exp41/46/96）都走 Python 引擎。新增 `m46_native.py` 从原生掩码向量化导出 46 槽（吃只需被鸣牌 = v3r 第 13 平面）。
+  对拍时抓到的坑：吃的三种形状按"被鸣牌 ± 偏移"取原生键，花色边缘（如鸣 2m 时 high 形的键 −1）裁剪到 0 会**串到另一形状的槽**，必须按同花色判有效。
+  **规矩**：①换动作空间 / 引擎组合前先查 rollout 路径是否真支持，不信"架构在 zoo 里就能训"；②新映射必须对拍参考实现（这里是 `MortalActionSpace`），
+  用"门清向听最优"一类策略专门刷出立直 / 和牌 / 选牌，随机策略几乎碰不到；③pod 镜像的 torch 与本机不同（2.8 vs 2.12），compile 路径在 pod 上先过
+  FC_DEBUG 闸门再开训（`exp124_ops/pod_boot.sh`）。
+- **2026-10-31 exp124 发射后 5 分钟两臂同崩：种子不是局 ID**。46 槽 rollout 的行键用 (seed, slot, seat)，但 dup_k=8 下同一 VecEnv 槽位一轮内可能两次拿到同一种子 ⇒ 键撞车，
+  改写的计数校验 raise（好在是 raise 不是静默错位）。本机冒烟 4–7 迭代撞不到，pod 上 ~20 迭代必撞。修复为"该槽已完成局数"计数器（a8fef66）。
+  **规矩**：①跨步对齐的键必须用引擎/宿主自己维护的唯一局序号，不用种子（dup / 重放让种子重复）；②稀有碰撞类 bug 不能靠"冒烟跑几轮没事"，
+  要写**强制触发**的测试（这里：4 槽 × 同一种子 6 次）；③pull_loop 收到 TRAIN_FAILED 会发 PULLED_OK 让 pod 自毁——要原地修就先停 pull_loop 与 pod_run 再动手。
+- **2026-11-01 工作站无人值守重启吞掉整套监控**：内核自动更新（6.8.0-146→147）01:17 重启，exp124 的 pull_loop / watchdog / eval_loop / TensorBoard（全是 setsid nohup）
+  一起消失，pod 照常计费训练；预注册的"8M 选臂即终止败臂"因此没执行，败臂多烧 12 h ≈ $11，发现靴子落地是 13 h 后人工巡检。
+  **规矩**：①本机侧长跑监控必须抗重启——用 `systemd --user` 单元（`Restart=always` + `loginctl enable-linger`）或 `@reboot` crontab 自愈，setsid 只配短任务；
+  ②凡"到 X 里程碑自动做 Y"的关键决策（选臂 / 终止 pod），不能只靠本机循环，pod 侧也要有兜底（例如 pod_run 在里程碑后自查工作站心跳文件，超时自停）；
+  ③回来第一件事是 `uptime` + `ps` 对账，再看 pod。
+
+## 2026-11-01 方法论纠错：架构轴被 2M 局的判决锁死了四个月（exp124 教训，用户点名复盘）
+exp124（bc49 同结构 ConvFormer46 纯血从零）32M 局读数 0.481，比 cnn_l 同里程碑高 +5 pp、高于 cnn_l 的 192M 终点和"纯血平台 ≈0.47"；雀魂 B+/A-（n=2）。
+此前 ≥100M 的纯血 run 清一色 CNN（exp27A→exp90→exp101→exp113 384M），七个杠杆（规模/目标/姿态/先验/估计器/归因/搜索）全在 CNN 上换，
+"平台"其实是一个架构的平台。错在流程，不在某次实验：
+- **小规模判决被当成永久判决**：HandSet/HRF/Mortal 设计（exp27/30/36/37/41，1–2M 局）判"架构上限"后再没在规模上重开；
+  我们自己 08-28 写的"小数据点的架构排序不可外推、设计比较必须在目标数据量上终审"只用在了 BC 数据缩放上。
+- **单架构结论被当成问题性质**：exp68/69"感知不是瓶颈"、exp113"规模 H0"都只对 CNN 成立，却被读成"方法到顶"。
+- **归因混淆**：exp45/49"示范信号 ≫ 自对弈信号"比的是 ConvFormer46+人类数据 vs CNN+自对弈，两个变量同时变，功劳全记给了数据。
+- **regime 隔离只用了一个方向**：08-28 同时写了"结构才是兑现变量"（BC）和"从零自对弈的架构定论不可外推到示范 regime"，却没把 BC 的强结果当 RL 的待检假设。
+- **基础设施替科学做决定**：Rust rollout 只认 374 空间，46 槽网络只能走慢 10× 的 Python 引擎，"跑得快的"决定了"上规模的"；接线只花一晚。
+- **流程放大器**：10-29 的"提议前 grep 三处台账"防重复失败，副作用是旧判决无范围戳就被当永久；CNN 谱系 384M 的沉没成本让它成了"纯血线"本身。
+**规矩（已写入 CLAUDE.md 关键规则 + ml-experiment-tracking skill）**：
+① FINDINGS/INDEX 的每条判决必须带范围戳（架构 / 信号源 / 规模 / 评测口径）和失效条件，引用判决先看戳，戳不匹配即可提"在目标范围复测"；
+② 宣布"方法平台"前必须在目标规模上换过模型类（≥1 个非当前主干跑到 ≥50M）；③ zoo 里上不了快引擎的架构在台账标"无法在规模上检验"而非判负；
+④ 一个 regime 的强结果自动登记为另一 regime 的待检假设；⑤ 10-29 grep 规矩修订：grep 命中 ≠ 方向关闭，命中后必须核对范围戳。
+仍待检：主干 vs 动作头的贡献（Stage 2 消融）、192M 终点判决；上述流程错误与 192M 结果无关，已成立。
+- **2026-11-02 Community pod 可能没有公网 TCP（只能走 ssh.runpod.io 代理）**：exp124 迁移订到的 Community 4090 runtime 只映射了 http 端口，`ssh.direct` 永远为空；
+  RunPod 代理只给交互式 PTY，`ssh host cmd`、scp、rsync 一律失败 ⇒ 依赖 rsync 的 deploy/migrate 流程整个不可用。**规矩**：开机后 2 分钟内看 `runtime.ports` 有没有 `22/tcp` 公网映射，
+  没有就直接 delete 再等（$0.02），不要试图改走代理；create-pod 没有"要求公网 IP"的过滤项。
+- **2026-11-03 迁移两坑**：①Community 宿主可能连不上 sh.rustup.rs（curl 443 超时）⇒ bootstrap 装不了 cargo 就编不出 riichi_rs wheel；ops 现随附预编译 cp312 wheel（`exp124_ops/riichi_rs-*.whl`，pod_boot 优先用它）。
+  ②migrate.sh"等下一次 latest.pt 存盘再停源机"盯错了目录（第一段 `exp124_A/` 已不更新，活动目录是 `_p2`），40 min 超时后硬停，丢 0.7M 局；已改为自动选活动目录。**规矩**：任何"等文件更新"的守候都先确认盯的是当前写入的文件。
+- **2026-11-03 Community ≠ 便宜：先量吞吐再定去留**。exp124 迁到 Community 4090（$0.34/h）后吞吐 89 局/s vs Secure 432 局/s（宿主 EPYC 7B13、cgroup 27 核、单核慢；load avg 从 75 降到 15 后速度不变 ⇒ 结构性）。
+  Rust 自对弈 rollout 是 CPU 密集，Community 卡价格只省 GPU 不省 CPU：余 80M 局 Community ≈$85/10 天 vs Secure ≈$46/52 h。**规矩**：迁移后首 10 分钟必读 `局/s`，低于 Secure 的 40%（本项目 ≈170 局/s）即迁回；
+  `migrate.sh` 之前先在目标机跑 1 迭代 bench（`pod_boot.sh` 的 gate 已有 4096 局计时：gate 5.6 min ≈ 12 局/s 的 gate 数字只测编译不测吞吐，不要拿它当吞吐）。create-pod 可能被 auto 模式分类器拦截，迁回要用户放行。
+- **2026-11-03 迁机三条补充**：①挑机器看 vCPU 不看卡型——同一时刻 Secure 4090 只有 16 vCPU 宿主而 3090 有 32 vCPU，3090 $0.50/h 跑出 309 局/s（4090/55 核 432、Community/27 核 89）；`create-pod` 用 `gpu.minVcpuCountPerGpu` 过滤，缺货就换卡型再试。
+  ②RunPod 有的宿主 /workspace 禁 chown：`rsync -a` 会以 rc=23 退出（文件其实传齐），脚本里一律 `rsync -rlt`。③迁移脚本的"等下一次存盘"要带新鲜度短路：慢机上两次 latest.pt 相隔数小时，否则白等 40 min 还丢进度。
+- **2026-11-03 rollout 剖析纠错：先分段再下结论**。我曾对用户说"Rust 引擎吃 CPU"，分段后发现 exp124 rollout 54% 是 GPU 前向（46 槽立直/杠第二次查询对同一观测重算整网占 15%），Rust 只占 ≈25%。
+  Community 宿主慢的真因是单核慢拖累前向的 kernel 派发 + Rust step。**规矩**：吞吐问题先用计时包装（monkeypatch VecEnv 方法 + cuda 同步计时前向）分段，再提方案。
+  异步重叠的关键是给 rollout 的 CUDA stream 高优先级（priority=-1）：普通优先级时后台 rollout 被更新抢 GPU 拖慢 1.8× 成关键路径（4.30 s/迭代），高优先级后 3.55 s。
+- **2026-11-03 梯度噪声探针**（`--grad_noise_probe`，分支 claude/perf-rollout-overlap）：回答"batch 该多大"先测 B_simple 再花钱。exp124 的策略梯度在每迭代全部数据量上都是纯噪声（|g|∝1/√b），价值梯度在共享主干上大 12–21×、clip 每步生效。
+- **2026-11-03 流式 rollout 三个坑**：①torch.compile 不是线程安全的，dynamic=True 仍对批量 0/1 特化——后台线程里遇到 1 行的批次会现场编译，曾在块尾卡死一次；所有图必须在主线程预热（`StreamActor.warmup`）。
+  ②训练器 `if n_eff < batch: continue` 会静默丢弃不足一个 minibatch 的数据，小块场景下丢一半；切分要按 round(n/batch) 均分。③每个小迭代都全量重写 train_log.json 是平方级，6400 块后每迭代多 40 ms；按 2048 局聚合。
+  另：流式的数据过时度由演员并发 K 和队列深度决定（稳态一局寿命 ≈ K / 每步消费局数），不是由演员速度决定；估算时别假设演员不受限速。
+- **2026-11-04 解析标记行别用 `cut -d= -fN`**：exp126 完成标记 "TRAIN_DONE arm=async md5=…" 含两个等号，`cut -d= -f2` 取到 "async md5"，md5 握手失败 20 分钟，pod 差点空等 3 小时。按键名解析（`sed 's/.*md5=//'`）；改运行中的 bash 脚本要写新文件再 mv（bash 边执行边读原文件）。
+- **2026-11-05 镜像循环会被 pod 端改动覆盖**：pull_loop 用 `rsync -a --inplace` 每 10 分钟镜像整个 run 目录，若 pod/宿主被入侵、旧检查点在 pod 上被改，本地镜像会被静默覆盖。最低限度：巡检比对旧里程碑 mtime（已加入 cron）；更稳的做法是里程碑文件只拉一次（`--ignore-existing`），只让 latest.pt 和日志保持更新，拉到后记 md5。**已于 11-05 在 exp124/125 pull_loop 落地**：里程碑须在 pod 上静置 ≥2 min（`find -mmin +2`）才拉，防止拉到写了一半的文件后永不更新。
+- **2026-11-05 训练日志非原子写导致假报警与半截镜像**：训练器每 5 迭代 `json.dump` 整份重写 train_log.json（exp124 已 43 MB），rsync 撞上写入时报 rc=23 或拷到半截文件；连续两次撞上即触发拉取循环的"rsync failing"报警（假报警），本地镜像一度只有 15 MB 无法解析。pod 原文件完好，补拉即修复。
+  修法（未来 run）：训练器先写临时文件再 rename；拉取循环对 train_log.json 单文件的 rc=23 不计入失败；读本地日志做分析前先校验能解析。
+
+### 2026-11-06 云 run 的 config 快照只落在主 checkout 镜像目录，从未入库
+- 现象：pull_loop 把 pod 上的 `experiments/<run>/config.json` 镜像到**主 checkout**（供 TB 软链），而记录提交发生在 worktree 分支；主 checkout 停在别的会话分支上无人 `git add` → exp59–exp128 共 107 个有效配置快照只在本机磁盘（白名单允许入库，`git status` 一直显示 `??`）。同时 worktree 分支 87 个记录提交从未 push（无 upstream）。
+- 修法：11-06 按原路径复制进 worktree 一次性提交（62354f9）并推送分支。
+- 规矩：**发射记账那一步**（prereg 进度 + INDEX 行）同时把首次拉回的 `config.json` 复制到 worktree 同路径并一起提交；收尾时 `git status --untracked-files=all | grep config` 应为空；记录分支要有 upstream，push 仍需用户确认。
+

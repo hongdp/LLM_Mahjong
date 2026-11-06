@@ -24,7 +24,10 @@ import time
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# LLM_MAHJONG_ROOT: run against another checkout's library code (the arch zoo
+# of the checkpoint under test may live in a different worktree — exp120/123)
+sys.path.insert(0, os.environ.get("LLM_MAHJONG_ROOT")
+                or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.tasks.mahjong.hanchan import play_hanchan                     # noqa: E402
 from src.agents.dnn.mjai_export import play_game_mjai                  # noqa: E402
@@ -33,7 +36,7 @@ from scripts.arena_mortal_mjai import (MORTAL_DIR, MortalSeat,         # noqa: E
                                        build_mortal_engine, net_policy)
 
 
-def make_side(spec: str, device: str):
+def make_side(spec: str, device: str, temperature: float = 1.0):
     """Returns (kind, factory) where factory(seats) -> policies dict for
     those seats + optional per-deal sink hook."""
     if spec.startswith("mortal:"):
@@ -42,7 +45,7 @@ def make_side(spec: str, device: str):
         from libriichi.mjai import Bot
         return "mortal", (engine, Bot)
     net = load_dnn(spec, device)
-    pol = net_policy(net, device, temperature=1.0)
+    pol = net_policy(net, device, temperature=temperature)
     return "net", pol
 
 
@@ -95,11 +98,14 @@ def main():
     ap.add_argument("--seed0", type=int, required=True)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--temperature", type=float, default=1.0,
+                    help="net sides' sampling temperature; 0 = greedy (the deployment/verdict protocol)")
+    ap.add_argument("--threads", type=int, default=4)
     args = ap.parse_args()
-    torch.set_num_threads(4)
+    torch.set_num_threads(args.threads)
 
-    a_kind, a_impl = make_side(args.a, args.device)
-    b_kind, b_impl = make_side(args.b, args.device)
+    a_kind, a_impl = make_side(args.a, args.device, args.temperature)
+    b_kind, b_impl = make_side(args.b, args.device, args.temperature)
     stats = {"ok": 0, "fallback": 0}
     rows, s_sum = [], 0.0
     plc = {"a": [0] * 4, "b": [0] * 4}
@@ -123,7 +129,8 @@ def main():
     p = min(max(s_sum / n, 1e-6), 1 - 1e-6)
     delta = 400 * math.log10(p / (1 - p))
     se_p = math.sqrt(p * (1 - p) / n)
-    out = {"a": args.a, "b": args.b, "games": n, "share_a": s_sum / n,
+    out = {"a": args.a, "b": args.b, "games": n, "temperature": args.temperature,
+           "share_a": s_sum / n,
            "share_se": se_p, "elo_delta_a_minus_b": round(delta, 1),
            "mean_uma_a": sum(r["uma_a"] for r in rows) / n,
            "mean_uma_b": sum(r["uma_b"] for r in rows) / n,
