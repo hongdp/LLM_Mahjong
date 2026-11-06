@@ -1,6 +1,6 @@
 # 论文参照行：同判决牌山上的复式份额（Mortal / 随机 / 规则 / exp27A 1M）（2026-11-06）
 
-- **Date**: 2026-11-06 06:27 PST  **Status**: running
+- **Date**: 2026-11-06 06:27 PST  **Status**: done（2026-11-06 08:05 PST）
 - **Git**: 4ae29e1（worktree claude/rl-model-defense-learning-8fb5c0）；向量评测用 `/home/hongdp/Workspace/LLM_Mahjong_exp124`（f11278a，与 exp124 判决同一份代码）
 - **Env**: 本机 RTX 4080 + 24 核；$0
 
@@ -27,8 +27,30 @@
 
 - [2026-11-06 06:50 PST] **驱动校验通过**：exp124 A 32M 坐 A 方位、前 300 牌山，逐牌山点差与存档 **100% 一致**（300/300，份额 0.5333 = 0.5333）。10 牌山冒烟：随机 / 规则 / Mortal（572 决策零回退）均正常。发射：exp27A 向量读数 + 10k 计时 → Mortal / 规则 / 随机各 12 分片（每片 875 牌山）。
 
+- [2026-11-06 08:05 PST] 全部完成。Mortal 12 分片 619,458 个决策零回退。exp27A 读数因一次 20 牌山诊断跑同名覆盖而重跑（0.3182 → 重跑 0.3181，差异来自 GPU 争用下批次组成不同导致的个别 argmax 翻转，可忽略）。
+
 ## Results
+10,500 去重牌山（101112000–101122499），T=0 复式 2v2 对 bc49：
+
+| 参照 | 份额 ± SE | 每牌山点差 ± SE | 路径 | 墙钟（4080） |
+|---|---|---|---|---|
+| Mortal 298k（原生贪心） | **0.5039 ± 0.0041** | +76 ± 114 | 逐局驱动 | 12 片并行 40 min（合计 468 片·分 ≈ 单进程 7.8 h） |
+| 向听贪心规则 agent | 0.3242 ± 0.0044 | −5669 ± 142 | 逐局驱动 | 12 片 31 min（合计 369） |
+| exp27A 1M（早期 CNN） | 0.3181 ± 0.0043 | −5996 ± 141 | 向量评测 | 1.7 min |
+| 均匀随机合法动作 | 0.0111 ± 0.0007 | −16374 ± 103 | 逐局驱动 | 12 片 12 min（合计 142） |
+| （对照）exp124 A 32M，1 万牌山计时 | 0.4815 | −751 | 向量评测 | **110 s / 1 万牌山** |
+
+同牌山配对 TT（exp124 A）− Mortal：112M −0.35 ± 0.59 pp（点差 −149 ± 170）；160M −0.66 ± 0.60 pp（−43 ± 172）。
 
 ## Conclusion
+- 份额刻度锚点：随机 ≈ 0.01、规则 agent ≈ 0.32、1M 局 CNN ≈ 0.32、bc49 = 0.50（定义）、Mortal ≈ 0.50、exp124 A 112–160M ≈ 0.50。
+- Mortal 在单局复式口径与 bc49 打平（+0.39 ± 0.41 pp），与 exp124 A 112M / 160M 配对差在 1σ 内。
+- 规则 agent 与 1M 局 CNN 同档：exp27A 时期的从零 RL 只学到"向听贪心 + 不鸣牌"量级。
+- **范围戳**：单局复式 2v2 对 bc49、T=0、10,500 牌山、当前引擎（f11278a 评测代码）；Mortal 走 mjai 桥（引擎指纹不同，结果标 engine_mismatch）。
 
 ## Artifacts
+| Path | Size | Description |
+|---|---|---|
+| `experiments/probes/paper_ref/{mortal,rule,random}_shard{0..11}.json`、`*_merged.json`（主 checkout） | — | 逐牌山份额与点差 |
+| `experiments/probes/pairdiff_paperref_exp27A1M_games_final.pt_101112000.json` | — | exp27A 逐牌山 |
+| 本目录 `dup_driver.py`（逐局驱动，已对存档 300/300 校验）、`merge.py`、`run.sh`、`run.log`、`*_shard*.log` | — | 代码与日志 |
