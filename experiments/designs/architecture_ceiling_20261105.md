@@ -42,3 +42,7 @@
 4. 优势过滤作为独立的低成本训练实验（可在 ConvFormer-M 上做 16M 对照）。
 
 参考：[Ataraxos](https://arxiv.org/abs/2511.07312)、[Kanachan](https://github.com/Cryolite/kanachan)、[Tjong](https://www.researchgate.net/publication/379145586_Tjong_A_transformer-based_Mahjong_AI_via_hierarchical_decision-making_and_fan_backward)、[Suphx](https://arxiv.org/abs/2003.13590)、[Mortal 衍生模型卡](https://huggingface.co/Yuchen1457/mortal-582500)。
+
+## 5. 更新（2026-11-06）：信息差探针结果
+`info_gap_probe_20261106_010633`：同一 transformer 探针，v3r vs v3r+完整事件序列，预测对手听牌/待牌（人类 Tenhou 8000 局）。危险度 AUC 差 −0.0007（CI 含 0），默听 log-loss 只低 0.59%，约为数据翻倍收益的 0–1/3。
+⇒ 候选 1（事件序列 transformer）**缺信息基础，降级**；第 4 节顺序改为：exp127 → 按 B2 vs B1 决定解耦评论家 → 优势过滤；事件序列只在自对弈分布 / 更大数据复测出信息差后再议。
