@@ -50,6 +50,9 @@ ConvFormer-M 2.0M / cnn_l 4.0M（含 46 槽变体 3.84M），v3r 编码，exp124
 
 - [2026-11-06 06:56 PST] **B2 重开成功**：pod r7lvhb32p3re45（exp127-B2，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.90:40119，仅 22/tcp，宿主 EPYC 7C13）；从 160,002,048 局续训，`--value_detach`；9 min 时 **404 局/s**（B1 ≈413）。旧慢机镜像改名 `exp127_B2_slowhost_0642` / `exp127_pull_B2_slowhost_0642`。四臂全部在跑，重试 cron 已删。
 
+- [2026-11-06 13:58 PST] **A1（cnn_l + 46 槽）到 32M**：13:37 TRAIN_DONE，镜像 md5 10a523b4… 一致，pod n4zajmh86epzfd 已自毁（get-pod 404），≈12.5 h × $0.50 ≈ **$6.3**；残留 watchdog 已按 PID 停。
+  32M 判决（10,500 去重牌山，见 SKILLS 11-06 两段重叠勘误）：**A1 0.4384 ± 0.0046**（点差 −2114 ± 142）。同牌山配对：A1 − exp101 cnn_l+374 32M（0.4270，11-06 重读）= **+1.13 ± 0.61 pp**（动作头效应，CNN 主干上）；A1 − exp124 ConvFormer+46 32M（0.4810）= **−4.26 ± 0.63 pp**（主干效应，46 槽头上）。2×2 的第四格 A2（ConvFormer+374）≈ 12 h 后到 32M。
+
 ## Results
 
 ## Conclusion
