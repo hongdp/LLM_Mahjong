@@ -37,6 +37,8 @@ ConvFormer-M 2.0M / cnn_l 4.0M（含 46 槽变体 3.84M），v3r 编码，exp124
 
 - [2026-11-06 00:55 PST] 用户在对话中批准方案 1（A 同步、B 流式）。Secure 3090（32 vCPU）与 A40（32/24 vCPU）均无货，create-pod 返回容量不足；改为每 30 分钟自动重试（cron 141adb69，仅限 Secure、≤$0.59/h），开出即部署。
 
+- [2026-11-06 01:20 PST] **A1 发射**：pod n4zajmh86epzfd（exp127-A1，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.111:40178，仅 22/tcp）；compile gate / arm gate 通过，首迭代 179 局/s；pull/watchdog/eval 循环已起，TB `exp127_A1_cnnl46_0-32M_LIVE`。A2/B1/B2：同轮 3090 与 A40 均无货，cron 141adb69 继续重试。
+
 ## Results
 
 ## Conclusion
