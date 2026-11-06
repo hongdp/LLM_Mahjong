@@ -468,3 +468,8 @@ exp124（bc49 同结构 ConvFormer46 纯血从零）32M 局读数 0.481，比 cn
 - **2026-11-05 镜像循环会被 pod 端改动覆盖**：pull_loop 用 `rsync -a --inplace` 每 10 分钟镜像整个 run 目录，若 pod/宿主被入侵、旧检查点在 pod 上被改，本地镜像会被静默覆盖。最低限度：巡检比对旧里程碑 mtime（已加入 cron）；更稳的做法是里程碑文件只拉一次（`--ignore-existing`），只让 latest.pt 和日志保持更新，拉到后记 md5。**已于 11-05 在 exp124/125 pull_loop 落地**：里程碑须在 pod 上静置 ≥2 min（`find -mmin +2`）才拉，防止拉到写了一半的文件后永不更新。
 - **2026-11-05 训练日志非原子写导致假报警与半截镜像**：训练器每 5 迭代 `json.dump` 整份重写 train_log.json（exp124 已 43 MB），rsync 撞上写入时报 rc=23 或拷到半截文件；连续两次撞上即触发拉取循环的"rsync failing"报警（假报警），本地镜像一度只有 15 MB 无法解析。pod 原文件完好，补拉即修复。
   修法（未来 run）：训练器先写临时文件再 rename；拉取循环对 train_log.json 单文件的 rc=23 不计入失败；读本地日志做分析前先校验能解析。
+
+### 2026-11-06 云 run 的 config 快照只落在主 checkout 镜像目录，从未入库
+- 现象：pull_loop 把 pod 上的 `experiments/<run>/config.json` 镜像到**主 checkout**（供 TB 软链），而记录提交发生在 worktree 分支；主 checkout 停在别的会话分支上无人 `git add` → exp59–exp128 共 107 个有效配置快照只在本机磁盘（白名单允许入库，`git status` 一直显示 `??`）。同时 worktree 分支 87 个记录提交从未 push（无 upstream）。
+- 修法：11-06 按原路径复制进 worktree 一次性提交（62354f9）并推送分支。
+- 规矩：**发射记账那一步**（prereg 进度 + INDEX 行）同时把首次拉回的 `config.json` 复制到 worktree 同路径并一起提交；收尾时 `git status --untracked-files=all | grep config` 应为空；记录分支要有 upstream，push 仍需用户确认。
