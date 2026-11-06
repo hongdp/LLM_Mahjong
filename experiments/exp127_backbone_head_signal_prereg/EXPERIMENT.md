@@ -41,6 +41,8 @@ ConvFormer-M 2.0M / cnn_l 4.0M（含 46 槽变体 3.84M），v3r 编码，exp124
 
 - [2026-11-06 01:43 PST] **A2 发射**：pod 83u5mfggd84ys4（exp127-A2，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.83:40108，仅 22/tcp）；gates 通过，首迭代 131 局/s；循环 + TB `exp127_A2_convformer374_0-32M_LIVE` 已起。A1 20 min 时 93 万局、751 局/s。B1/B2：本轮 3090/A40 无货，继续重试。
 
+- [2026-11-06 03:13 PST] **B1 发射**：pod v4onbm14zjcs0d（exp127-B1，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.74:40168，仅 22/tcp）；start.pt = exp124_A_p2 games_160000000.pt（md5 校验通过），确认从 160,002,048 局续训，流式落后 ≈11 步；循环 + TB `exp127_B1_stream_160-192M_LIVE` 已起。B2：同轮 3090/A40 无货，继续重试。
+
 ## Results
 
 ## Conclusion
