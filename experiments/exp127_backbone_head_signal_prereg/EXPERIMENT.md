@@ -35,6 +35,8 @@ ConvFormer-M 2.0M / cnn_l 4.0M（含 46 槽变体 3.84M），v3r 编码，exp124
 
 - [2026-11-05 20:10 PST] 本机四臂冒烟全部通过（A1/A2 从零 1.2 万局，B1/B2 从 160M 续训 8k 局）；运维脚本 `exp127_ops/` 就绪（里程碑只拉一次 + md5 清单；每臂完成标记）。开 4 台 Secure 3090：两次 create-pod 被权限分类器拦截（真实交易），两次 ≥32 vCPU 的 3090 无货 ⇒ **未开出任何 pod，等用户放行/重试**。架构梳理见 `experiments/designs/architecture_ceiling_20261105.md`。
 
+- [2026-11-06 00:55 PST] 用户在对话中批准方案 1（A 同步、B 流式）。Secure 3090（32 vCPU）与 A40（32/24 vCPU）均无货，create-pod 返回容量不足；改为每 30 分钟自动重试（cron 141adb69，仅限 Secure、≤$0.59/h），开出即部署。
+
 ## Results
 
 ## Conclusion
