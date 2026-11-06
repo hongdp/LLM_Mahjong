@@ -48,6 +48,8 @@ ConvFormer-M 2.0M / cnn_l 4.0M（含 46 槽变体 3.84M），v3r 编码，exp124
 
 - [2026-11-06 04:07 PST] **B2 首台 pod 宿主慢，已终止重开**：9499s5utscnk4p 稳定在 95 局/s（B1 同期 414），每迭代 update/rollout/pack 全部慢 4×，宿主 CPU 为 EPYC 7H12（B1 为 7763），同时跑训练时 matmul 30.7 vs 48.4 TFLOPS。本机同配置 4 min A/B：流式 489 局/s，流式+value_detach 488 局/s ⇒ 价值截断本身不降速，是宿主问题。按 95 局/s 跑完 32M 需 ≈94 h ≈ $47，会突破 $65 上限 ⇒ 停本地循环、04:05 终止该 pod（运行 ≈40 min，≈$0.35，产物丢弃）；重开时 3090/A40 无货，cron 继续重试 B2。
 
+- [2026-11-06 06:56 PST] **B2 重开成功**：pod r7lvhb32p3re45（exp127-B2，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.90:40119，仅 22/tcp，宿主 EPYC 7C13）；从 160,002,048 局续训，`--value_detach`；9 min 时 **404 局/s**（B1 ≈413）。旧慢机镜像改名 `exp127_B2_slowhost_0642` / `exp127_pull_B2_slowhost_0642`。四臂全部在跑，重试 cron 已删。
+
 ## Results
 
 ## Conclusion
