@@ -1,6 +1,6 @@
 # exp125 ConvFormer-XL 尺寸扫描（纯血从零，bc49 同结构只放大主干到 Mortal 参数量）
 
-- **Date**: 2026-11-01 23:10 PST 预注册；**Status**: running（11-02 10:10 PST 发射；闸门 exp124 A 64M 均值 0.4890 通过；用户批 $120 上限）
+- **Date**: 2026-11-01 23:10 PST 预注册；**Status**: done（11-06 05:32 PST 到 64M，md5 66b11647 校验，pod 已自毁；H0；≈$81）
 - **Git**: 代码 `claude/exp124-convformer-m46` @ zoo 提交（a8fef66 之后，含 `convformer_xl_v3r_m46` / `convformer_l_v3r_m46` / `convformer_ml_v3r_m46`）；上云脚本 `experiments/exp125_ops/`（exp124 套件，架构经 `ARCH` 环境变量，Stage 0 到 64M 即停、第二段需 `EXTEND_OK` 标记）
 - **Env**: RunPod 4090（Secure $0.89/h；Community $0.34/h 有货优先），镜像 `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404`；评测本机 4080 $0
 
@@ -52,13 +52,39 @@ compile 闸门（FC_DEBUG 逐调用对照 eager）：ML maxdiff 0.0252 / max|dV|
   配对（每牌山 4 场合计，/4 折成每场）：XL − M **+663 ± 720/场（≈0.9σ，不显著）**；bc49 − XL +2956 ± 716；bc49 − M +3619 ± 692；XL − exp113C +2838 ± 754；M − exp113C +2175 ± 721。
   与 32M 复式判决（XL − M −0.54 pp）一致：同位置 XL 与 M 无可分辨差异，二者都显著落后 bc49 ≈3k/场、显著领先 CNN 纯血最强。M 32M 的 −527 与 11-01 那桌的 32M −398 一致（锚点稳定）。结果 `experiments/probes/table4_M32M_XL32M_bc49_exp113C_hanchan.json`。
 
+- [2026-11-06 05:45 PST] **64M 完成**：05:32 PST TRAIN_DONE，games_final.pt 镜像 md5 66b11647… 与 pod 一致，PULLED_OK 后 pod ih7vwfbj4dxg15 已自毁（list-pods 不再列出）。单台 Secure 4090 运行 ≈91.5 h × $0.89 ≈ **$81**（上限 $120 内）。
+  判决读数（exp101 种子）：101112000 段 0.4926 ± 0.0047，101112500 段 0.4926 ± 0.0047。
+  **评测协议问题（本次发现）**：两段种子只差 500，`play_pair_vector` 的牌山 = seed0 + d ⇒ 两段共享 9,500 个牌山，T=0 下逐牌山结果完全相同（a[500:] ≡ b[:9500]，M 与 XL 均如此）。所谓"2×10k"实为 **10,500 个不同牌山**，两段一致不是复现。下表按去重后的 10,500 牌山配对重算。
+
 ## Results
+64M 判决，去重 10,500 个牌山（101112000–101122499），T=0 复式 2v2 对 bc49，XL 与 M 同牌山配对：
+
+| 臂 | 参数 | 份额 | 每牌山点数 |
+|---|---|---|---|
+| **XL**（exp125） | 11.37M | **0.4932 ± 0.0046** | — |
+| M（exp124 A 64M） | 2.00M | 0.4891 ± 0.0046 | — |
+| **XL − M（配对）** | | **+0.41 ± 0.60 pp** | −156 ± 173 |
+
+旧口径（两段均值相减，预注册写法）：0.4926 − 0.4890 = +0.36 pp。两种算法都 < +0.5 pp。
+32M 判决同法重算：XL 0.4753 vs M 0.4810，配对 −0.56 ± 0.62 pp。
+在轨 2000 牌山读数（同种子 101112000 前 2000 牌山）：XL 56M 0.5000 / 58.2M 0.5055 / 60.6M 0.4893 / 62.3M 0.4850。
 
 ## Conclusion
+- **H0（预注册判据 3：XL − M < +0.5 pp ⇒ 尺寸不是杠杆，关闭）**。在同配方、同局数下，把 ConvFormer 主干放大 5.7×（2.0M → 11.4M，Mortal 量级）没有带来可分辨的每局样本效率：32M −0.56 ± 0.62、64M +0.41 ± 0.60 pp；每牌山点数还略负。计算成本约 2.2×（195 vs ≈444 局/s 同卡换算）。
+- 与 exp124 的"换模型类 +5 pp"对比：平台高度由**模型类**决定，不由**同类尺寸**决定（至少到 64M 局）。
+- **范围戳**：ConvFormer46 家族（M 2.0M vs XL 11.4M），exp124 第一段配方（lr 1e-4、batch 4096、1 epoch、dup_k 8，XL 因显存 batch 2048×2），纯血自对弈 0–64M 局，T=0 复式对 bc49、10,500 牌山，单种子。
+  失效条件：更长训练（>64M，大模型可能后程才拉开——exp124 M 自己在 72M 后平台，XL 是否推迟平台未测）；不同 lr/批量配方（大模型可能需要更小 lr）；第二种子。
+- 不申请延长到 192M（预注册：H0 ⇒ 关闭；延长需另批 ≈$210）。
 
 ## Next Steps
+- 尺寸轴关闭；架构方向见 `experiments/designs/architecture_ceiling_20261105.md`（信息差探针已判事件序列缺信息基础）。
+- 评测协议修订（见 SKILLS 11-06）：今后终评用不重叠牌山段（例如 101112000 + 101132000），历史"2×10k"读数一律按 ≈10.5k 牌山的单次读数理解（SE ≈ ±0.0046，不是 ±0.0033）。
 
 ## Artifacts
 | Path | Size | Description |
 |---|---|---|
+| `experiments/exp125_XL/games_64000000.pt`、`games_final.pt`（主 checkout） | 各 ≈137 MB | 64M 终点（md5 66b11647…），milestones.md5 清单 |
+| `experiments/exp125_XL/games_{4..56}M.pt` | — | 4M×8 + 40/48/56M 里程碑 |
+| `experiments/probes/pairdiff_exp125_XL_n10000_games_{32,64}000000.pt_{101112000,101112500}.json` | — | 判决逐牌山份额与点差 |
+| `experiments/exp125_pull_XL/{heartbeat,autoeval}.log`、`_cloud_mirror`/TB `exp125_XL_convformerXL_0-64M_LIVE` | — | 心跳、在轨评测、训练曲线 |
 | `experiments/probes/exp125_bench/` | — | 本机闸门与基准日志（gate_*.log / bench_*/train_log.json） |
