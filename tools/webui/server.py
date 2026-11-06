@@ -504,6 +504,37 @@ def list_dnn_dashboards():
     return out
 
 
+def list_reviews():
+    """JSON files written by scripts/record_review.py: experiments/review/*.json
+    (every legal action x every model: prob, Q/logit, V). Newest first."""
+    out = []
+    root = os.path.join(EXP_ROOT, "review")
+    if not os.path.isdir(root):
+        return out
+    for f in os.listdir(root):
+        if not f.endswith(".json"):
+            continue
+        full = os.path.join(root, f)
+        try:
+            d = json.load(open(full, encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if "records" not in d:
+            continue
+        out.append({
+            "file": os.path.join("review", f),
+            "models": [m.get("name") for m in d.get("models", [])],
+            "games": d.get("games"),
+            "decisions": sum(len(g.get("steps", [])) for g in d["records"]),
+            "disagreements": sum(g.get("n_disagree", 0) for g in d["records"]),
+            "recorded": d.get("recorded"),
+            "mtime": os.path.getmtime(full),
+            "size_mb": round(os.path.getsize(full) / 1e6, 2),
+        })
+    out.sort(key=lambda r: -r["mtime"])
+    return out
+
+
 def dnn_dashboard_path(rel):
     """Resolve a listing-relative path; refuse anything outside EXP_ROOT."""
     full = os.path.realpath(os.path.join(EXP_ROOT, rel))
@@ -559,6 +590,19 @@ class Handler(BaseHTTPRequestHandler):
             self._json(list_dnn_dashboards())
         elif u.path == "/api/dnn_dashboard":
             path = dnn_dashboard_path(q.get("file", ""))
+            if not path:
+                self._json({"error": "not found"}, 404)
+                return
+            self._file(path, "application/json; charset=utf-8")
+        elif u.path == "/api/reviews":
+            self._json(list_reviews())
+        elif u.path == "/api/review":
+            # experiments/review may be a symlink into the main checkout, so
+            # resolve against the review dir's own realpath (basename only)
+            root = os.path.realpath(os.path.join(EXP_ROOT, "review"))
+            path = os.path.join(root, os.path.basename(q.get("file", "")))
+            if not (path.endswith(".json") and os.path.isfile(path)):
+                path = None
             if not path:
                 self._json({"error": "not found"}, 404)
                 return

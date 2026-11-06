@@ -26,7 +26,22 @@ from scripts.run_arena_dnn import load_dnn            # noqa: E402
 from src.tasks.mahjong.arena import run_match          # noqa: E402
 
 LEAGUE_DIR = "experiments/elo_league"
+# exp56: the hanchan-unit ladder lives in its own subtree. The two scales
+# must never share anchors.json/history.jsonl — a hanchan Elo is ~1.8x a
+# single-deal Elo, so mixing them silently corrupts both.
+HANCHAN_DIR = f"{LEAGUE_DIR}/hanchan"
 LN10_400 = math.log(10) / 400.0
+
+
+def league_dir(hanchan: bool) -> str:
+    return HANCHAN_DIR if hanchan else LEAGUE_DIR
+
+
+def anchors_path(hanchan: bool, tag=None) -> str:
+    """A pool is defined by its calibration condition, so a pool calibrated
+    under a different one (e.g. all-greedy) gets its own file rather than
+    overwriting the T=1 pool."""
+    return f"{league_dir(hanchan)}/anchors{'_' + tag if tag else ''}.json"
 
 ANCHOR_POOL = {
     "bc_cnn":      "experiments/arch_sweep/models/cnn_m.pt",
@@ -55,14 +70,19 @@ PINNED = ("bc_cnn", 1000.0)   # scale origin, fixed forever
 # scoring / rules invalidates every match played so far. The engine is
 # fingerprinted by content (not git commit) so uncommitted edits count too.
 ENGINE_FILES = ("table.py", "shanten.py", "claims.py", "wrapper.py", "arena.py")
+# The hanchan ladder rides a second rule surface the engine files do not
+# cover: the driver-side match state machine (renchan/honba/kyotaku/uma/
+# nagashi). exp56 found exp53's readings were silently voided by two
+# post-hoc rule fixes to it, so the hanchan scale gets its own epoch guard.
+HANCHAN_FILES = ("hanchan.py",)
 
 
-def engine_fingerprint(rev=None):
+def engine_fingerprint(rev=None, files=ENGINE_FILES):
     """sha256 over the engine sources (working tree, or a git rev)."""
     import hashlib
     import subprocess
     h = hashlib.sha256()
-    for f in ENGINE_FILES:
+    for f in files:
         rel = f"src/tasks/mahjong/{f}"
         if rev:
             blob = subprocess.run(["git", "show", f"{rev}:{rel}"],
@@ -73,16 +93,29 @@ def engine_fingerprint(rev=None):
     return h.hexdigest()[:16]
 
 
-def engine_stamp():
+def engine_stamp(hanchan: bool = False):
     import subprocess
     git = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
                          capture_output=True, text=True).stdout.strip()
-    return {"fingerprint": engine_fingerprint(), "git": git,
-            "files": list(ENGINE_FILES)}
+    stamp = {"fingerprint": engine_fingerprint(), "git": git,
+             "files": list(ENGINE_FILES)}
+    if hanchan:
+        stamp["hanchan_fingerprint"] = engine_fingerprint(files=HANCHAN_FILES)
+        stamp["hanchan_files"] = list(HANCHAN_FILES)
+    return stamp
 
 
 def check_engine_epoch(league, allow):
     """Refuse to rate against anchors calibrated under a different engine."""
+    want_h = league.get("engine", {}).get("hanchan_fingerprint")
+    if want_h is not None and want_h != engine_fingerprint(files=HANCHAN_FILES):
+        msg = (f"HANCHAN EPOCH MISMATCH: anchors calibrated under hanchan "
+               f"driver {want_h}, current is "
+               f"{engine_fingerprint(files=HANCHAN_FILES)} — match-level rules "
+               f"(renchan/uma/nagashi) changed; recalibrate the hanchan pool.")
+        if not allow:
+            raise SystemExit(msg)
+        print("WARN " + msg, flush=True)
     want = league.get("engine", {}).get("fingerprint")
     have = engine_fingerprint()
     if want is None:
@@ -113,62 +146,36 @@ def expected(ra, rb):
 
 
 def play_pair_vector(path_a, path_b, deals, seed0, parallel, device,
-                     temp_a: float = 1.0, temp_b: float = 1.0):
-    """Vectorized duplicate match (perf 2026-08-30): reuses the trainer's
-    batched-GPU rollout (collect_parallel arena mode) instead of the
-    batch-1 per-move arena path — measured ~50x on the rating workload.
-    Orientation rides the seed's low bit; wall seed = seed >> 1.
-    Returns (per-deal scores for A, per-deal point diffs)."""
-    from src.agents.dnn.parallel_rollout import collect_parallel
-    import torch as _t
-    blob = _t.load(path_a, map_location="cpu")
-    net = load_dnn(path_a, "cpu")
-    cfg = dict(channels=blob.get("channels", 64), blocks=blob.get("blocks", 3),
-               arch=blob.get("arch"),
-               temperature=1.0, gamma=1.0, games_per_worker=16,
-               rollout_temps=None, shaping=False, seed=seed0,
-               critic_feats="none", gpu_infer=True, gpu_infer_opponents=True,
-               infer_max_batch=128, infer_wait_ms=0.0, infer_device=device,
-               bf16_infer=False, arena=True, arena_temp_a=temp_a,
-               arena_temp_b=temp_b,
-               no_episodes=True, league_frac=1.0,
-               league=[{"name": "B", "path": path_b}],
-               encoder_variant=getattr(net, "encoder_variant", "v1"),
-               action_space=getattr(net, "action_space", "native"))
-    seeds = []
-    for d in range(deals):
-        w = seed0 + d
-        seeds += [w * 2, w * 2 + 1]
-    collect_parallel(net, len(seeds), cfg, parallel, seeds)
-    games = collect_parallel.last_games
-    per_wall = {}
-    for g in games:
-        w = g["seed"] >> 1
-        a_pts = sum(g["points"][p] for p in g["learner_seats"])
-        b_pts = sum(g["points"][p] for p in range(4)
-                    if p not in g["learner_seats"])
-        pa, pb = per_wall.get(w, (0, 0))
-        per_wall[w] = (pa + a_pts, pb + b_pts)
-    scores, diffs = [], []
-    for w in sorted(per_wall):
-        pa, pb = per_wall[w]
-        scores.append(1.0 if pa > pb else 0.0 if pa < pb else 0.5)
-        diffs.append(float(pa - pb))
-    return scores, diffs
+                     temp_a: float = 1.0, temp_b: float = 1.0,
+                     hanchan: bool = False):
+    """Vectorized duplicate match — stable entry point; the implementation
+    lives in src/eval/vec_arena.py since the 2026-11-01 clean-up (same
+    rollout config as the rating-v2 table driver). Returns (per-deal
+    scores for A, per-deal point diffs, per-GAME rows); hanchan=True
+    scores full matches by uma and `deals` counts matches."""
+    from src.eval.vec_arena import play_pair_vector as _impl
+    return _impl(path_a, path_b, deals, seed0, parallel, device,
+                 temp_a=temp_a, temp_b=temp_b, hanchan=hanchan)
 
 
 def play_pair(name_a, path_a, name_b, path_b, deals, seed0, parallel, device,
-              temp_a: float = 1.0, legacy: bool = False):
+              temp_a: float = 1.0, legacy: bool = False,
+              hanchan: bool = False, temp_b: float = 1.0):
     """One duplicate-deal match; returns per-deal scores for side A.
     temp_a: the candidate's sampling temperature (anchors always play at
-    T=1, their calibration condition); 0 = greedy rating (exp28)."""
+    T=1, their calibration condition); 0 = greedy rating (exp28).
+    hanchan=True scores full matches by uma (`deals` counts matches)."""
     t0 = time.time()
     # mixed action spaces are hosted natively since 2026-08-30 (server pads
     # the batch to the pool's max width), so the fast path is universal
     fast_ok = not legacy and str(device).startswith("cuda")
+    if hanchan and not fast_ok:
+        raise SystemExit("hanchan rating needs the vectorized CUDA path "
+                         "(the batch-1 fallback is scripts/run_hanchan_arena.py)")
     if fast_ok:
-        scores, diffs = play_pair_vector(path_a, path_b, deals, seed0,
-                                         parallel, device, temp_a)
+        scores, diffs, games = play_pair_vector(path_a, path_b, deals, seed0,
+                                                parallel, device, temp_a,
+                                                temp_b, hanchan=hanchan)
         rows = [{"seed": seed0 + i, "diff": diffs[i]} for i in range(len(diffs))]
         mean = sum(diffs) / len(diffs)
     else:
@@ -180,15 +187,20 @@ def play_pair(name_a, path_a, name_b, path_b, deals, seed0, parallel, device,
         scores = deal_scores(rows)
         diffs = [r["diff"] for r in rows]
         mean = sum(diffs) / len(diffs)
+        games = None
     out = {"a": name_a, "b": name_b, "path_a": path_a, "path_b": path_b,
            "deals": deals, "seed0": seed0, "score_a": sum(scores),
+           "unit": "hanchan" if hanchan else "deal",
+           "temp_a": temp_a, "temp_b": temp_b,
            "mean_diff": mean, "elapsed_s": round(time.time() - t0, 1),
-           "rows": rows}
-    os.makedirs(f"{LEAGUE_DIR}/matches", exist_ok=True)
-    fn = f"{LEAGUE_DIR}/matches/{name_a}_vs_{name_b}_{seed0}.json"
+           "rows": rows, "games": games}
+    d = league_dir(hanchan)
+    os.makedirs(f"{d}/matches", exist_ok=True)
+    fn = f"{d}/matches/{name_a}_vs_{name_b}_{seed0}.json"
     json.dump(out, open(fn, "w"))
     print(f"[match] {name_a} vs {name_b}: score {sum(scores):.1f}/{deals} "
-          f"mean_diff {mean:+.0f}  ({out['elapsed_s']}s)", flush=True)
+          f"{'hanchan' if hanchan else 'deals'} mean_diff {mean:+.0f}  "
+          f"({out['elapsed_s']}s)", flush=True)
     return scores
 
 
@@ -237,12 +249,15 @@ def residuals(games, ratings, name):
 
 def cmd_calibrate(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    hanchan = bool(getattr(args, "hanchan", False))
+    temp = float(getattr(args, "temperature", 1.0) or 0.0)
     names = list(ANCHOR_POOL)
     games = []
     for i, na in enumerate(names):
         for nb in names[i + 1:]:
             scores = play_pair(na, ANCHOR_POOL[na], nb, ANCHOR_POOL[nb],
-                               args.deals, args.seed0, args.parallel, device)
+                               args.deals, args.seed0, args.parallel, device,
+                               hanchan=hanchan, temp_a=temp, temp_b=temp)
             games += [(na, nb, s) for s in scores]
     ratings = {n: 1000.0 for n in names}
     free = [n for n in names if n != PINNED[0]]
@@ -253,33 +268,46 @@ def cmd_calibrate(args):
                  "path": ANCHOR_POOL[n],
                  "residuals": residuals(games, ratings, n)}
              for n in names}
-    os.makedirs(LEAGUE_DIR, exist_ok=True)
+    d = league_dir(hanchan)
+    os.makedirs(d, exist_ok=True)
+    fn = anchors_path(hanchan, getattr(args, "tag", None))
+    # the calibration temperature IS part of the scale definition: rate()
+    # reads it back so a candidate can never silently meet anchors in a
+    # condition other than the one they were calibrated under
     json.dump({"pinned": PINNED, "deals_per_pair": args.deals,
-               "seed0": args.seed0,
+               "unit": "hanchan" if hanchan else "deal",
+               "temperature": temp, "seed0": args.seed0,
                "date": args.date or time.strftime("%Y-%m-%d %H:%M:%S"),
-               "engine": engine_stamp(), "anchors": table},
-              open(f"{LEAGUE_DIR}/anchors.json", "w"), indent=1)
+               "engine": engine_stamp(hanchan), "anchors": table},
+              open(fn, "w"), indent=1)
     for n in sorted(names, key=lambda x: -ratings[x]):
         print(f"{n:>12}  {ratings[n]:7.1f} ± {table[n]['se']:.1f}")
-    print(f"saved {LEAGUE_DIR}/anchors.json")
+    print(f"saved {fn}")
 
 
 def rate_checkpoint(ckpt, label, deals, seed0, parallel, device,
                     use=None, init_guess=1000.0, allow_engine_mismatch=False,
-                    temperature: float = 1.0):
+                    temperature: float = 1.0, hanchan: bool = False,
+                    anchor_temperature=None, tag=None):
     """Rate one checkpoint against frozen anchors; append to history.jsonl.
 
     use: anchor-name subset; None = all. init_guess seeds the fit and (in
     the ladder watcher) drives nearest-anchor selection upstream.
     """
-    league = json.load(open(f"{LEAGUE_DIR}/anchors.json"))
+    d = league_dir(hanchan)
+    fn = anchors_path(hanchan, tag)
+    league = json.load(open(fn))
+    # anchors play in their calibration condition unless explicitly forced
+    if anchor_temperature is None:
+        anchor_temperature = float(league.get("temperature", 1.0))
     mismatch = check_engine_epoch(league, allow_engine_mismatch)
     anchors = league["anchors"]
     use = use or list(anchors)
     games = []
     for n in use:
         scores = play_pair("cand", ckpt, n, anchors[n]["path"],
-                           deals, seed0, parallel, device, temp_a=temperature)
+                           deals, seed0, parallel, device, temp_a=temperature,
+                           hanchan=hanchan, temp_b=anchor_temperature)
         games += [("cand", n, s) for s in scores]
     ratings = {n: anchors[n]["rating"] for n in use}
     ratings["cand"] = init_guess
@@ -295,11 +323,15 @@ def rate_checkpoint(ckpt, label, deals, seed0, parallel, device,
            "se": round(rating_se(games, ratings, "cand"), 1),
            "anchors": use, "deals_per_anchor": deals, "seed0": seed0,
            "date": time.strftime("%Y-%m-%d %H:%M:%S"),
-           "engine": engine_fingerprint(), "engine_mismatch": mismatch,
-           "temperature": temperature,
+           "engine": engine_fingerprint(),
+           "hanchan_engine": (engine_fingerprint(files=HANCHAN_FILES)
+                              if hanchan else None),
+           "engine_mismatch": mismatch,
+           "temperature": temperature, "anchor_temperature": anchor_temperature,
+           "pool": fn, "unit": "hanchan" if hanchan else "deal",
            "residuals": residuals(games, ratings, "cand")}
-    os.makedirs(LEAGUE_DIR, exist_ok=True)
-    with open(f"{LEAGUE_DIR}/history.jsonl", "a") as f:
+    os.makedirs(d, exist_ok=True)
+    with open(f"{d}/history.jsonl", "a") as f:
         f.write(json.dumps(rec) + "\n")
     print(f"ELO {label}: {rec['elo']} ± {rec['se']}  residuals {rec['residuals']}",
           flush=True)
@@ -312,7 +344,10 @@ def cmd_rate(args):
     rate_checkpoint(args.ckpt, args.label or args.ckpt, args.deals,
                     args.seed0, args.parallel, device, use=use,
                     allow_engine_mismatch=args.allow_engine_mismatch,
-                    temperature=args.temperature)
+                    temperature=args.temperature,
+                    hanchan=bool(getattr(args, "hanchan", False)),
+                    anchor_temperature=args.anchor_temperature,
+                    tag=args.tag)
 
 
 def main():
@@ -324,6 +359,16 @@ def main():
     ca.add_argument("--parallel", type=int, default=20)
     ca.add_argument("--date", default=None,
                     help="label written into anchors.json (default: now)")
+    ca.add_argument("--temperature", type=float, default=1.0,
+                    help="calibration temperature for EVERY pool member "
+                         "(0 = an all-greedy, deployment-form pool). Stored "
+                         "in anchors.json and reused by rate")
+    ca.add_argument("--tag", default=None,
+                    help="write anchors_<tag>.json instead of anchors.json")
+    ca.add_argument("--hanchan", action="store_true",
+                    help="exp56: rate on the hanchan/uma scale (--deals then "
+                         "counts full matches); writes the parallel ladder "
+                         "under experiments/elo_league/hanchan/")
     ca.set_defaults(fn=cmd_calibrate)
     ra = sub.add_parser("rate")
     ra.add_argument("--ckpt", required=True)
@@ -336,6 +381,16 @@ def main():
     ra.add_argument("--parallel", type=int, default=20)
     ra.add_argument("--temperature", type=float, default=1.0,
                     help="candidate sampling temperature (anchors stay at T=1); 0 = greedy")
+    ra.add_argument("--anchor_temperature", type=float, default=None,
+                    help="override the anchor temperature. Default: whatever "
+                         "the pool was calibrated at (read from anchors.json) "
+                         "— overriding it takes the candidate OFF the pool's "
+                         "calibrated scale")
+    ra.add_argument("--tag", default=None,
+                    help="rate against the pool anchors_<tag>.json "
+                         "(e.g. T0 for the all-greedy pool)")
+    ra.add_argument("--hanchan", action="store_true",
+                    help="exp56: hanchan/uma scale (--deals counts matches)")
     ra.add_argument("--allow_engine_mismatch", action="store_true",
                     help="rate even though the engine changed since calibration "
                          "(record is flagged engine_mismatch=true)")

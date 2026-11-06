@@ -1,0 +1,682 @@
+"""Self-play rollout on the Rust engine (riichi_rs.VecEnv) — a drop-in for
+parallel_rollout.collect_parallel in the mirror single-deal setting.
+
+The whole game loop (rules, encoding, batching) runs in Rust; Python only
+runs the policy forward on the batched observations and samples actions.
+Episode payloads match _package_game except that planes ship as uint8
+quantised by riichi_rs.PLANE_Q (every encoder plane value lies on the k/20
+grid); the trainer widens them on the device with `u8.float() / PLANE_Q`,
+which reproduces the encoder's float32 values bit-exactly. Cuts the
+memory-bound observe/h2d/drain phases 4x (v3r planes 7.6 KB -> 1.9 KB/row).
+"""
+from typing import List, Optional
+
+import numpy as np
+import torch
+
+from src.agents.dnn.style_stats import add_game, new_agg
+
+
+def style_draw(seed: int, prior) -> list:
+    """(p_pure, d_max, a_max): with prob p_pure the whole table plays the pure objective;
+    otherwise each seat independently is pure (1/2) or draws tau_d ~ U(0, d_max), tau_a ~ U(0, a_max).
+    Returns [d0, a0, d1, a1, d2, a2, d3, a3]."""
+    p_pure, d_max, a_max = float(prior[0]), float(prior[1]), float(prior[2])
+    rng = np.random.default_rng(seed * 2654435761 % (2 ** 32) + 89)
+    if rng.random() < p_pure:
+        return [0.0] * 8
+    out = []
+    for _ in range(4):
+        if rng.random() < 0.5:
+            out += [0.0, 0.0]
+        else:
+            out += [float(rng.random() * d_max), float(rng.random() * a_max)]
+    return out
+
+
+def widen_planes(t: torch.Tensor) -> torch.Tensor:
+    """Episode planes -> float32 on their device: uint8 (collect_rust, PLANE_Q grid)
+    are dequantised by division (bit-exact with the encoder); float16/32 pass through."""
+    if t.dtype == torch.uint8:
+        import riichi_rs
+        return t.float().div_(float(riichi_rs.PLANE_Q))
+    return t.float()
+
+
+def _rewrite_fold_episodes(gm: dict, fold: dict) -> None:
+    """exp103: make a finished VecEnv game's episodes match what the fold-aware
+    policy actually saw — scalars gain the in_fold_mode column, masks become the
+    375-wide (possibly safe-set-restricted) masks the actions were sampled from,
+    and every ENTER_FOLD decision becomes its own step row (same state, action
+    FOLD_SLOT, reward 0, the discard row's return) inserted before the restricted
+    discard it led to. GAE then hands the option ~gamma*lambda of the chain's
+    advantage, exactly like Mortal's declare-then-choose riichi rows.
+    The per-step facts live in fold["rounds"] (one record per observe() round);
+    fold["log"] only holds (round, row) indices per (slot, seed, seat)."""
+    fo = fold["fo"]; R = fold["rounds"]
+    slot, seed = int(gm["slot"]), int(gm["seed"])
+    for e in gm["episodes"]:
+        seat = int(e["key"][1])
+        ent = fold["log"].pop((slot, seed, seat), None)
+        n = len(e["actions"])
+        if ent is None or len(ent) != n:
+            raise RuntimeError(f"fold option: step log mismatch for slot {slot} seed {seed} seat {seat}: "
+                               f"{0 if ent is None else len(ent)} logged vs {n} recorded")
+        planes, scal, acts = e["planes"], e["scalars"], e["actions"]
+        lps, rets, rews = e["old_logprobs"], e["returns"], e["rewards"]
+        Ms = np.stack([R[r]["M"][w] for r, w in ent])                                   # [n, 375] masks the actions came from
+        flag_before = np.fromiter((R[r]["in_fold"][w] for r, w in ent), dtype=bool, count=n)
+        chose = np.fromiter((w in R[r]["pre_mask"] for r, w in ent), dtype=bool, count=n)
+        flag_used = (chose | flag_before).astype(np.float32)
+        sc = np.concatenate([scal, flag_used[:, None]], 1).astype(np.float32)
+        if not chose.any():
+            e["scalars"] = sc; e["mask"] = Ms
+            continue
+        # insert one ENTER_FOLD row before every chosen step: output row j comes from source step src[j]
+        counts = 1 + chose.astype(np.int64)
+        src = np.repeat(np.arange(n), counts)
+        first = np.cumsum(counts) - counts
+        is_macro = np.zeros(len(src), dtype=bool); is_macro[first[chose]] = True
+        idx = np.nonzero(chose)[0]
+        e["planes"] = planes[src]
+        sc_out = sc[src]; sc_out[is_macro, -1] = 0.0; e["scalars"] = sc_out
+        m_out = Ms[src]; m_out[is_macro] = np.stack([R[r]["pre_mask"][w] for r, w in (ent[i] for i in idx)]); e["mask"] = m_out
+        a_out = acts[src].copy(); a_out[is_macro] = fo.FOLD_SLOT; e["actions"] = a_out
+        lp_out = lps[src].copy(); lp_out[is_macro] = np.asarray([R[r]["pre_lp"][w] for r, w in (ent[i] for i in idx)], dtype=lps.dtype); e["old_logprobs"] = lp_out
+        e["returns"] = rets[src]
+        rw_out = rews[src].copy(); rw_out[is_macro] = 0.0; e["rewards"] = rw_out
+
+
+def _sample_logits(logits: torch.Tensor, temperature: float):
+    """Exactly TilesTransformer.act's sampling on precomputed masked logits."""
+    if temperature <= 0:
+        idx = logits.argmax(dim=1)
+        lp = torch.log_softmax(logits, dim=1).gather(1, idx[:, None]).squeeze(1)
+    else:
+        logb = torch.log_softmax(logits / temperature, dim=1)
+        idx = torch.multinomial(logb.exp(), 1).squeeze(1)
+        lp = logb.gather(1, idx[:, None]).squeeze(1)
+    return idx, lp
+
+
+_M46_SLOT_BITS = 13
+
+
+def _m46_key(gen: np.ndarray, slot: np.ndarray, seat: np.ndarray) -> np.ndarray:
+    """int64 row key (gen, slot, seat): gen = how many games the slot had finished before this one (host
+    counter, < games per rollout), slots < 2**13, seats < 4. Not the seed: with dup_k a slot can host the
+    same seed twice in one rollout (exp124 arm B crashed on exactly that at iteration ~21)."""
+    return (gen.astype(np.int64) << (_M46_SLOT_BITS + 2)) | (slot.astype(np.int64) << 2) | seat.astype(np.int64)
+
+
+def _rewrite_m46(games: list, m46: dict) -> None:
+    """exp124: rewrite finished VecEnv episodes (native masks/actions) into the 46-slot space the policy
+    acted in. Every step's mask / action / logprob becomes the first-query one; a step whose first query
+    declared riichi (or an ambiguous kan) becomes TWO rows -- declare then select, same observation, the
+    select row's mask -- exactly selfplay._choose's DnnStep pair: reward (and terminal) on the select row,
+    0 on the declare row; returns copied (the trainer's GAE runs on rewards + V). Vectorised over one
+    concatenation of all rollout rounds; each episode finds its rows (round order) through a stable sort
+    of the per-row (gen, slot, seat) keys (gm["m46_gen"] stamped at drain), and a key block whose length
+    differs from the episode's step count raises instead of mis-aligning."""
+    R = m46["rounds"]
+    if not R:
+        return
+    M1 = np.concatenate([r["M1"] for r in R]); S1 = np.concatenate([r["s1"] for r in R])
+    L1 = np.concatenate([r["l1"] for r in R])
+    has_v = R[0]["v"] is not None
+    V = np.concatenate([r["v"] for r in R]) if has_v else None
+    # second-query arrays indexed by GLOBAL row (-1 = none)
+    off2 = np.cumsum([0] + [len(r["s2"]) for r in R])
+    P2 = np.concatenate([np.where(r["pos2"] >= 0, r["pos2"] + o, -1) for r, o in zip(R, off2[:-1])])
+    r2 = [r for r in R if len(r["s2"])]
+    D = M1.shape[1]
+    M2 = np.concatenate([r["M2"] for r in r2]) if r2 else np.zeros((0, D), dtype=bool)
+    S2 = np.concatenate([r["s2"] for r in r2]) if r2 else np.zeros(0, dtype=np.int64)
+    L2 = np.concatenate([r["l2"] for r in r2]) if r2 else np.zeros(0, dtype=np.float32)
+    K = np.concatenate([r["key"] for r in R])
+    order = np.argsort(K, kind="stable")
+    Ks = K[order]
+    eps = [(gm, e) for gm in games for e in gm["episodes"]]
+    ekey = _m46_key(np.array([int(gm["m46_gen"]) for gm, _ in eps], dtype=np.int64),
+                    np.array([int(gm["slot"]) for gm, _ in eps], dtype=np.int64),
+                    np.array([int(e["key"][1]) for _, e in eps], dtype=np.int64))
+    lo = np.searchsorted(Ks, ekey, "left"); hi = np.searchsorted(Ks, ekey, "right")
+    if int((hi - lo).sum()) != len(K):
+        raise RuntimeError(f"collect_rust m46: {len(K) - int((hi - lo).sum())} logged rows never matched a finished episode")
+    for (gm, e), a, b in zip(eps, lo.tolist(), hi.tolist()):
+        n = len(e["actions"])
+        if b - a != n:
+            raise RuntimeError(f"collect_rust m46: step log mismatch slot {gm['slot']} seed {gm['seed']} "
+                               f"seat {e['key'][1]}: {b - a} logged vs {n} recorded")
+        gi = order[a:b]                                        # global first-query rows, round order
+        p2 = P2[gi]
+        two = p2 >= 0
+        if not two.any():                                      # common case: one row per step, no insertion
+            e["mask"] = M1[gi]; e["actions"] = S1[gi]; e["old_logprobs"] = L1[gi]
+            if has_v:
+                e["values"] = V[gi]
+            continue
+        counts = 1 + two.astype(np.int64)
+        src = np.repeat(np.arange(n), counts)
+        last = np.cumsum(counts) - 1                           # output row carrying the engine transition
+        sel = np.zeros(len(src), dtype=bool); sel[last[two]] = True
+        j2 = p2[two]                                           # global second-query rows (step order)
+        mask = M1[gi][src]; mask[sel] = M2[j2]
+        acts = S1[gi][src]; acts[sel] = S2[j2]
+        lps = L1[gi][src].astype(np.float32); lps[sel] = L2[j2]
+        rews = np.asarray(e["rewards"])[src].copy()
+        decl = np.zeros(len(src), dtype=bool); decl[(last - 1)[two]] = True
+        rews[decl] = 0.0
+        e["planes"] = e["planes"][src]; e["scalars"] = e["scalars"][src]
+        e["mask"] = mask; e["actions"] = acts.astype(np.int64); e["old_logprobs"] = lps
+        e["rewards"] = rews; e["returns"] = np.asarray(e["returns"])[src]
+        if has_v:
+            e["values"] = V[gi][src].astype(np.float32)
+
+
+def collect_rust(net, n_games: int, cfg: dict, workers: int, seeds: Optional[List[int]] = None,
+                 device: str = "cuda"):
+    """Returns (episodes, results) like collect_parallel. `workers` is unused
+    (one process); cfg keys used: temperature, gamma, shaping, shaping_scale,
+    games_per_worker (concurrent games K = games_per_worker * workers)."""
+    import riichi_rs
+    if seeds is None:
+        seeds = [6_000_000 + i for i in range(n_games)]
+    k = max(1, int(cfg.get("games_per_worker", 32)) * max(1, workers))
+    variant = cfg.get("encoder_variant") or getattr(net, "encoder_variant", "v1r")
+    # exp103 fold option: the VecEnv encodes plain v3r; the in_fold_mode scalar, the 375th
+    # policy slot, the safe-set mask restriction and the two-step ENTER_FOLD protocol all
+    # live host-side (fold_option.py) and the finished episodes are rewritten to match.
+    fold = None
+    if variant == "v3rf":
+        from src.agents.dnn import fold_option as _fo
+        fold = {"flag": np.zeros((k, 4), dtype=bool), "prev_seed": np.full(k, -2, dtype=np.int64),
+                "log": {}, "rounds": [], "n_enter": 0, "n_eligible": 0, "n_rows": 0, "fo": _fo,
+                "restrict": getattr(net, "action_space", "native_fold") != "native_fold_free",
+                # exp105 exploration floor (0 = off); floor_ref only sets the "raw above eps" statistic after release
+                "floor": float(cfg.get("fold_floor", 0.0) or 0.0), "wall": float(cfg.get("fold_floor_wall", 2.0)),
+                "floor_ref": float(cfg.get("fold_floor_ref", 0.01)), "n_legal": 0, "n_raw_above": 0, "raw_p_sum": 0.0}
+        variant = "v3r"
+    if variant not in ("v1r", "v3r", "v3s", "v3rh", "v3rg"):
+        raise SystemExit(f"collect_rust: encoder variant {variant!r} not ported (v1r/v3r/v3s/v3rh/v3rg only)")
+    # exp108 separate oracle critic: per observe() round the 319-dim privileged vector of every pending
+    # row (VecEnv.oracle_info), indexed per (slot, seed, seat) like the fold log; finished episodes get
+    # e["cfeats"] [T, 319] float16. Critic-only — the policy never sees it (see oracle_critic.py).
+    oracle = None
+    if cfg.get("oracle_feats") or cfg.get("ron_cost"):
+        if fold is not None:
+            raise SystemExit("collect_rust: oracle_feats/ron_cost with the fold option is not supported (episode rewrite)")
+        # exp109: ron_cost = per-row [34] immediate ron cost of each discard (engine fact, hidden state), e["ron_cost"]
+        oracle = {"rounds": [], "log": {}, "feats": bool(cfg.get("oracle_feats")), "ron": bool(cfg.get("ron_cost"))}
+    # exp89 style-conditioned population: per seed, each seat draws a reward style
+    # (tau_d deal-in penalty, tau_a win bonus) from the prior; seeds are shared by the
+    # dup_k replicas so the (seed, seat) group baseline still compares like with like.
+    seat_styles = None
+    prior = cfg.get("style_prior")
+    if prior:
+        if variant != "v3s":
+            raise SystemExit("collect_rust: --style_prior needs the v3s encoder (arch cnn_m_v3s)")
+        seat_styles = [style_draw(int(s), prior) for s in seeds]
+    # hanchan (exp83+): four learner copies over a full match (play_hanchan_gen /
+    # --hanchan_pure), credit=none only; `n_games` then counts MATCHES.
+    hanchan = bool(cfg.get("hanchan"))
+    if hanchan:
+        if not cfg.get("hanchan_pure"):
+            raise SystemExit("collect_rust: only --hanchan_pure (mirror) is ported; four-seat league tables need the Python engine")
+        if cfg.get("hanchan_credit", "none") not in ("none", "wpure"):
+            raise SystemExit("collect_rust: hanchan_credit must be 'none' or 'wpure' on the Rust engine (rank/W credits are Python-only)")
+        if cfg.get("shaping"):
+            raise SystemExit("collect_rust: PBRS shaping is per-deal and not supported across a hanchan")
+        if cfg.get("league") and float(cfg.get("league_frac", 0.0) or 0.0) > 0:
+            raise SystemExit("collect_rust: league pool + hanchan not supported")
+    env = riichi_rs.VecEnv([int(s) for s in seeds], k, float(cfg.get("gamma", 0.995)),
+                           bool(cfg.get("shaping", False)), float(cfg.get("shaping_scale", 1.0)),
+                           True, variant, hanchan=hanchan, max_deals=int(cfg.get("hanchan_max_deals", 24)),
+                           houjuu_extra=float(cfg.get("houjuu_extra", 0.0) or 0.0),
+                           seat_styles=seat_styles,
+                           houjuu_by_shanten=cfg.get("houjuu_by_shanten"))
+    temperature = float(cfg.get("temperature", 1.0))
+    q = float(riichi_rs.PLANE_Q)
+    dev = torch.device(device)
+    games = []
+    # exp97 parameter-space noise: one factorised head perturbation PER TABLE SLOT, held for the
+    # whole deal (resampled when the slot's seed changes), shared by the four mirror seats.
+    # Actions are sampled from the noisy head; the recorded logprob is the CLEAN head's, so
+    # PPO treats the perturbation as the policy's own exploration (NoisyNet reading, no IS).
+    noise_sigma = float(cfg.get("param_noise_sigma", 0.0) or 0.0)
+    noise = None
+    if fold is not None and (noise_sigma > 0 or float(cfg.get("dev_p", 0.0) or 0.0) > 0
+                             or (cfg.get("league") and float(cfg.get("league_frac", 0.0) or 0.0) > 0) or hanchan):
+        raise SystemExit("collect_rust: the fold option (v3rf) is exclusive with param noise / dev_p / league pools / hanchan")
+    # exp98 greedy-continuation single deviation: every decision is argmax except, per (table slot, seat),
+    # at most ONE multi-choice decision per deal sampled at T=1 (probability dev_p per candidate step).
+    # The recorded logprob is log pi(a) for both kinds of step; greedy steps carry the marker +1000 so the
+    # trainer can restrict the update to deviation steps (--dev_only) without a new StepRec field.
+    dev_p = float(cfg.get("dev_p", 0.0) or 0.0)
+    sdev = None
+    if dev_p > 0:
+        if noise_sigma > 0 or (cfg.get("league") and float(cfg.get("league_frac", 0.0) or 0.0) > 0):
+            raise SystemExit("collect_rust: dev_p is exclusive with param noise / league pools")
+        sdev = {"used": np.zeros((k, 4), dtype=bool), "prev_seed": np.full(k, -2, dtype=np.int64),
+               "rng": np.random.default_rng(int(cfg.get("seed", 0)) + 98), "n_dev": 0, "n_multi": 0}
+    if noise_sigma > 0:
+        if cfg.get("league") and float(cfg.get("league_frac", 0.0) or 0.0) > 0:
+            raise SystemExit("collect_rust: param_noise_sigma with a league pool is not supported")
+        dims = net.noise_dims()
+        mode = cfg.get("param_noise_mode", "full")
+        noise = {"eps": net.sample_noise(k, dims, dev), "prev_seed": np.full(k, -2, dtype=np.int64),
+                 "kl_sum": 0.0, "chg_sum": 0.0, "rows": 0, "resampled": 0, "mode": mode,
+                 "res": [] if cfg.get("noise_diag") else None}      # reservoir of exposed far-hand states
+        if mode == "full":
+            # FULL-network perturbations (smoke 09-21: at matched KL 0.04 the coherent defensive lean of a
+            # whole-net perturbation is 3.5 pp vs 0.4 pp for head-only rank-1 noise). E perturbed copies per
+            # rollout, table slot i acts under copy i % E for every deal it hosts; the dup_k replicas of a
+            # seed start in consecutive slots, so they see E distinct perturbations on the same wall.
+            E = int(cfg.get("param_noise_copies", 16))
+            noise["copies"] = perturbed_copies(net, E, noise_sigma)
+            noise["resampled"] = E
+    # league (exp82, 2026-09-10): frozen pool nets fill the non-learner seats of a
+    # seed-deterministic fraction of deals (same league_plan as collect_parallel, so
+    # dup replicas of a deal share the seat assignment and the group baseline stays
+    # like-with-like). Only learner-seat episodes are returned.
+    pool = list(cfg.get("league") or []) if float(cfg.get("league_frac", 0.0) or 0.0) > 0 else []
+    pool_nets, plan_arr, seed_index, plans = [], None, {}, {}
+    if pool:
+        from src.agents.dnn.parallel_rollout import _load_policy_ckpt, league_plan
+        for e in pool:
+            pn = _load_policy_ckpt(e["path"]).to(dev)
+            pv = getattr(pn, "encoder_variant", "v1r")
+            if pv != variant:
+                raise SystemExit(f"collect_rust league: pool {e.get('name')} encoder {pv!r} != learner {variant!r} (one VecEnv encoding)")
+            pool_nets.append(pn)
+        seed_index = {s: i for i, s in enumerate(seeds)}
+        plan_arr = np.full((len(seeds), 4), -1, dtype=np.int64)       # seat -> pool idx, -1 = learner
+        for s in seeds:
+            ls, opp = league_plan(s, cfg)
+            plans[s] = (ls, opp)
+            for seat, j in opp.items():
+                plan_arr[seed_index[s], seat] = j
+        opp_temp = cfg.get("league_opp_temp")
+        opp_temp = temperature if opp_temp is None else float(opp_temp)
+    # exp124: Mortal's 46-slot space (ConvFormer46 = bc49's architecture) on the native VecEnv. The VecEnv
+    # keeps stepping native indices; masks / sampling / the two-step riichi & kan protocol live host-side
+    # (m46_native, equivalence with MortalActionSpace tested) and finished episodes are rewritten into the
+    # 46-slot space after the loop (_rewrite_m46). rollout_values: the value head rides the same forward.
+    m46 = None
+    if getattr(net, "action_space", None) == "mortal46":
+        if fold is not None or noise_sigma > 0 or dev_p > 0 or pool or hanchan or oracle is not None or seat_styles:
+            raise SystemExit("collect_rust: the 46-slot space is exclusive with fold / param noise / dev_p / "
+                             "league pools / hanchan / oracle feats / style prior")
+        from src.agents.dnn import m46_native as _m46
+        if k >= (1 << _M46_SLOT_BITS):
+            raise SystemExit(f"collect_rust m46: {k} table slots exceed the {_M46_SLOT_BITS}-bit row key")
+        m46 = {"mod": _m46, "rounds": [], "values": bool(cfg.get("rollout_values")), "n_rows": 0, "n_fu": 0,
+               "gen": np.zeros(k, dtype=np.int64)}
+    elif cfg.get("rollout_values"):
+        raise SystemExit("collect_rust: --rollout_values is only wired for the 46-slot path (exp124)")
+    # perf note 2026-09-09: splitting K over two VecEnvs to overlap the GPU forward
+    # with the other env's CPU step was measured 20-30% SLOWER (halved batch per
+    # forward, doubled per-round overhead; the forward is only ~30% of a round),
+    # and per-call pinned uploads cost more than they save. Single env it stays.
+    # exp113: bf16 autocast for the policy forwards (cfg bf16_rollout); log_softmax runs in fp32 under
+    # autocast's own policy and every recorded logprob is cast .float(), so only the matmuls are bf16.
+    amp = torch.autocast("cuda", torch.bfloat16, enabled=bool(cfg.get("bf16_rollout")) and str(dev).startswith("cuda"))
+    with torch.no_grad(), amp:
+        while not env.done():
+            planes, scalars, mask, seats, gids = env.observe()
+            n = planes.shape[0]
+            if n > 0:
+                if not mask.any(axis=1).all():
+                    raise ValueError("collect_rust: VecEnv produced a row with no legal actions")
+                P = torch.from_numpy(planes).to(dev).view(n, -1, 34).float().div_(q)
+                S = torch.from_numpy(scalars).to(dev)
+                M = torch.from_numpy(mask).to(dev)
+                if oracle is not None:
+                    o_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
+                    oracle["rounds"].append((np.asarray(env.oracle_info(), dtype=np.float16) if oracle["feats"] else None,
+                                             np.asarray(env.ron_cost_info(), dtype=np.float16) if oracle["ron"] else None))
+                    rid_o = len(oracle["rounds"]) - 1
+                    olog = oracle["log"]
+                    for i, key in enumerate(zip(np.asarray(gids).tolist(), o_seed[np.asarray(gids)].tolist(), np.asarray(seats).tolist())):
+                        olog.setdefault(key, []).append((rid_o, i))
+                if noise is not None:
+                    slot_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
+                    fresh = np.nonzero((slot_seed != noise["prev_seed"]) & (slot_seed >= 0))[0]
+                    if len(fresh) and noise["mode"] != "full":
+                        new = net.sample_noise(len(fresh), dims, dev)
+                        ft = torch.from_numpy(fresh).to(dev)
+                        for (ei, eo), (ni, no) in zip(noise["eps"], new):
+                            ei[ft] = ni; eo[ft] = no
+                        noise["prev_seed"] = slot_seed.copy(); noise["resampled"] += len(fresh)
+                    g = torch.from_numpy(np.asarray(gids, dtype=np.int64)).to(dev)
+                    if noise["mode"] == "full":
+                        clean = net(P, S, M)
+                        noisy = torch.empty_like(clean)
+                        cid = (np.asarray(gids, dtype=np.int64) % len(noise["copies"]))
+                        for j in np.unique(cid):
+                            sel = torch.from_numpy(np.nonzero(cid == j)[0]).to(dev)
+                            noisy[sel] = noise["copies"][int(j)](P[sel], S[sel], M[sel])
+                    else:
+                        eps_rows = [(ei[g], eo[g]) for ei, eo in noise["eps"]]
+                        clean, noisy = net.forward_clean_and_noisy(P, S, M, eps_rows, noise_sigma)
+                    lpc = torch.log_softmax(clean, 1)
+                    if temperature <= 0:
+                        idx = noisy.argmax(1)
+                    else:
+                        idx = torch.multinomial(torch.softmax(noisy / temperature, 1), 1).squeeze(1)
+                    lp = lpc.gather(1, idx[:, None]).squeeze(1)
+                    lpn = torch.log_softmax(noisy, 1)
+                    pc = lpc.exp()
+                    kl = (pc * (lpc - lpn).masked_fill(~M, 0.0)).sum(1)          # KL(clean || noisy) per row
+                    noise["kl_sum"] += float(kl.sum()); noise["rows"] += n
+                    noise["chg_sum"] += float((clean.argmax(1) != noisy.argmax(1)).sum())
+                    if noise["res"] is not None and sum(r[0].shape[0] for r in noise["res"]) < 2048:
+                        genb, info = env.safe_info()
+                        sel = np.nonzero((info[:, 0] > 0) & (info[:, 1] >= 2) & mask[:, :34].any(1) & genb.any(1))[0]
+                        if len(sel):
+                            noise["res"].append((P[sel].cpu(), S[sel].cpu(), M[sel].cpu(), torch.from_numpy(genb[sel])))
+                    acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
+                elif sdev is not None:
+                    slot_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
+                    fresh = (slot_seed != sdev["prev_seed"]) & (slot_seed >= 0)
+                    sdev["used"][fresh] = False; sdev["prev_seed"] = slot_seed.copy()
+                    g = np.asarray(gids, dtype=np.int64); st = np.asarray(seats, dtype=np.int64)
+                    multi = mask.sum(1) > 1
+                    cand = multi & ~sdev["used"][g, st]
+                    pick = cand & (sdev["rng"].random(n) < dev_p)
+                    sdev["used"][g[pick], st[pick]] = True
+                    sdev["n_dev"] += int(pick.sum()); sdev["n_multi"] += int(multi.sum())
+                    logits = net(P, S, M)
+                    lps = torch.log_softmax(logits, 1)
+                    idx = logits.argmax(1)
+                    pk = torch.from_numpy(pick).to(P.device)
+                    if pick.any():
+                        idx = torch.where(pk, torch.multinomial(torch.softmax(logits / max(temperature, 1e-6), 1), 1).squeeze(1), idx)
+                    lp = lps.gather(1, idx[:, None]).squeeze(1)
+                    lp = torch.where(pk, lp, lp + 1000.0)                 # marker: greedy step
+                    acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
+                elif fold is not None:
+                    fo = fold["fo"]
+                    slot_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
+                    fresh = (slot_seed != fold["prev_seed"]) & (slot_seed >= 0)
+                    fold["flag"][fresh] = False; fold["prev_seed"] = slot_seed.copy()
+                    g = np.asarray(gids, dtype=np.int64); st = np.asarray(seats, dtype=np.int64)
+                    genb, info = env.safe_info()
+                    in_fold = fold["flag"][g, st]
+                    M375, enter = fo.batch_masks(mask, genb, info[:, 0], in_fold, fold["restrict"])
+                    fold["n_eligible"] += int(enter.sum()); fold["n_rows"] += n
+                    Mt = torch.from_numpy(M375).to(dev)
+                    St = torch.cat([S, torch.from_numpy(in_fold.astype(np.float32)).to(dev)[:, None]], 1)
+                    raw_logits = net(P, St, Mt)
+                    fl = fold["floor"]
+                    st_ = fo.floor_stats(raw_logits, fl if fl > 0 else fold["floor_ref"])
+                    fold["n_legal"] += st_[0]; fold["n_raw_above"] += st_[1]; fold["raw_p_sum"] += st_[2]
+                    logits = fo.apply_floor(raw_logits, fl, fold["wall"])          # exp105: identity when fl == 0
+                    if temperature <= 0:
+                        idx = logits.argmax(1)
+                        lp = torch.log_softmax(logits, 1).gather(1, idx[:, None]).squeeze(1)
+                    else:                                                       # same as net.act
+                        logb = torch.log_softmax(logits / temperature, 1)
+                        idx = torch.multinomial(logb.exp(), 1).squeeze(1)
+                        lp = logb.gather(1, idx[:, None]).squeeze(1)
+                    acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
+                    chose = np.nonzero(acts_np == fo.FOLD_SLOT)[0]
+                    pre_mask = {}; pre_lp = {}
+                    if len(chose):
+                        fold["n_enter"] += len(chose)
+                        fold["flag"][g[chose], st[chose]] = True
+                        M2 = np.stack([fo.fold_discard_mask(mask[i], genb[i], fold["restrict"]) for i in chose])
+                        sel = torch.from_numpy(chose).to(dev)
+                        S2 = torch.cat([S[sel], torch.ones(len(chose), 1, device=dev)], 1)
+                        idx2, lp2 = net.act(P[sel], S2, torch.from_numpy(M2).to(dev), temperature=temperature, check=False)
+                        for j, i in enumerate(chose):
+                            pre_mask[int(i)] = M375[i].copy(); pre_lp[int(i)] = float(lps_np[i])   # copy: the row is overwritten next
+                            M375[i] = M2[j]
+                        acts_np[chose] = idx2.cpu().numpy().astype(np.int64); lps_np[chose] = lp2.float().cpu().numpy()
+                    # per-round record + (round, row) index per (slot, seed, seat): no per-row copies
+                    rid = len(fold["rounds"])
+                    fold["rounds"].append({"M": M375, "in_fold": in_fold, "pre_mask": pre_mask, "pre_lp": pre_lp})
+                    log = fold["log"]
+                    for i, key in enumerate(zip(g.tolist(), slot_seed[g].tolist(), st.tolist())):
+                        log.setdefault(key, []).append((rid, i))
+                elif m46 is not None:
+                    mm = m46["mod"]
+                    called = mm.called_from_planes(planes)
+                    M1 = mm.first_mask(mask, called)
+                    if not M1.any(axis=1).all():
+                        raise ValueError("collect_rust m46: a native-legal row has an empty 46-slot mask")
+                    M1t = torch.from_numpy(M1).to(dev)
+                    if m46["values"]:
+                        logits, v = net.forward_with_value(P, S, M1t)
+                    else:
+                        logits, v = net(P, S, M1t), None
+                    idx1, lp1 = _sample_logits(logits, temperature)
+                    # one device->host copy per round (idx < 46 is exact in fp32)
+                    parts = [idx1.float(), lp1.float()] + ([v.float()] if v is not None else [])
+                    host = torch.stack(parts).cpu().numpy()
+                    s1 = host[0].astype(np.int64)
+                    l1 = host[1].astype(np.float32)
+                    v_np = host[2].astype(np.float32) if v is not None else None
+                    mode = mm.follow_up_mode(s1, mask)
+                    fu = np.nonzero(mode)[0]
+                    s2 = np.full(n, -1, dtype=np.int64)
+                    M2 = l2 = None
+                    if len(fu):            # second query: same observation, only the mask changes (MortalActionSpace)
+                        M2 = mm.second_mask(mask[fu], mode[fu])
+                        sel = torch.from_numpy(fu).to(dev)
+                        i2, lp2 = net.act(P[sel], S[sel], torch.from_numpy(M2).to(dev),
+                                          temperature=temperature, check=False)
+                        s2[fu] = i2.cpu().numpy()
+                        l2 = lp2.float().cpu().numpy()
+                    acts_np = mm.to_native(s1, s2, mask, called)        # raises on any illegal mapping
+                    lps_np = l1                                         # replaced by the episode rewrite
+                    pos2 = np.full(n, -1, dtype=np.int64)
+                    pos2[fu] = np.arange(len(fu))
+                    g = np.asarray(gids, dtype=np.int64)
+                    # per-row (gen, slot, seat) key; episodes find their rows by a stable sort at the end
+                    key = _m46_key(m46["gen"][g], g, np.asarray(seats, dtype=np.int64))
+                    m46["rounds"].append({"M1": M1, "s1": s1, "l1": l1, "pos2": pos2, "M2": M2,
+                                          "s2": s2[fu], "l2": l2, "v": v_np, "key": key})
+                    m46["n_rows"] += n; m46["n_fu"] += len(fu)
+                elif not pool:
+                    idx, lp = net.act(P, S, M, temperature=temperature, check=False)   # legality checked on host
+                    acts_np, lps_np = idx.cpu().numpy().astype(np.int64), lp.float().cpu().numpy()
+                else:
+                    slot_seed = np.asarray(env.slot_seeds(), dtype=np.int64)
+                    sidx = np.fromiter((seed_index[int(s)] if s >= 0 else 0 for s in slot_seed), dtype=np.int64, count=len(slot_seed))
+                    grp = plan_arr[sidx[np.asarray(gids, dtype=np.int64)], np.asarray(seats, dtype=np.int64)]
+                    acts_np = np.zeros(n, dtype=np.int64); lps_np = np.zeros(n, dtype=np.float32)
+                    for j in np.unique(grp):
+                        sel = np.nonzero(grp == j)[0]
+                        tsel = torch.from_numpy(sel).to(dev)
+                        who = net if j < 0 else pool_nets[int(j)]
+                        idx, lp = who.act(P[tsel], S[tsel], M[tsel], temperature=temperature if j < 0 else opp_temp, check=False)
+                        acts_np[sel] = idx.cpu().numpy(); lps_np[sel] = lp.float().cpu().numpy()
+                env.step(acts_np.tolist(), lps_np.tolist())
+            else:
+                env.step([], [])
+            new_games = env.drain_finished()
+            if m46 is not None:
+                # a game finishing in this step is drained here, before its slot's next game is observed
+                for gm in new_games:
+                    s = int(gm["slot"]); gm["m46_gen"] = int(m46["gen"][s]); m46["gen"][s] += 1
+            if fold is not None:
+                for gm in new_games:
+                    _rewrite_fold_episodes(gm, fold)
+            if oracle is not None:
+                R = oracle["rounds"]
+                for gm in new_games:
+                    slot, seed_ = int(gm["slot"]), int(gm["seed"])
+                    for e in gm["episodes"]:
+                        ent = oracle["log"].pop((slot, seed_, int(e["key"][1])), None)
+                        if ent is None or len(ent) != len(e["actions"]):
+                            raise RuntimeError(f"oracle_feats: step log mismatch slot {slot} seed {seed_} seat {e['key'][1]}: "
+                                               f"{0 if ent is None else len(ent)} logged vs {len(e['actions'])} recorded")
+                        if oracle["feats"]:
+                            e["cfeats"] = np.stack([R[r][0][w] for r, w in ent])
+                        if oracle["ron"]:
+                            e["ron_cost"] = np.stack([R[r][1][w] for r, w in ent])
+            games.extend(new_games)
+    collect_rust.last_m46 = None
+    if m46 is not None:
+        _rewrite_m46(games, m46)
+        collect_rust.last_m46 = {"rows": m46["n_rows"], "second_steps": m46["n_fu"],
+                                 "second_rate": m46["n_fu"] / max(m46["n_rows"], 1)}
+    if hanchan and cfg.get("hanchan_credit") == "wpure":
+        # exp112: replace the engine's per-deal point deltas + lumped uma by the pure-W telescoping credit
+        from src.agents.dnn.hanchan_credit import PureW, rewrite_wpure
+        wmod = collect_rust.__dict__.setdefault("_wpure", {})
+        key = cfg.get("hanchan_w_path") or ""
+        if key not in wmod:
+            wmod[key] = PureW(cfg.get("hanchan_w_path"), device="cpu")
+        collect_rust.last_wpure = rewrite_wpure(games, wmod[key], float(cfg.get("gamma", 0.995)))
+    episodes, results = [], []
+    agg = new_agg()
+    lg = {}
+    pool_names = [e.get("name", str(j)) for j, e in enumerate(pool)]
+    for g in games:
+        ls, opp = plans.get(int(g["seed"]), (list(range(4)), {})) if pool else (list(range(4)), {})
+        if opp:
+            g["episodes"] = [e for e in g["episodes"] if int(e["key"][1]) in ls]
+            g["learner_seats"] = list(ls)
+            g["league"] = dict(opp)
+            pts = g.get("points") or []
+            for L in ls:
+                for seat, j in opp.items():
+                    name = pool_names[j]
+                    w, nn, d = lg.get(name, (0.0, 0, 0.0))
+                    sc = 1.0 if pts[L] > pts[seat] else 0.0 if pts[L] < pts[seat] else 0.5
+                    lg[name] = (w + sc, nn + 1, d + (pts[L] - pts[seat]))
+        for e in g["episodes"]:
+            e["planes_log"] = None      # planes stay uint8 (PLANE_Q); widened in the trainer
+        episodes.extend(g["episodes"])
+        results.append(g["result"])
+        add_game(agg, g["result"], g.get("riichi"), g.get("n_melds"), g.get("n_discards"),
+                 seats=ls, points=g.get("points"), start_points=g.get("start_points"))
+    collect_rust.last_style = agg
+    collect_rust.last_games = games
+    collect_rust.last_league = {k: {"learner_share": round(w / nn, 4), "n": nn, "mean_diff": round(d / nn, 1)}
+                                for k, (w, nn, d) in lg.items()}
+    hz = {}
+    for g in games:
+        h = g.get("hanchan")
+        if h:
+            # exp70/83 pure mirror: placement spread (mean |uma|) is the only meaningful statistic
+            u, nn = hz.get("pure_abs_uma", (0.0, 0))
+            hz["pure_abs_uma"] = (u + sum(abs(x) for x in h["uma_points"]) / 4.0, nn + 1)
+    collect_rust.last_hanchan = {k: {"mean_uma": round(u / nn, 1), "n": nn} for k, (u, nn) in hz.items()}
+    collect_rust.last_cf_n = 0
+    collect_rust.last_cf_skipped = 0
+    collect_rust.last_noise = None
+    collect_rust.last_dev = None if sdev is None else {"n_dev": sdev["n_dev"], "n_multi": sdev["n_multi"]}
+    collect_rust.last_fold = None if fold is None else {
+        "n_enter": fold["n_enter"], "n_eligible": fold["n_eligible"], "n_rows": fold["n_rows"],
+        "enter_rate": fold["n_enter"] / max(fold["n_eligible"], 1), "unconsumed_keys": len(fold["log"]),
+        "floor": fold["floor"], "raw_above_frac": fold["n_raw_above"] / max(fold["n_legal"], 1),
+        "raw_p_mean": fold["raw_p_sum"] / max(fold["n_legal"], 1)}
+    if noise is not None:
+        collect_rust.last_noise = {"sigma": noise_sigma, "kl": noise["kl_sum"] / max(noise["rows"], 1),
+                                   "greedy_change": noise["chg_sum"] / max(noise["rows"], 1),
+                                   "resampled": noise["resampled"], "rows": noise["rows"]}
+        if cfg.get("noise_diag"):
+            collect_rust.last_noise.update(noise_diag(games, variant))
+            if noise["res"]:
+                collect_rust.last_noise.update(lean_spread(net, noise["res"], dims, noise_sigma, dev,
+                                                           copies=noise.get("copies")))
+    return episodes, results
+
+
+@torch.no_grad()
+def perturbed_copies(net, n, sigma):
+    """n deep copies of `net` with every weight tensor (dim > 1, value head excluded) perturbed by
+    sigma * std(tensor) * N(0, 1) — relative isotropic parameter noise (Plappert et al. 2017)."""
+    import copy as _copy
+    out = []
+    for _ in range(n):
+        m = _copy.deepcopy(net).eval()
+        for name, p in m.named_parameters():
+            if p.dim() > 1 and not name.startswith("value"):
+                p.data.add_(float(sigma) * p.data.std() * torch.randn_like(p))
+        out.append(m)
+    return out
+
+
+@torch.no_grad()
+def lean_spread(net, res, dims, sigma, dev, n_eps=32, copies=None):
+    """State-controlled read of deal-coherent diversity: on a fixed reservoir of exposed far-hand
+    states (>=1 opponent riichi, own shanten >= 2, a genbutsu discard available), the probability
+    mass the NOISY head puts on genbutsu discards, averaged over states, for n_eps whole-table
+    perturbations. lean_spread = std across perturbations (0 without noise) — the size of the
+    coherent defensive lean a single perturbation induces; lean_clean = the clean head's value."""
+    P = torch.cat([r[0] for r in res]).to(dev); S = torch.cat([r[1] for r in res]).to(dev)
+    M = torch.cat([r[2] for r in res]).to(dev); G = torch.cat([r[3] for r in res]).to(dev)
+    n = P.shape[0]
+    h = net.trunk(P, S)
+    def genb_mass(logits):
+        p = torch.softmax(logits.masked_fill(~M, float("-inf")), 1)[:, :34]
+        return float((p * G).sum(1).mean())
+    clean = genb_mass(net.head(h))
+    vals = []
+    if copies is not None:
+        vals = [genb_mass(c(P, S, M)) for c in copies]
+    else:
+        for _ in range(n_eps):
+            e = net.sample_noise(1, dims, dev)
+            eps_rows = [(ei.expand(n, -1), eo.expand(n, -1)) for ei, eo in e]
+            vals.append(genb_mass(net.head_noisy(h, eps_rows, sigma)))
+    vals = np.array(vals)
+    return {"lean_clean": clean, "lean_noisy_mean": float(vals.mean()), "lean_spread": float(vals.std()), "lean_states": n}
+
+
+def _hand_names(counts):
+    return [f"{i % 9 + 1}{'mps'[i // 9]}" if i < 27 else f"{i - 26}z" for i in range(34) for _ in range(int(counts[i]))]
+
+
+def noise_diag(games, variant):
+    """exp97 mechanism read-out from the finished games of one rollout (all seats learner, dup_k
+    replicas of each seed): per (seed, seat, replica) episode, the genbutsu rate of its exposed
+    far-hand discards (>=1 opponent riichi flag, own shanten >= 2; genbutsu approximated by the
+    riichi opponents' OWN rivers) and its point delta minus the (seed, seat) group mean. Reports
+    corr(genbutsu rate, residual) — positive means the duplicate-wall group baseline can see the
+    money in a deal-coherent defensive lean — and the between/within-table variance ratio."""
+    import riichi_rs
+    q = float(riichi_rs.PLANE_Q)
+    rows = []                                   # (seed, seat, delta, genb_rate, n_exposed)
+    for g in games:
+        pts, sp = g.get("points"), g.get("start_points")
+        if pts is None or sp is None:
+            continue
+        for e in g["episodes"]:
+            seat = int(e["key"][1])
+            pl = e["planes"]; sc = e["scalars"]; acts = np.asarray(e["actions"])
+            if len(acts) == 0:
+                continue
+            disc = acts < 34
+            riichi = sc[:, 5:8] > 0.5                          # opponents by offset 1..3
+            expo = disc & riichi.any(1)
+            n_e, n_g = 0, 0
+            for t in np.nonzero(expo)[0]:
+                counts = (pl[t, 0:4] > 0).sum(0)
+                if riichi_rs.shanten(_hand_names(counts), int(round(float(sc[t, 11]) * 4))) < 2:
+                    continue
+                rivers = pl[t, 8:12] > 0
+                safe = np.logical_and.reduce([rivers[1 + o] for o in range(3) if riichi[t, o]])
+                n_e += 1; n_g += int(safe[int(acts[t])])
+            rows.append((int(g["seed"]), seat, float(pts[seat] - sp[seat]), n_g / n_e if n_e else np.nan, n_e))
+    if not rows:
+        return {}
+    a = np.array(rows, dtype=np.float64)
+    key = a[:, 0] * 4 + a[:, 1]
+    resid = a[:, 2].copy()
+    for kk in np.unique(key):
+        m = key == kk
+        resid[m] -= a[m, 2].mean()
+    ok = a[:, 4] >= 2
+    out = {"diag_n": int(ok.sum()), "diag_exposed_far_rate": float(np.nanmean(a[ok, 3])) if ok.any() else 0.0}
+    if ok.sum() > 8:
+        out["diag_corr"] = float(np.corrcoef(a[ok, 3], resid[ok])[0, 1])
+        # between-table (across replicas of the same seed/seat) vs within-noise variance of the fold lean
+        kb = key[ok]; x = a[ok, 3]
+        grp = np.array([x[kb == kk].var() for kk in np.unique(kb) if (kb == kk).sum() >= 2])
+        out["diag_between_var"] = float(x.var()); out["diag_within_group_var"] = float(grp.mean()) if len(grp) else 0.0
+    return out

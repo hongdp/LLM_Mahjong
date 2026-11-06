@@ -33,9 +33,32 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.dnn.net import MahjongPolicyNet                      # noqa: E402
+from src.agents.dnn.rust_rollout import collect_rust, widen_planes   # noqa: E402
 from src.agents.dnn.parallel_rollout import (apply_group_baseline,   # noqa: E402
                                              collect_parallel)
 
+
+
+def effective_cpus() -> int:
+    """CPUs this process may actually use: min(affinity, cgroup v2 cpu.max / v1 cfs quota)."""
+    n = os.cpu_count() or 1
+    try:
+        n = min(n, len(os.sched_getaffinity(0)))
+    except Exception:
+        pass
+    for quota_f, period_f in (("/sys/fs/cgroup/cpu.max", None),
+                              ("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "/sys/fs/cgroup/cpu/cpu.cfs_period_us")):
+        try:
+            if period_f is None:
+                q, per = open(quota_f).read().split()[:2]
+            else:
+                q, per = open(quota_f).read().strip(), open(period_f).read().strip()
+            if q not in ("max", "-1"):
+                n = min(n, max(1, int(float(q) / float(per) + 0.999)))
+            break
+        except Exception:
+            continue
+    return max(1, n)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -44,6 +67,11 @@ def main():
                     help="frozen BC checkpoint; adds bc_kl_coef * KL(pi || pi_BC) "
                          "to the loss (exp46: keep the human prior while improving)")
     ap.add_argument("--bc_kl_coef", type=float, default=0.0)
+    ap.add_argument("--bc_kl_mask", default=None, choices=[None, "riichi", "quiet"],
+                    help="exp104 state-selective anchor: apply the BC KL only on rows where an opponent is in "
+                         "riichi and the seat is not ('riichi' — the defensive states RL erodes first, FINDINGS "
+                         "10-02), or only on the complementary rows ('quiet', control). The KL is averaged over "
+                         "the selected rows, so bc_kl_coef keeps its meaning; everywhere else the policy is free.")
     ap.add_argument("--total_games", type=int, default=600000)
     ap.add_argument("--games_per_iter", type=int, default=2048)
     ap.add_argument("--dup_k", type=int, default=8)
@@ -86,12 +114,46 @@ def main():
                          "then counts MATCHES (~10 deals each).")
     ap.add_argument("--hanchan_w_path",
                     default="experiments/placement_value/w_resid.pt")
+    ap.add_argument("--hanchan_pure", action="store_true",
+                    help="exp70 pure line: --hanchan with FOUR learner copies (mirror self-play over a full "
+                         "hanchan, no league/anchor seats); needs no --league")
+    ap.add_argument("--hanchan_credit", choices=["w", "rank", "none", "wpure"], default="w",
+                    help="per-deal credit in hanchan mode: w = learned placement value (exp55-D, human data), "
+                         "rank = analytic rank-uma potential (pure, exp70), none = raw deal points + final uma only")
     ap.add_argument("--league_opp_temp", type=float, default=None,
                     help="sampling temperature for frozen pool seats "
                          "(None = global temperature; 0 = greedy opponents)")
     ap.add_argument("--bf16_infer", action="store_true",
                     help="bf16 autocast in the rollout inference server "
                          "(2x-ish on attention archs; logits sampled in fp32)")
+    ap.add_argument("--fast_trunk", action="store_true",
+                    help="exp113: channels-last GEMM trunk for stem+ResBlock CNNs (float64-identical to the "
+                         "cudnn path, tests/test_fast_trunk.py); checkpoints unchanged")
+    ap.add_argument("--compile", action="store_true",
+                    help="exp113: torch.compile the fast trunk (dynamic batch dim); implies --fast_trunk")
+    ap.add_argument("--bf16_rollout", action="store_true",
+                    help="exp113: bf16 autocast for Rust-rollout inference and the pre-update value pass "
+                         "(log-softmax/sampling stay fp32; adds approxKL ~1e-4 vs the 1.4e-3 the BN "
+                         "train/eval mismatch already contributes)")
+    ap.add_argument("--rollout_values", action="store_true",
+                    help="exp124: take V(s) from the rollout's own forward (same weights, same bf16 autocast) "
+                         "instead of a second full-batch value pass in the pack stage. 46-slot Rust path only")
+    ap.add_argument("--rollout_values_check", action="store_true",
+                    help="exp124: with --rollout_values, ALSO run the pack value pass and log max|dV| (equivalence check)")
+    ap.add_argument("--posture_beta", default=None,
+                    help="exp116: 'b0,b1,b2' initial posture prior on genbutsu discards (tenpai / 1-shanten / 2+) for a "
+                         "v3rg net; applied only when the resume checkpoint has no posture_beta (fresh widening)")
+    ap.add_argument("--posture_freeze", action="store_true", help="exp116: keep posture_beta fixed (no gradient)")
+    ap.add_argument("--posture_lr", type=float, default=1e-3,
+                    help="exp116: Adam lr of the posture_beta param group (own group; the kl_lr_target multiplier and "
+                         "warmup scale every group relative to its own base lr)")
+    ap.add_argument("--kl_lr_target", type=float, default=0.0,
+                    help="exp113: per-iteration lr controller on the CLEAN probe KL (eval-mode policy on 2048 probe "
+                         "states before vs after the update; no BN train/eval floor). probe_kl > 1.5x target -> lr/1.5, "
+                         "< target/1.5 -> lr*1.5, multiplier capped at 1 (never above --lr). 0 = off")
+    ap.add_argument("--profile_pack", action="store_true",
+                    help="exp113: cuda-synchronised sub-timings of the pack stage (concat/H2D, probe+value pass, "
+                         "GAE, advantage) logged as pack_parts")
     ap.add_argument("--tf32", type=int, default=1,
                     help="TF32 matmul for the fp32 update path (default on)")
     ap.add_argument("--gpu_infer", action="store_true",
@@ -108,7 +170,7 @@ def main():
                          "during the previous forward, so batch size "
                          "self-balances at arrival_rate x forward_time). "
                          "Measured 2026-08-25: 0 beats the old 4.0 default by "
-                         "~10% on both a slow model (mortal_full 3599->3974 "
+                         "~10%% on both a slow model (mortal_full 3599->3974 "
                          "decisions/s) and a fast one (cnn_m_r 143->157 "
                          "games/s), and is neutral at low concurrency (batch "
                          "is 2.2 either way with 3 workers). Waiting buys a "
@@ -154,6 +216,39 @@ def main():
                          "penalized immediately via gamma*V(s')-V(s), without "
                          "waiting for the settlement). MC advantages reduce "
                          "the critic to variance reduction only.")
+    ap.add_argument("--houjuu_by_shanten", default=None,
+                    help="exp95 (Rust): 'p0,p1,p2' extra deal-in penalty (normalized units, >=0) by the DISCARDER's own shanten "
+                         "after the discard: tenpai / 1-shanten / >=2-shanten. Encodes 'do not deal in from a far hand' "
+                         "without taxing tenpai pushes (exp94: bc49's post-riichi edge is exactly this selectivity).")
+    ap.add_argument("--param_noise_kl", type=float, default=0.0,
+                    help="exp97 parameter-space noise: target mean KL(clean||noisy) over rollout decisions; "
+                         "a factorised rank-1 perturbation of the policy head is sampled per table and held "
+                         "for the whole deal (rust engine only); sigma adapts multiplicatively to hit the "
+                         "target (Plappert et al. 2017). 0 = off")
+    ap.add_argument("--param_noise_sigma0", type=float, default=0.02, help="initial sigma (relative to each tensor's std)")
+    ap.add_argument("--param_noise_mode", default="full", choices=["full", "head"],
+                    help="full = E perturbed whole-network copies per rollout (default); head = per-table rank-1 head noise")
+    ap.add_argument("--param_noise_copies", type=int, default=16)
+    ap.add_argument("--param_noise_adapt", type=float, default=1.03, help="sigma step per iteration")
+    ap.add_argument("--noise_diag_every", type=int, default=4, help="compute the genbutsu/residual diagnostic every N iterations")
+    ap.add_argument("--dev_p", type=float, default=0.0,
+                    help="exp98 greedy-continuation single deviation (rust engine): per (table, seat) at most one "
+                         "multi-choice decision per deal is sampled at T=1 (probability dev_p per candidate step); "
+                         "every other decision is argmax. 0 = off")
+    ap.add_argument("--dev_only", action="store_true",
+                    help="with --dev_p: run the PPO/entropy update on deviation steps only (greedy steps are "
+                         "dropped from the batch; V and GAE still use every step)")
+    ap.add_argument("--houjuu_shanten_anneal", default=None,
+                    help="'g_start,g_end' (games counter): the --houjuu_by_shanten penalty is held until g_start, then "
+                         "decays linearly to 0 at g_end (tests whether the behaviour persists without the prior).")
+    ap.add_argument("--style_prior", default=None,
+                    help="exp89 style-conditioned population (Rust, arch cnn_m_v3s): 'p_pure,d_max,a_max' — "
+                         "per deal, with prob p_pure all seats play the pure objective, else each seat is pure (1/2) "
+                         "or draws a deal-in penalty tau_d~U(0,d_max) and a win bonus factor tau_a~U(0,a_max); "
+                         "the style is fed to the policy as 2 scalars, so one network holds the whole population")
+    ap.add_argument("--houjuu_extra", type=float, default=0.0,
+                    help="exp85 defender exploiter: extra reward (normalized units, e.g. -8 = -8000 pts) "
+                         "added to the seat that dealt in, on top of the point delta (Rust engine only)")
     ap.add_argument("--entropy_schedule", default=None,
                     help="step schedule 'games:coef,games:coef' overriding "
                          "--entropy_coef once the games counter passes each "
@@ -173,11 +268,71 @@ def main():
                          "'0:0.5,1000000:0.25'); overrides --entropy_floor "
                          "as the dual-control target (exp31)")
     ap.add_argument("--entropy_dual_lr", type=float, default=0.1)
+    ap.add_argument("--fold_init_bias", type=float, default=None,
+                    help="exp103 fold option: after loading, set the ENTER_FOLD slot's head bias to this "
+                         "value (default: keep the checkpoint's / the widening default -6; -4 ~ 0.5%% of "
+                         "eligible rows take the option at the start)")
+    ap.add_argument("--fold_floor", type=float, default=0.0,
+                    help="exp105: exploration floor p(ENTER_FOLD) >= eps on legal rows (straight-through "
+                         "logit floor, applied in rollout AND loss); 0 = off")
+    ap.add_argument("--fold_floor_until", type=int, default=0,
+                    help="exp105: absolute games counter at which the floor is released (0 = never)")
+    ap.add_argument("--fold_floor_wall", type=float, default=2.0,
+                    help="exp105: below floor - wall nats, downward gradients on the raw ENTER logit are dropped")
     ap.add_argument("--entropy_abort", type=float, default=None,
                     help="hard safety: if post-update entropy falls below "
                          "this, snapshot and stop (exp8: policy died at "
                          "H=0.44; guard for aggressive anneal arms)")
-    ap.add_argument("--critic_feats", choices=["none", "profile", "hazard"],
+    ap.add_argument("--engine", choices=["python", "rust"], default="python",
+                    help="rollout engine: 'rust' = riichi_rs.VecEnv (rules+encoder+batching in "
+                         "Rust, policy forward in-process on --train_device; mirror single-deal "
+                         "only, ignores --workers/--gpu_infer). Bit-identical episodes to the "
+                         "Python engine (tests/test_rust_rollout_parity.py)")
+    ap.add_argument("--shaping", action="store_true",
+                    help="exp73: engine-derived PBRS on the per-step reward, "
+                         "Phi = -2*shanten + 0.05*ukeire (selfplay.potential); "
+                         "telescopes to -Phi(s0) so the optimum is unchanged, "
+                         "but from scratch it gives the sparse settlement a "
+                         "dense hand-efficiency gradient. Pure: no human data")
+    ap.add_argument("--shaping_schedule", default=None,
+                    help="exp74: piecewise-linear shaping scale by games, "
+                         "'games:scale,...' (e.g. 0:1.0,400000:0.0). Overrides "
+                         "--shaping_scale; shaping is switched off (no potential "
+                         "calls) once the scale reaches 0")
+    ap.add_argument("--shaping_scale", type=float, default=1.0,
+                    help="multiplier on the shaping term (Phi units ~ mangan/8 "
+                         "per shanten step at 1.0)")
+    ap.add_argument("--cf_p", type=float, default=0.0,
+                    help="exp72 decision-level counterfactual rollouts: per "
+                         "eligible learner discard decision, probability of "
+                         "cloning the table and playing --cf_k alternative "
+                         "discards to the end of the deal (same wall, same "
+                         "policy); the executed action's realised return minus "
+                         "the alternatives' mean REPLACES its GAE advantage. "
+                         "Single-deal mode only. 0 = off")
+    ap.add_argument("--cf_k", type=int, default=2,
+                    help="alternatives per sampled decision (a genbutsu safe "
+                         "tile vs the riichi seat when one exists, the rest "
+                         "random legal discards)")
+    ap.add_argument("--cf_all", action="store_true",
+                    help="sample every discard decision, not only those with "
+                         "an opponent riichi on the table")
+    ap.add_argument("--cf_slots", type=int, default=0,
+                    help="concurrent branch-rollout slots per worker (0 = same "
+                         "as --games_per_worker); decisions drawn while the "
+                         "budget is full are not evaluated (logged as cf_skipped)")
+    ap.add_argument("--cf_scale", type=float, default=1.0,
+                    help="multiplier on the counterfactual advantage (return "
+                         "units) before the global normalisation")
+    ap.add_argument("--aux_waits_coef", type=float, default=0.0,
+                    help="exp69: weight of the auxiliary BCE that predicts the three opponents' hidden waits "
+                         "(3x34) from the public observation; needs a *_aux arch and --critic_feats oracle "
+                         "(the oracle vector is used ONLY as the target; the policy/value never read it)")
+    ap.add_argument("--oracle_hide_schedule", default=None,
+                    help="exp68 oracle policy guiding (needs a *_ro arch): 'games:p,...' piecewise-linear "
+                         "schedule of the probability that a rollout game HIDES the oracle planes "
+                         "(0 = always visible, 1 = blind). E.g. '0:0.0,600000:1.0'. Play/eval are always blind.")
+    ap.add_argument("--critic_feats", choices=["none", "profile", "hazard", "oracle"],
                     default="none",
                     help="Privileged CRITIC-ONLY features (exp11; the policy "
                          "never sees them). profile = 4-dim value-distance "
@@ -204,6 +359,42 @@ def main():
                          "optimizer moments and the games counter when the "
                          "checkpoint carries them (older ones only have "
                          "weights — Adam moments then rebuild in a few iters)")
+    ap.add_argument("--reset_optimizer", action="store_true",
+                    help="exp106: on --resume keep the weights but discard the checkpoint's Adam "
+                         "moments (warm restart) — what the exp103 widening did implicitly")
+    ap.add_argument("--ron_term", type=float, default=0.0,
+                    help="exp110: all-action control variate from the engine-exact immediate ron cost c(s,h,a) "
+                         "(Rust VecEnv.ron_cost_info): adds sum_a pi(a|s)(-c(s,h,a)) - ratio_t (-c(s,h,a_t)) to the "
+                         "PPO surrogate (zero expected gradient, cancels the deal-in noise of the sampled advantage). "
+                         "Scaled by the batch advantage std like the GAE advantage; coefficient 1.0 = exact; 0 = off")
+    ap.add_argument("--oracle_critic", choices=["none", "v", "q"], default="none",
+                    help="exp108: SEPARATE critic network fed the 319-dim oracle vector (Rust engine only): "
+                         "v = asymmetric V(s) replaces the policy's V in GAE; q = Q(s,a) gives the all-action "
+                         "advantage Q(s,a) - sum_a' pi(a'|s) Q(s,a'). The policy never sees the oracle input")
+    ap.add_argument("--oracle_blind", action="store_true",
+                    help="exp108 control: same separate critic, oracle input zeroed")
+    ap.add_argument("--oracle_lr", type=float, default=1e-4)
+    ap.add_argument("--oracle_epochs", type=int, default=2, help="critic passes over each iteration's batch")
+    ap.add_argument("--oracle_batch", type=int, default=4096)
+    ap.add_argument("--oracle_warmup_iters", type=int, default=200,
+                    help="iterations (of this run) during which the critic trains but advantages stay blind")
+    ap.add_argument("--oracle_init_from_policy", action="store_true",
+                    help="exp108: initialise the separate critic's trunk (stem/blocks/scalar_fc) from the policy "
+                         "checkpoint so it starts with trained features (a from-scratch critic sat at EV~0 for "
+                         "0.7M games on 2026-10-11); heads stay fresh, training stays separate")
+    ap.add_argument("--oracle_adv_norm", choices=["self", "blind"], default="self",
+                    help="exp108 Q mode: 'self' z-scores the Q advantage by its own std (its std is ~2%% of the "
+                         "blind GAE std, so a 100-point action gap becomes a unit-scale push: H 0.27->0.20 in 100 "
+                         "iterations on 2026-10-11); 'blind' divides by the blind GAE advantage std instead, so the "
+                         "policy step per unit of true value equals the blind recipe and only the noise differs")
+    ap.add_argument("--oracle_gate_margin", type=float, default=0.02,
+                    help="advantages switch to the oracle critic only once its batch EV >= the policy's own "
+                         "value-head EV minus this margin (and after --oracle_warmup_iters); re-checked every iteration")
+    ap.add_argument("--oracle_channels", type=int, default=128)
+    ap.add_argument("--oracle_blocks", type=int, default=4)
+    ap.add_argument("--reset_optimizer_every", type=int, default=0,
+                    help="exp107: discard the Adam moments every N games (counted from the run's first "
+                         "iteration; 0 = off). Combine with --reset_optimizer for a reset at the start too")
     ap.add_argument("--ckpt_every", type=int, default=25,
                     help="also snapshot every N iterations, so a restart "
                          "never loses more than that")
@@ -220,8 +411,34 @@ def main():
         ent_schedule = sorted((int(g), float(c)) for g, c in
                               (p.split(":") for p in
                                args.entropy_schedule.split(",")))
+    oracle_sched = []
+    if args.oracle_hide_schedule:
+        oracle_sched = sorted((int(g), float(c)) for g, c in
+                              (p.split(":") for p in args.oracle_hide_schedule.split(",")))
+        if not args.arch or not args.arch.endswith("_ro"):
+            raise SystemExit("--oracle_hide_schedule needs a *_ro arch (v1ro encoder)")
 
-    torch.set_num_threads(max(1, os.cpu_count() // 3))
+    def oracle_hide_p(g):
+        """piecewise-linear interpolation of the hide probability on the game counter"""
+        if not oracle_sched:
+            return 1.0
+        if g <= oracle_sched[0][0]:
+            return oracle_sched[0][1]
+        for (g0, p0), (g1, p1) in zip(oracle_sched, oracle_sched[1:]):
+            if g0 <= g <= g1:
+                return p0 + (p1 - p0) * (g - g0) / max(1, g1 - g0)
+        return oracle_sched[-1][1]
+
+    # thread budget from the cgroup CPU quota, not os.cpu_count(): RunPod Secure
+    # pods report the host's 48-64 cores while the cgroup allows 5-8, and rayon /
+    # torch then oversubscribe them (measured 2026-09-12: 6-core rollout 5.2k ->
+    # 8.2k deals/s once RAYON_NUM_THREADS matched the quota). RAYON_NUM_THREADS
+    # must be set before riichi_rs builds its global pool (first VecEnv use).
+    n_cpu = effective_cpus()
+    torch.set_num_threads(max(2, n_cpu // 3))
+    os.environ.setdefault("RAYON_NUM_THREADS", str(n_cpu))
+    print(f"🧵 cpus={n_cpu} (os.cpu_count={os.cpu_count()}) torch threads={torch.get_num_threads()} "
+          f"RAYON_NUM_THREADS={os.environ['RAYON_NUM_THREADS']}", flush=True)
     torch.manual_seed(args.seed); random.seed(args.seed)
     exp_dir_guard = None
     exp_dir = args.exp_dir or f"experiments/dnn_ppo_{time.strftime('%Y%m%d_%H%M%S')}"
@@ -252,11 +469,21 @@ def main():
     dev = torch.device(args.train_device)
     use_cf = args.critic_feats != "none"
     if args.arch:
-        if use_cf:
-            raise SystemExit("--critic_feats requires the default CNN "
-                             "(zoo nets don't carry the critic variants)")
         from src.agents.dnn.arch_zoo import ZOO
         net = ZOO[args.arch][0]().to(dev)
+        if args.aux_waits_coef > 0:
+            if not getattr(net, "aux_waits", False) or args.critic_feats != "oracle":
+                raise SystemExit("--aux_waits_coef needs a *_aux arch and --critic_feats oracle (targets)")
+            print(f"🎯 aux waits head: coef {args.aux_waits_coef} (oracle vector = targets only)", flush=True)
+        if use_cf:
+            from src.agents.dnn.selfplay import CFEAT_DIM as _CFD
+            cfd = getattr(net, "critic_feat_dim", 0)
+            if cfd != _CFD[args.critic_feats] and not (args.aux_waits_coef > 0 and cfd == 0):
+                raise SystemExit(f"--critic_feats {args.critic_feats} needs a zoo net with "
+                                 f"critic_feat_dim={_CFD[args.critic_feats]} (e.g. *_oc); "
+                                 f"{args.arch} has {cfd}")
+            if cfd:
+                print(f"🔭 critic_feats: {args.critic_feats} (dim {_CFD[args.critic_feats]}, value path only)", flush=True)
         print(f"🏗 arch: {args.arch}", flush=True)
     else:
         from src.agents.dnn.selfplay import CFEAT_DIM
@@ -283,16 +510,46 @@ def main():
                                                   map_location="cpu")["state_dict"])
         print(f"⚓ warm-start {args.init}"
               + (f" (fresh: {skipped})" if skipped else ""), flush=True)
-    opt = torch.optim.Adam(net.parameters(), lr=args.lr)
+    # exp116: posture_beta (v3rg nets) gets its own param group (or is frozen); every group keeps its base lr so the
+    # warmup / kl_lr_target multipliers scale groups relative to their own base.
+    pb = getattr(net, "posture_beta", None)
+    if pb is not None and args.posture_freeze:
+        pb.requires_grad_(False)
+    main_params = [p_ for n_, p_ in net.named_parameters() if n_ != "posture_beta"]
+    groups = [{"params": main_params, "lr": args.lr, "base_lr": args.lr}]
+    if pb is not None and not args.posture_freeze:
+        groups.append({"params": [pb], "lr": args.posture_lr, "base_lr": args.posture_lr})
+    opt = torch.optim.Adam(groups, lr=args.lr)
+    ocrit, oopt = None, None
+    if args.oracle_critic != "none":
+        if args.engine != "rust" or args.critic_feats != "none":
+            raise SystemExit("--oracle_critic needs --engine rust and --critic_feats none")
+        from src.agents.dnn.oracle_critic import SeparateCritic, q_advantage, explained_variance
+        ocrit = SeparateCritic(args.oracle_critic, args.oracle_channels, args.oracle_blocks,
+                               blind=args.oracle_blind).to(dev)
+        oopt = torch.optim.Adam(ocrit.parameters(), lr=args.oracle_lr)
+        print(f"🔮 separate oracle critic: mode={args.oracle_critic} blind={args.oracle_blind} "
+              f"params={sum(q.numel() for q in ocrit.parameters())/1e6:.2f}M lr={args.oracle_lr} "
+              f"epochs={args.oracle_epochs} warmup_iters={args.oracle_warmup_iters}", flush=True)
     n_upd = 0                      # optimizer updates, for --warmup_updates
+    lr_mult = 1.0                  # exp113 --kl_lr_target controller state (saved in checkpoints)
     ent_alpha = args.entropy_coef      # live coefficient (schedule/auto laws)
+    noise_sigma = args.param_noise_sigma0 if args.param_noise_kl > 0 else 0.0
+    if args.param_noise_kl > 0 and args.engine != "rust":
+        raise SystemExit("--param_noise_kl needs --engine rust")
 
     def save(tag, games, it=0):
         torch.save({"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
                     "channels": args.channels, "blocks": args.blocks,
                     "arch": args.arch, "critic_feats": args.critic_feats,
-                    "games": games, "iter": it, "entropy_alpha": ent_alpha,
+                    "games": games, "iter": it, "entropy_alpha": ent_alpha, "lr_mult": lr_mult,
+                    "param_noise_sigma": noise_sigma,
                     "optimizer": opt.state_dict()}, f"{exp_dir}/{tag}.pt")
+        if ocrit is not None:
+            torch.save({"state_dict": {k: v.cpu() for k, v in ocrit.state_dict().items()},
+                        "optimizer": oopt.state_dict(), "mode": args.oracle_critic, "blind": args.oracle_blind,
+                        "channels": args.oracle_channels, "blocks": args.oracle_blocks, "games": games},
+                       f"{exp_dir}/critic_{tag}.pt")
 
     from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(os.path.join(exp_dir, "tensorboard"))
@@ -313,19 +570,54 @@ def main():
             # match the parameter shapes, so they restart.
             from src.agents.dnn.net import load_compatible
             load_compatible(net, blob["state_dict"])
-            print("   legacy action head widened 272->374 (optimizer moments restart)",
-                  flush=True)
+            print("   checkpoint widened into this net (272->374 head / extra scalars / fold slot); "
+                  "optimizer moments restart", flush=True)
         else:
             net.load_state_dict(blob["state_dict"])
-        if "optimizer" in blob and not widened:
+        if args.reset_optimizer and not widened:
+            print("   --reset_optimizer: Adam moments discarded (warm restart)", flush=True)
+        elif "optimizer" in blob and not widened:
             opt.load_state_dict(blob["optimizer"])
             print("   optimizer moments restored", flush=True)
         elif not widened:
             print("   (checkpoint has no optimizer state; Adam moments restart)",
                   flush=True)
+        if args.fold_init_bias is not None:
+            from src.agents.dnn.fold_option import FOLD_SLOT
+            with torch.no_grad():
+                net.head[-1].bias[FOLD_SLOT].fill_(float(args.fold_init_bias))
+            print(f"   fold option: ENTER_FOLD bias set to {args.fold_init_bias}", flush=True)
+        if ocrit is not None:
+            cpath = os.path.join(os.path.dirname(args.resume), "critic_" + os.path.basename(args.resume))
+            if args.oracle_init_from_policy and not os.path.exists(cpath):
+                trunk = {k: v for k, v in net.state_dict().items() if k.startswith(("stem.", "blocks.", "scalar_fc."))}
+                res = ocrit.load_state_dict(trunk, strict=False)
+                print(f"   oracle critic trunk initialised from the policy ({len(trunk)} tensors; "
+                      f"fresh: {len(res.missing_keys)} tensors)", flush=True)
+            if os.path.exists(cpath):
+                cb = torch.load(cpath, map_location=dev)
+                ocrit.load_state_dict(cb["state_dict"]); oopt.load_state_dict(cb["optimizer"])
+                print(f"   oracle critic restored from {cpath}", flush=True)
+            else:
+                print("   oracle critic starts fresh (no critic_*.pt next to the resume checkpoint)", flush=True)
+        if pb is not None and args.posture_beta and "posture_beta" not in blob["state_dict"]:
+            with torch.no_grad():
+                pb.copy_(torch.tensor([float(x) for x in args.posture_beta.split(",")], device=pb.device))
+            print(f"   posture prior initialised: beta = {pb.tolist()}" + (" (frozen)" if args.posture_freeze else
+                  f" (learnable, lr {args.posture_lr})"), flush=True)
+        elif pb is not None:
+            print(f"   posture prior from checkpoint: beta = {[round(x, 3) for x in pb.tolist()]}"
+                  + (" (frozen)" if args.posture_freeze else ""), flush=True)
         start_games = int(blob.get("games", 0))
         start_iter = int(blob.get("iter", 0))
         ent_alpha = float(blob.get("entropy_alpha", ent_alpha) or ent_alpha)
+        if args.kl_lr_target > 0 and blob.get("lr_mult"):
+            lr_mult = float(blob["lr_mult"])
+            for g in opt.param_groups:
+                g["lr"] = g.get("base_lr", args.lr) * lr_mult
+            print(f"   kl_lr_target: lr multiplier restored {lr_mult:.3f}", flush=True)
+        if args.param_noise_kl > 0 and blob.get("param_noise_sigma"):
+            noise_sigma = float(blob["param_noise_sigma"])
         old_log = os.path.join(exp_dir, "train_log.json")
         if os.path.exists(old_log):
             try:
@@ -349,29 +641,101 @@ def main():
     else:
         save("games_0", 0)
     net.value_detach = bool(args.value_detach)
+    if (args.fast_trunk or args.compile) and type(net).__name__ in ("ConvFormer", "ConvFormer46"):
+        # bench 2026-10-31: math-preserving fast ConvFormer trunk (batched suit conv + SDPA + optional compile)
+        from src.agents.dnn.fast_convformer import enable_fast_convformer
+        enable_fast_convformer(net, compile=args.compile)
+        print(f"🚀 fast ConvFormer trunk{' + torch.compile' if args.compile else ''}", flush=True)
+    elif args.fast_trunk or args.compile:
+        from src.agents.dnn.net import enable_fast_trunk
+        if not (hasattr(net, "stem") and hasattr(net, "blocks") and hasattr(net, "scalar_fc")):
+            raise SystemExit("--fast_trunk/--compile need a stem + ResBlock CnnPolicy arch")
+        enable_fast_trunk(net, compile=args.compile)
+        print(f"🚀 fast trunk (channels-last GEMM){' + torch.compile (dynamic batch)' if args.compile else ''}"
+              f"{'; bf16 rollout inference' if args.bf16_rollout else ''}", flush=True)
     cfg = dict(channels=args.channels, blocks=args.blocks, arch=args.arch,
                temperature=args.temperature, gamma=args.gamma,
                games_per_worker=args.games_per_worker,
                rollout_temps=([float(x) for x in args.rollout_temps.split(",")]
                               if args.rollout_temps else None),
-               shaping=False, seed=args.seed,
+               shaping=bool(args.shaping), shaping_scale=args.shaping_scale, seed=args.seed,
                critic_feats=args.critic_feats,
                gpu_infer=args.gpu_infer, gpu_infer_opponents=args.gpu_infer_opponents,
                infer_max_batch=args.infer_max_batch,
                infer_wait_ms=args.infer_wait_ms, infer_device=args.train_device,
-               bf16_infer=args.bf16_infer,
-               action_space=space_of_arch(args.arch))
+               bf16_infer=args.bf16_infer, bf16_rollout=args.bf16_rollout,
+               action_space=space_of_arch(args.arch),
+               cf_p=args.cf_p, cf_k=args.cf_k, cf_only_exposed=not args.cf_all,
+               cf_branch_slots=(args.cf_slots or None),
+               rollout_values=bool(args.rollout_values))
+    if args.rollout_values and (args.engine != "rust" or getattr(net, "action_space", None) != "mortal46"):
+        raise SystemExit("--rollout_values is wired for --engine rust with a 46-slot arch only (exp124)")
+    shaping_sched = []
+    if args.shaping_schedule:
+        shaping_sched = sorted((int(g), float(c)) for g, c in (x.split(":") for x in args.shaping_schedule.split(",")))
+        if not args.shaping:
+            raise SystemExit("--shaping_schedule needs --shaping")
+
+    def shaping_scale_at(g):
+        if g <= shaping_sched[0][0]:
+            return shaping_sched[0][1]
+        for (g0, c0), (g1, c1) in zip(shaping_sched, shaping_sched[1:]):
+            if g <= g1:
+                return c0 + (g - g0) / max(g1 - g0, 1) * (c1 - c0)
+        return shaping_sched[-1][1]
+    if args.shaping:
+        print(f"⚡ PBRS shaping on: Phi = -2*best_shanten (memoised), scale {args.shaping_scale}"
+              + (f", schedule {args.shaping_schedule}" if shaping_sched else ""), flush=True)
+    if args.cf_p > 0:
+        if args.hanchan or args.hanchan_pure:
+            raise SystemExit("--cf_p is single-deal only (branch continuation has no match context)")
+        print(f"🔀 counterfactual rollouts: p={args.cf_p} per {'discard' if args.cf_all else 'riichi-exposed discard'} "
+              f"decision, k={args.cf_k} alternatives, scale {args.cf_scale}", flush=True)
     if args.league:
         cfg["league"] = json.load(open(args.league))
         cfg["league_frac"] = args.league_frac
         cfg["league_learner_seats"] = args.league_learner_seats
         cfg["league_opp_temp"] = args.league_opp_temp
-        cfg["hanchan"] = bool(args.hanchan)
-        cfg["hanchan_w_path"] = args.hanchan_w_path
         print(f"🏟 league: {len(cfg['league'])} frozen opponents, frac {args.league_frac}, "
               f"learner seats {args.league_learner_seats or 'rand 1-2'}, "
               f"opp T={'global' if args.league_opp_temp is None else args.league_opp_temp}",
               flush=True)
+    cfg["houjuu_extra"] = float(args.houjuu_extra)
+    cfg["oracle_feats"] = ocrit is not None
+    cfg["ron_cost"] = args.ron_term > 0
+    hbs_base, hbs_anneal = None, None
+    if args.houjuu_by_shanten:
+        hbs_base = [float(x) for x in args.houjuu_by_shanten.split(",")]
+        if len(hbs_base) != 3 or args.engine != "rust":
+            raise SystemExit("--houjuu_by_shanten needs 'p0,p1,p2' and --engine rust")
+        if args.houjuu_shanten_anneal:
+            hbs_anneal = tuple(int(x) for x in args.houjuu_shanten_anneal.split(","))
+        cfg["houjuu_by_shanten"] = list(hbs_base)
+        print(f"🛡 houjuu_by_shanten {hbs_base} (tenpai / 1-shanten / far), anneal {hbs_anneal}", flush=True)
+    if args.style_prior:
+        cfg["style_prior"] = tuple(float(x) for x in args.style_prior.split(","))
+        if len(cfg["style_prior"]) != 3 or args.engine != "rust":
+            raise SystemExit("--style_prior needs 'p_pure,d_max,a_max' and --engine rust")
+        print(f"🎭 style prior p_pure={cfg['style_prior'][0]} d_max={cfg['style_prior'][1]} a_max={cfg['style_prior'][2]}", flush=True)
+    if args.houjuu_extra and args.engine != "rust":
+        raise SystemExit("--houjuu_extra is implemented on the Rust engine only")
+    if args.houjuu_extra:
+        print(f"🛡 houjuu_extra {args.houjuu_extra:+.2f} (normalized units) added to the dealt-in seat's reward", flush=True)
+    if args.hanchan or args.hanchan_pure:
+        cfg["hanchan"] = True
+        cfg["hanchan_pure"] = bool(args.hanchan_pure)
+        cfg["hanchan_credit"] = args.hanchan_credit
+        if args.hanchan_credit == "wpure":
+            # exp112: pure self-play W; an absent/missing path means the analytic rank-uma potential only
+            cfg["hanchan_w_path"] = args.hanchan_w_path if (args.hanchan_w_path and os.path.exists(args.hanchan_w_path)
+                                                            and "w_resid" not in os.path.basename(args.hanchan_w_path)) else None
+            print(f"   wpure W: {cfg['hanchan_w_path'] or 'analytic rank-uma only (no MLP residual)'}", flush=True)
+        else:
+            cfg["hanchan_w_path"] = args.hanchan_w_path if args.hanchan_credit == "w" else None
+        if not args.hanchan_pure and not args.league:
+            raise SystemExit("--hanchan (four-seat table) needs --league; use --hanchan_pure for mirror self-play")
+        print(f"🀄 hanchan mode: {'pure mirror (4 learner seats)' if args.hanchan_pure else 'exp55-D four-seat table'}, "
+              f"per-deal credit = {args.hanchan_credit}; games_per_iter counts MATCHES", flush=True)
     if args.gpu_infer:
         print(f"🚀 gpu_infer: batched rollout inference on {args.train_device} "
               f"(max_batch {args.infer_max_batch}, wait {args.infer_wait_ms} ms)", flush=True)
@@ -380,21 +744,77 @@ def main():
     upd_total = 0
     while next_ms < len(milestones) and milestones[next_ms] <= start_games:
         next_ms += 1
+    t_prev_it = None
+    if args.fold_floor > 0:
+        from src.agents.dnn.fold_option import apply_floor as _apply_floor
+        _ffloor = lambda lg, e: _apply_floor(lg, e, args.fold_floor_wall)
+        print(f"   fold floor: eps={args.fold_floor} until games={args.fold_floor_until or 'never'} "
+              f"wall={args.fold_floor_wall}", flush=True)
+    else:
+        _ffloor = lambda lg, e: lg
+    fold_floor_now = 0.0
+    n_iter_run = 0
+    next_opt_reset = (start_games + args.reset_optimizer_every) if args.reset_optimizer_every > 0 else None
+    n_opt_resets = 0
     while games < args.total_games:
         it += 1
+        n_iter_run += 1
+        if next_opt_reset is not None and games >= next_opt_reset:
+            opt.state.clear()                       # fresh Adam: moments and step counts restart (exp107 periodic warm restart)
+            n_opt_resets += 1
+            next_opt_reset += args.reset_optimizer_every
+            print(f"   periodic warm restart #{n_opt_resets}: Adam moments discarded at games={games}", flush=True)
+        t_it0 = time.time()
+        iter_s = 0.0 if t_prev_it is None else t_it0 - t_prev_it     # full previous-iteration wall (incl. logging/ckpt)
+        t_prev_it = t_it0
         for g_thr, coef in ent_schedule:      # step function on the counter
             if games >= g_thr:
                 ent_alpha = coef
+        if oracle_sched:
+            cfg["oracle_hide_p"] = oracle_hide_p(games)
+        if hbs_base is not None:
+            hs = 1.0
+            if hbs_anneal is not None:
+                g0, g1 = hbs_anneal
+                hs = 1.0 if games <= g0 else 0.0 if games >= g1 else 1.0 - (games - g0) / max(g1 - g0, 1)
+            cfg["houjuu_by_shanten"] = [p * hs for p in hbs_base]
+        fold_floor_now = (args.fold_floor if args.fold_floor > 0 and
+                          (args.fold_floor_until <= 0 or games < args.fold_floor_until) else 0.0)
+        cfg["fold_floor"] = fold_floor_now
+        cfg["fold_floor_wall"] = args.fold_floor_wall
+        cfg["fold_floor_ref"] = args.fold_floor if args.fold_floor > 0 else 0.01
+        if shaping_sched:
+            sc_now = shaping_scale_at(games)
+            cfg["shaping_scale"] = sc_now
+            cfg["shaping"] = sc_now > 0.0          # no potential calls once annealed to 0
         n_deals = max(1, args.games_per_iter // args.dup_k)
         base = 6_000_000 + it * 9973
         seeds = [base + d for d in range(n_deals) for _ in range(args.dup_k)]
         net.eval()
         t_roll0 = time.time()
-        episodes, results = collect_parallel(net, len(seeds), cfg, args.workers, seeds)
+        if args.dev_p > 0:
+            cfg["dev_p"] = args.dev_p
+            cfg["seed"] = args.seed + it
+        if args.param_noise_kl > 0:
+            cfg["param_noise_sigma"] = noise_sigma
+            cfg["param_noise_mode"] = args.param_noise_mode
+            cfg["param_noise_copies"] = args.param_noise_copies
+            cfg["noise_diag"] = (it % max(args.noise_diag_every, 1) == 0)
+        if args.engine == "rust":
+            episodes, results = collect_rust(net, len(seeds), cfg, args.workers, seeds, device=args.train_device)
+        else:
+            episodes, results = collect_parallel(net, len(seeds), cfg, args.workers, seeds)
         apply_group_baseline(episodes, args.gamma)
         rollout_s = time.time() - t_roll0
         games += len(results)
 
+        pk_t = [time.time()]; pk_parts = {}
+
+        def pk(name):                       # --profile_pack: synchronised split of the pack stage
+            if args.profile_pack:
+                if dev.type == "cuda":
+                    torch.cuda.synchronize()
+                pk_t.append(time.time()); pk_parts[name] = round(pk_t[-1] - pk_t[-2], 3)
         cat = lambda k: np.concatenate([e[k] for e in episodes])
         if episodes and episodes[0].get("planes_log") is not None:
             # wide observations arrive as the encoder's write log (98x smaller
@@ -405,14 +825,24 @@ def main():
             planes = densify([l for e in episodes for l in e["planes_log"]],
                              device=dev)
         else:
-            # episodes ship planes as float16 (see _package_game); widen here
-            planes = torch.from_numpy(cat("planes")).to(dev).float()
+            # episodes ship planes as float16 (_package_game) or uint8 quantised by
+            # PLANE_Q (collect_rust); widen on the device either way
+            planes = widen_planes(torch.from_numpy(cat("planes")).to(dev))
         scal = torch.from_numpy(cat("scalars")).to(dev)
         mask = torch.from_numpy(cat("mask")).to(dev)
         acts = torch.from_numpy(cat("actions")).to(dev)
         rets = torch.from_numpy(cat("returns")).to(dev)
         old_lp = torch.from_numpy(cat("old_logprobs")).to(dev)
+        dev_mask = None
+        if args.dev_p > 0:
+            dev_mask = old_lp < 500.0                          # collect_rust marks greedy steps with +1000
+            old_lp = torch.where(dev_mask, old_lp, old_lp - 1000.0)
         cfe = torch.from_numpy(cat("cfeats")).to(dev) if use_cf else None
+        ocf = torch.from_numpy(cat("cfeats")).to(dev).float() if ocrit is not None else None
+        ron_full = None
+        if args.ron_term > 0:
+            from scripts.critic_stage0 import ron_cost_full as _rcf
+            ron_full = _rcf(torch.from_numpy(cat("ron_cost")).to(dev).float(), mask)      # [N,374] cost >= 0, return units
         if args.critic_feats == "hazard":
             # per-(game,seat) settled-fact label, broadcast over the episode
             hlab = torch.from_numpy(np.concatenate(
@@ -424,49 +854,126 @@ def main():
             nz = [bool(np.abs(e["returns"]).max() > 1e-6) for e in episodes]
             idx_keep = torch.nonzero(torch.from_numpy(np.repeat(nz, lens)).to(dev),
                                      as_tuple=True)[0]
+        elif args.dev_only and dev_mask is not None:
+            idx_keep = torch.nonzero(dev_mask, as_tuple=True)[0]
         else:
             idx_keep = torch.arange(len(acts), device=dev)
         n_eff = len(idx_keep)
         if n_eff < args.batch:
             continue
 
+        pk("concat_h2d")
         with torch.no_grad():
             probe = idx_keep[torch.randperm(n_eff, device=dev)[:2048]]
-            lp0 = torch.log_softmax(net(planes[probe], scal[probe], mask[probe]), 1)
+            lp0 = torch.log_softmax(_ffloor(net(planes[probe], scal[probe], mask[probe]), fold_floor_now), 1)
             s0 = torch.where(torch.isfinite(lp0), lp0, torch.zeros_like(lp0))
             ent_before = float(-(lp0.exp() * s0).sum(1).mean())
             # V(s) for the whole batch under the SAMPLING policy
-            vals = torch.cat([
-                net.forward_with_value(planes[i:i + 8192], scal[i:i + 8192],
-                                       mask[i:i + 8192],
-                                       cfeats=cfe[i:i + 8192] if use_cf else None)[1]
-                for i in range(0, len(acts), 8192)])
+            vals_roll = (torch.from_numpy(cat("values")).to(dev).float()
+                         if args.rollout_values else None)      # exp124: same weights, from the rollout forward
+            if vals_roll is None or args.rollout_values_check:
+                with torch.autocast("cuda", torch.bfloat16, enabled=args.bf16_rollout and dev.type == "cuda"):
+                    vals = torch.cat([
+                        net.forward_with_value(planes[i:i + 8192], scal[i:i + 8192],
+                                               mask[i:i + 8192],
+                                               cfeats=cfe[i:i + 8192] if use_cf else None)[1].float()
+                        for i in range(0, len(acts), 8192)])
+            if vals_roll is not None:
+                if args.rollout_values_check:
+                    dv = (vals_roll - vals).abs()
+                    print(f"   rollout_values check: max|dV| {float(dv.max()):.5f} mean {float(dv.mean()):.6f} "
+                          f"(|V| mean {float(vals.abs().mean()):.4f}, n {len(vals)})", flush=True)
+                vals = vals_roll
+        o_stats = None
+        if ocrit is not None:
+            with torch.no_grad():
+                ocrit.eval()
+                o_out = torch.cat([ocrit(planes[i:i + 8192], scal[i:i + 8192], ocf[i:i + 8192]).float()
+                                   for i in range(0, len(acts), 8192)])
+                if args.oracle_critic == "v":
+                    o_pred = o_out
+                else:
+                    pol_logits = torch.cat([net(planes[i:i + 8192], scal[i:i + 8192], mask[i:i + 8192]).float()
+                                            for i in range(0, len(acts), 8192)])
+                    o_qadv, o_vpi = q_advantage(o_out, pol_logits, mask, acts)
+                    o_pred = o_out.gather(1, acts[:, None]).squeeze(1)
+                    del pol_logits
+                o_stats = {"ev": explained_variance(o_pred[idx_keep], rets[idx_keep]),
+                           "blind_ev": float(1 - (rets[idx_keep] - vals[idx_keep]).var() / (rets[idx_keep].var() + 1e-9))}
+                # quality gate: a half-trained critic's advantages are unit-normalised noise that drives the
+                # policy straight to target_kl (smoke 2026-10-12: KL 0.002 -> 0.04), so switch only once it is
+                # at least as good a predictor as the policy's own value head
+                oracle_active = (n_iter_run > args.oracle_warmup_iters
+                                 and o_stats["ev"] >= o_stats["blind_ev"] - args.oracle_gate_margin)
+                o_stats["active"] = int(oracle_active)
+            if args.oracle_critic == "v" and oracle_active:
+                vals = o_out                      # asymmetric baseline + bootstrap for GAE
+        pk("probe_value")
         if args.gae_lambda is not None:
-            # per-episode GAE over the SAME per-step V used elsewhere
-            adv_raw = torch.zeros_like(rets)
-            off = 0
+            # per-episode GAE over the SAME per-step V used elsewhere. Vectorized
+            # (2026-09-08): the per-step Python loop cost ~7 s per 2048-deal
+            # iteration on 182k GPU scalars — 3x the Rust rollout itself.
             lam, gam = args.gae_lambda, args.gamma
-            for e in episodes:
-                n = len(e["returns"])
-                r = torch.from_numpy(e["rewards"]).to(vals.device)
-                v = vals[off:off + n]
-                gae = 0.0
-                for t in range(n - 1, -1, -1):
-                    v_next = v[t + 1] if t + 1 < n else 0.0   # terminal V := 0
-                    delta = r[t] + gam * v_next - v[t]
-                    gae = delta + gam * lam * gae
-                    adv_raw[off + t] = gae
-                off += n
+            lens = torch.tensor([len(e["returns"]) for e in episodes], device=dev, dtype=torch.long)
+            E, T = len(episodes), int(lens.max())
+            starts = torch.cumsum(lens, 0) - lens
+            ar = torch.arange(T, device=dev)
+            idx = starts[:, None] + ar[None, :]                       # [E, T] flat step index
+            valid = ar[None, :] < lens[:, None]
+            idx_c = idx.clamp(max=len(acts) - 1)
+            rew_flat = torch.from_numpy(cat("rewards")).to(dev)
+            R = torch.where(valid, rew_flat[idx_c], torch.zeros((), device=dev))
+            V = torch.where(valid, vals[idx_c], torch.zeros((), device=dev))
+            valid_next = torch.cat([valid[:, 1:], torch.zeros_like(valid[:, :1])], 1)
+            V_next = torch.cat([V[:, 1:], torch.zeros_like(V[:, :1])], 1) * valid_next   # terminal V := 0
+            delta = R + gam * V_next - V
+            A = torch.zeros_like(delta)
+            gae = torch.zeros(E, device=dev)
+            for t in range(T - 1, -1, -1):
+                gae = delta[:, t] + gam * lam * gae * valid_next[:, t]
+                A[:, t] = gae
+            adv_raw = torch.zeros_like(rets)
+            adv_raw[idx[valid]] = A[valid]
         else:
             adv_raw = rets - vals
+        pk("gae")
+        cf_n, cf_sum, cf_best, cf_fold = 0, 0.0, 0, []
+        if args.cf_p > 0:
+            # exp72: replace the GAE advantage at counterfactually evaluated
+            # decisions with the same-wall paired difference (return units)
+            off = 0
+            for e in episodes:
+                n = len(e["returns"])
+                for t, a in (e.get("cf_adv") or {}).items():
+                    if t < n:
+                        adv_raw[off + t] = args.cf_scale * a
+                        cf_n += 1; cf_sum += a; cf_best += int(a >= 0)
+                cf_fold.extend((e.get("cf_fold_gain") or {}).values())
+                off += n
+        if o_stats is not None and args.oracle_critic == "q":
+            b_, q_ = adv_raw[idx_keep], o_qadv[idx_keep]
+            o_stats["adv_std_ratio"] = float(q_.std() / (b_.std() + 1e-8))
+            o_stats["adv_corr"] = float(torch.corrcoef(torch.stack([b_, q_]))[0, 1])
+            if oracle_active:
+                blind_std = float(adv_raw[idx_keep].std()) + 1e-8
+                adv_raw = o_qadv
+        adv_std_used = float(adv_raw[idx_keep].std()) + 1e-8
         adv = ((adv_raw - adv_raw[idx_keep].mean())
                / (adv_raw[idx_keep].std() + 1e-8))
+        if (o_stats is not None and args.oracle_critic == "q" and oracle_active and args.oracle_adv_norm == "blind"):
+            adv = (adv_raw - adv_raw[idx_keep].mean()) / blind_std
+            o_stats["adv_scale_used"] = float(adv[idx_keep].std())
         if args.adv_clamp:
             adv = adv.clamp(-args.adv_clamp, args.adv_clamp)
 
+        pk("adv")
         net.train()
         t_upd0 = time.time()
+        pack_s = t_upd0 - t_roll0 - rollout_s      # batch packing + value forward + GAE (perf 2026-09-09)
         stop, passes, kls, closs, vloss, hloss, bkls = False, 0, [], [], [], [], []
+        ron_stats = {"exp": [], "samp": []}
+        bkl_frac = []
+        aloss, asep = [], []                  # exp69 aux waits BCE / positive-negative separation
         for ep in range(args.ppo_epochs):
             order = idx_keep[torch.randperm(n_eff, device=dev)]
             pass_kl = []
@@ -481,6 +988,7 @@ def main():
                 # only the forward matmuls run in bf16 (bench: numerically
                 # safe, matches the rollout inference server's pattern)
                 logits, v = logits.float(), v.float()
+                logits = _ffloor(logits, fold_floor_now)         # exp105: same floored policy as the rollout
                 logp = torch.log_softmax(logits, 1)
                 chosen = logp.gather(1, acts[sel][:, None]).squeeze(1)
                 ratio = torch.exp(chosen - old_lp[sel])
@@ -488,6 +996,13 @@ def main():
                 unclipped = ratio * a
                 clipped = ratio.clamp(1 - args.clip_eps, 1 + args.clip_eps) * a
                 pg = -torch.min(unclipped, clipped).mean()
+                if ron_full is not None:
+                    # exp110 control variate: analytic all-action immediate-ron term minus its sampled counterpart
+                    cf_ = ron_full[sel] / adv_std_used
+                    exp_cost = (logp.exp() * cf_).sum(1)                                   # sum_a pi_theta(a|s) c(s,h,a)
+                    samp_cost = ratio * cf_.gather(1, acts[sel][:, None]).squeeze(1)       # ratio_t c(s,h,a_t)
+                    pg = pg + args.ron_term * (exp_cost - samp_cost).mean()                # maximise -(exp - samp)
+                    ron_stats["exp"].append(float(exp_cost.mean() * adv_std_used)); ron_stats["samp"].append(float(samp_cost.detach().mean() * adv_std_used))
                 safe = torch.where(torch.isfinite(logp), logp, torch.zeros_like(logp))
                 ent = -(logp.exp() * safe).sum(1).mean()
                 vl = torch.nn.functional.mse_loss(v, rets[sel])
@@ -506,7 +1021,16 @@ def main():
                     # poisons the BACKWARD even though the forward is finite
                     fin = torch.isfinite(logp) & torch.isfinite(alogp)
                     diff = torch.where(fin, logp - alogp, torch.zeros_like(logp))
-                    bc_kl = (logp.exp() * diff).sum(1).mean()
+                    kl_rows = (logp.exp() * diff).sum(1)
+                    if args.bc_kl_mask:
+                        # scalars[4] = own riichi flag, [5:8] = opponents' (encoder v1/v3 layouts agree)
+                        sc_ = scal[sel]
+                        vs_r = (sc_[:, 5:8].amax(1) > 0.5) & (sc_[:, 4] < 0.5)
+                        rows_m = vs_r if args.bc_kl_mask == "riichi" else ~vs_r
+                        bc_kl = (kl_rows * rows_m).sum() / rows_m.sum().clamp(min=1)
+                        bkl_frac.append(float(rows_m.float().mean()))
+                    else:
+                        bc_kl = kl_rows.mean()
                     loss = loss + args.bc_kl_coef * bc_kl
                     bkls.append(float(bc_kl.detach()))
                 if args.critic_feats == "hazard":
@@ -516,6 +1040,24 @@ def main():
                         net.hazard_head(cfe[sel]), hlab[sel])
                     loss = loss + args.hazard_coef * hz
                     hloss.append(hz.item())
+                if args.aux_waits_coef > 0:
+                    # exp69: supervised "read the river" channel — predict the
+                    # opponents' hidden waits (engine fact) from the public obs
+                    tgt = cfe[sel][:, 111:213]
+                    # waits are sparse (a few 1s in 102 slots): without a positive
+                    # weight the head collapses to all-zeros (smoke: BCE 0.01, sep 0)
+                    n_pos = tgt.sum().clamp(min=1.0)
+                    pw = ((tgt.numel() - n_pos) / n_pos).clamp(1.0, 50.0)
+                    with torch.autocast("cuda", enabled=False):
+                        alog = net.aux_waits_logits(planes[sel], scal[sel]).float()
+                        aw = torch.nn.functional.binary_cross_entropy_with_logits(alog, tgt, pos_weight=pw)
+                    loss = loss + args.aux_waits_coef * aw
+                    aloss.append(aw.item())
+                    with torch.no_grad():
+                        pr = torch.sigmoid(alog)
+                        pos, neg = tgt > 0.5, tgt <= 0.5
+                        if bool(pos.any()) and bool(neg.any()):
+                            asep.append(float(pr[pos].mean() - pr[neg].mean()))
                 opt.zero_grad(); loss.backward()
                 if in_vwarm:
                     # value-only means value-HEAD-only: the head shares the
@@ -531,7 +1073,7 @@ def main():
                     n_upd += 1
                     scale = min(1.0, n_upd / args.warmup_updates)
                     for g in opt.param_groups:
-                        g["lr"] = args.lr * scale
+                        g["lr"] = g.get("base_lr", args.lr) * scale
                 opt.step()
                 with torch.no_grad():
                     lr_ = chosen - old_lp[sel]
@@ -544,11 +1086,28 @@ def main():
             if stop:
                 break
 
+        if ocrit is not None:
+            ocrit.train(); o_losses = []
+            for _ep in range(args.oracle_epochs):
+                order = idx_keep[torch.randperm(n_eff, device=dev)]
+                for lo in range(0, n_eff, args.oracle_batch):
+                    sel = order[lo:lo + args.oracle_batch]
+                    with torch.autocast("cuda", torch.bfloat16, enabled=args.amp_update and dev.type == "cuda"):
+                        out = ocrit(planes[sel], scal[sel], ocf[sel])
+                    out = out.float()
+                    pred = out if args.oracle_critic == "v" else out.gather(1, acts[sel][:, None]).squeeze(1)
+                    oloss = torch.nn.functional.mse_loss(pred, rets[sel])
+                    oopt.zero_grad(set_to_none=True); oloss.backward()
+                    torch.nn.utils.clip_grad_norm_(ocrit.parameters(), 1.0); oopt.step()
+                    o_losses.append(oloss.item())
+            ocrit.eval(); o_stats["loss"] = float(np.mean(o_losses))
         with torch.no_grad():
             net.eval()
-            lp1 = torch.log_softmax(net(planes[probe], scal[probe], mask[probe]), 1)
+            lp1 = torch.log_softmax(_ffloor(net(planes[probe], scal[probe], mask[probe]), fold_floor_now), 1)
             s1 = torch.where(torch.isfinite(lp1), lp1, torch.zeros_like(lp1))
             ent_after = float(-(lp1.exp() * s1).sum(1).mean())
+            fin01 = torch.isfinite(lp0) & torch.isfinite(lp1)
+            probe_kl = float((lp0.exp() * torch.where(fin01, lp0 - lp1, torch.zeros_like(lp0))).sum(1).mean())
             ev = float(1 - (rets[idx_keep] - vals[idx_keep]).var()
                        / (rets[idx_keep].var() + 1e-9))
             ret_std = float(rets[idx_keep].std())
@@ -582,14 +1141,15 @@ def main():
         # comes from the arena, where different policies actually meet.
         update_s = time.time() - t_upd0
         win = sum(1 for r in results if "荣和" in r or "自摸" in r) / max(len(results), 1)
-        hz = getattr(collect_parallel, "last_hanchan", None)
+        collector = collect_rust if args.engine == "rust" else collect_parallel
+        hz = getattr(collector, "last_hanchan", None)
         if hz:
             with open(f"{exp_dir}/hanchan_stats.jsonl", "a") as f:
                 f.write(json.dumps({"iter": it, "games": games, "roles": hz})
                         + "\n")
             for role, v in hz.items():
                 writer.add_scalar(f"hanchan/uma_{role}", v["mean_uma"], games)
-        lg = getattr(collect_parallel, "last_league", None)
+        lg = getattr(collector, "last_league", None)
         if lg:
             # rollout ratings (exp46-C rev3): learner-vs-pool point-share per
             # opponent, one jsonl row per iteration; chunk drivers aggregate
@@ -599,26 +1159,104 @@ def main():
         el = time.time() - t0
         row = {"iter": it, "games": games, "wall_s": round(el, 1),
                "rollout_s": round(rollout_s, 1), "update_s": round(update_s, 1),
+               "pack_s": round(pack_s, 2), "iter_s": round(iter_s, 2),
+               **({"pack_parts": pk_parts, "pack_pre": round(pk_t[0] - t_roll0 - rollout_s, 3)} if args.profile_pack else {}),
                "pg_loss": float(np.mean(closs)), "value_loss": float(np.mean(vloss)),
-               "entropy_before": ent_before, "entropy": ent_after,
+               "entropy_before": ent_before, "entropy": ent_after, "probe_kl": probe_kl, "lr_mult": lr_mult,
+               **({f"posture_beta{i}": round(float(x), 4) for i, x in enumerate(pb.tolist())} if pb is not None else {}),
                "approx_kl": kls[-1] if kls else 0.0, "ppo_passes": passes,
                "explained_var": ev, "win_rate": win,
+               "oracle_hide_p": cfg.get("oracle_hide_p"),
                # value-scale context (user 2026-08-30): value_loss is MSE in
                # squared normalized-reward units — read it against ret_std;
                # v_std/ret_std is the critic's conservatism ratio
                "value/ret_std": ret_std, "value/v_mean": v_mean,
                "value/v_std": v_std,
                "bc_kl": float(np.mean(bkls)) if bkls else None,
+               "bc_kl_rows_frac": float(np.mean(bkl_frac)) if bkl_frac else None,
                "entropy_coef": ent_alpha,
                "n_effective": n_eff, "n_raw": int(len(acts))}
+        if args.shaping:
+            row["shaping_scale"] = float(cfg.get("shaping_scale", args.shaping_scale)) if cfg.get("shaping") else 0.0
+            if cfg.get("houjuu_by_shanten"):
+                row["houjuu_far_penalty"] = float(cfg["houjuu_by_shanten"][2])
+        if args.cf_p > 0:
+            row["cf_n"] = cf_n
+            row["cf_adv_mean"] = cf_sum / max(cf_n, 1)
+            row["cf_exec_best_frac"] = cf_best / max(cf_n, 1)
+            row["cf_fold_n"] = len(cf_fold)
+            # mean (genbutsu continuation - executed continuation): the
+            # direct, same-wall estimate of what folding was worth here
+            row["cf_fold_gain_mean"] = float(np.mean(cf_fold)) if cf_fold else 0.0
+            row["cf_skipped"] = int(getattr(collector, "last_cf_skipped", 0))
+        _dv = getattr(collector, "last_dev", None)
+        if args.dev_p > 0 and _dv:
+            row["dev_frac"] = _dv["n_dev"] / max(_dv["n_multi"], 1)
+            row["dev_steps"] = int(_dv["n_dev"])
+            if dev_mask is not None and dev_mask.any():
+                row["dev_adv_std"] = float(adv_raw[dev_mask].std())
+        if ron_full is not None:
+            ex_rows = (ron_full[idx_keep] > 0).any(1)
+            row["ron/frac_rows"] = float(ex_rows.float().mean())
+            row["ron/mean_cost_taken"] = float(ron_full[idx_keep].gather(1, acts[idx_keep][:, None]).mean())
+            row["ron/expected_cost_pi"] = float(np.mean(ron_stats["exp"])) if ron_stats["exp"] else 0.0
+            row["ron/sampled_cost"] = float(np.mean(ron_stats["samp"])) if ron_stats["samp"] else 0.0
+            for k_ in ("ron/frac_rows", "ron/mean_cost_taken", "ron/expected_cost_pi", "ron/sampled_cost"):
+                writer.add_scalar(k_, row[k_], games)
+        if o_stats is not None:
+            for k_, v_ in o_stats.items():
+                row[f"oracle/{k_}"] = v_
+                writer.add_scalar(f"oracle/{k_}", v_, games)
+        _wp = getattr(collector, "last_wpure", None)
+        if _wp:
+            # exp112: pure-W credit diagnostics (points), per iteration
+            row["wpure/mean_abs_credit_pts"] = float(_wp["mean_abs_credit_pts"]); row["wpure/paid"] = int(_wp["paid"]); row["wpure/rolled"] = int(_wp["rolled"])
+            writer.add_scalar("wpure/mean_abs_credit_pts", row["wpure/mean_abs_credit_pts"], games)
+        _m4 = getattr(collector, "last_m46", None)
+        if _m4:
+            # exp124 46-slot space: share of decisions that needed a second (riichi / kan select) query
+            row["m46_second_rate"] = float(_m4["second_rate"])
+            writer.add_scalar("m46/second_rate", row["m46_second_rate"], games)
+        _fd = getattr(collector, "last_fold", None)
+        if _fd:
+            # exp103 fold option: how often ENTER_FOLD was legal and taken this iteration
+            row["fold_enter_rate"] = float(_fd["enter_rate"])
+            row["fold_enter_n"] = int(_fd["n_enter"])
+            row["fold_eligible_frac"] = _fd["n_eligible"] / max(_fd["n_rows"], 1)
+            if "floor" in _fd:
+                # exp105: floor in force this iteration, and what the UNfloored policy does by itself
+                row["fold_floor"] = float(_fd["floor"])
+                row["fold_raw_above_frac"] = float(_fd["raw_above_frac"])
+                row["fold_raw_p_mean"] = float(_fd["raw_p_mean"])
+        _nz = getattr(collector, "last_noise", None)
+        if args.param_noise_kl > 0 and _nz:
+            row["noise_sigma"] = noise_sigma
+            row["noise_kl"] = float(_nz["kl"]); row["noise_greedy_change"] = float(_nz["greedy_change"])
+            for k in ("diag_corr", "diag_exposed_far_rate", "diag_n", "diag_between_var", "diag_within_group_var",
+                      "lean_clean", "lean_noisy_mean", "lean_spread", "lean_states"):
+                if k in _nz:
+                    row["noise_" + k] = float(_nz[k])
+            # Plappert-style adaptation: keep KL(clean || noisy) at the target
+            noise_sigma = noise_sigma / args.param_noise_adapt if _nz["kl"] > args.param_noise_kl else noise_sigma * args.param_noise_adapt
+            noise_sigma = float(min(max(noise_sigma, 1e-3), 30.0))
         if hloss:
             row["hazard_bce"] = float(np.mean(hloss))
+        if aloss:
+            row["aux_bce"] = float(np.mean(aloss))
+            row["aux_sep"] = float(np.mean(asep)) if asep else 0.0
         log.append(row)
+        if args.kl_lr_target > 0:          # exp113: next iteration's lr from this iteration's clean probe KL
+            if probe_kl > 1.5 * args.kl_lr_target:
+                lr_mult = max(lr_mult / 1.5, 0.01)
+            elif probe_kl < args.kl_lr_target / 1.5:
+                lr_mult = min(lr_mult * 1.5, 1.0)
+            for g in opt.param_groups:
+                g["lr"] = g.get("base_lr", args.lr) * lr_mult
         for k, v in row.items():
             if k not in ("iter", "games", "wall_s") and isinstance(v, (int, float)):
                 writer.add_scalar(TB_TAG.get(k, k), float(v), games)
         from src.agents.dnn.style_stats import summarize as _style_sum
-        _sty = getattr(collect_parallel, "last_style", None)
+        _sty = getattr(collector, "last_style", None)
         if _sty:
             for k, v in _style_sum(_sty).items():
                 if k != "games":

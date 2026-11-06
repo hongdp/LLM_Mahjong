@@ -435,7 +435,7 @@ class DnnPolicy:
 
 
 def load_policy(ckpt_path: str, device: str = "cpu", temperature: float = 0.0) -> DnnPolicy:
-    from scripts.run_arena_dnn import load_dnn
+    from src.agents.dnn.checkpoint import load_dnn
     return DnnPolicy(load_dnn(ckpt_path, device), device, temperature)
 
 

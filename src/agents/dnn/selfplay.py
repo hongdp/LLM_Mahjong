@@ -27,12 +27,26 @@ C_SHANTEN, C_UKEIRE = 2.0, 0.05
 # Privileged CRITIC-ONLY features (exp11 A1/A2). The policy never sees them:
 # they ride in a separate tensor consumed only by the value path, so the
 # actor keeps information parity with the LLM baseline.
-CFEAT_DIM = {"none": 0, "profile": 4, "hazard": 45}   # hazard: 9 families x 5
+from src.agents.dnn.oracle_features import ORACLE_DIM, oracle_features   # noqa: E402
+
+CFEAT_DIM = {"none": 0, "profile": 4, "hazard": 45,   # hazard: 9 families x 5
+             "oracle": ORACLE_DIM}                    # exp67: hidden state for the critic
 
 
 def critic_features(table, pid, mode: str) -> Optional[torch.Tensor]:
     if mode == "none":
         return None
+    if mode == "oracle":
+        try:
+            return oracle_features(table, pid)
+        except Exception:                 # noqa: BLE001
+            return torch.zeros(ORACLE_DIM)
+    if mode == "oracle_ron":              # exp109 judge: oracle vector + engine-exact per-discard ron cost
+        from src.agents.dnn.oracle_features import oracle_ron_features, RON_COST_DIM
+        try:
+            return oracle_ron_features(table, pid)
+        except Exception:                 # noqa: BLE001
+            return torch.zeros(ORACLE_DIM + RON_COST_DIM)
     hand = table.hands[pid]
     n_melds = len(table.melds[pid])
     closed = n_melds == 0                 # proxy: ankan also counts as open
@@ -49,12 +63,40 @@ def critic_features(table, pid, mode: str) -> Optional[torch.Tensor]:
 
 
 def potential(table, pid) -> float:
-    """Phi(s) = -2.0*shanten + 0.05*|ukeire| for this seat's hand.
+    """Phi(s) = -2.0 * best reachable shanten for this seat's hand.
 
-    Same potential the LLM runs used (rewards.MahjongPotentialReward), so
-    the two shaping setups stay comparable. Computed straight off the
-    table instead of parsing prompt text.
+    exp73 (2026-09-07): the LLM-era potential (-2*shanten + 0.05*|ukeire|,
+    kept below as potential_full) costs 7.6 ms per decision because ukeire
+    enumerates 34 draws x shanten; on the vectorized rollout path that made
+    a 2048-deal iteration 17x slower. The table's own memoised shanten is
+    ~0 ms, so the potential is shanten-only: for a 14-tile hand the best
+    discard's shanten (min over distinct tiles), for 13 tiles the hand's.
+    Still potential-based (a function of the state only), so the PBRS
+    telescoping/optimality guarantees are unchanged.
     """
+    try:
+        tiles = table.hands[pid]
+        nm = len(table.melds[pid])
+        if len(tiles) % 3 == 2:
+            best = None
+            for t in set(tiles):
+                h = list(tiles)
+                h.remove(t)
+                sh = table._shanten(h, nm)
+                if best is None or sh < best:
+                    best = sh
+                    if best <= 0:
+                        break
+            sh = best if best is not None else 8
+        else:
+            sh = table._shanten(list(tiles), nm)
+        return -C_SHANTEN * float(sh)
+    except Exception:
+        return 0.0
+
+
+def potential_full(table, pid) -> float:
+    """LLM-era potential: -2.0*shanten + 0.05*|ukeire| (slow; reference)."""
     try:
         tiles = table.hands[pid]
         padded = pad_for_melds(tiles, len(table.melds[pid]))
@@ -130,7 +172,7 @@ def _choose(net, table, pid, actions, temperature, device, cmode="none"):
 
     steps, mode = [], None
     for _ in range(2):                      # at most one follow-up
-        mask, lookup = space.mask(actions, mode=mode)
+        mask, lookup = space.mask(actions, mode=mode, table=table, pid=pid)
         if os.environ.get("INFER_DEBUG") and not bool(mask.any()):
             with open("/tmp/choose_debug.txt", "a") as _f:
                 _f.write(f"EMPTY mask mode={mode} pid={pid} actions={actions}\n")
@@ -139,7 +181,7 @@ def _choose(net, table, pid, actions, temperature, device, cmode="none"):
         i = int(idx)
         steps.append(DnnStep(planes=planes, scalars=scalars, mask=mask,
                              action_idx=i, logprob=float(lp), cfeats=cf))
-        nxt = space.follow_up(i, actions, mode=mode)
+        nxt = space.follow_up(i, actions, mode=mode, table=table, pid=pid)
         if nxt is None:
             return steps, space.resolve(i, lookup)
         mode = nxt
@@ -256,8 +298,8 @@ def play_game(net, temperature: float = 1.0, device="cpu",
     return game
 
 
-def apply_shaping(steps: List[DnnStep], gamma: float) -> None:
-    """In-place PBRS: F_t = gamma*Phi_{t+1} - Phi_t, terminal Phi := 0.
+def apply_shaping(steps: List[DnnStep], gamma: float, scale: float = 1.0) -> None:
+    """In-place PBRS: F_t = scale * (gamma*Phi_{t+1} - Phi_t), terminal Phi := 0.
 
     Potential-based, so the discounted shaping telescopes to -Phi(s_0) and
     the optimal policy is unchanged (Ng et al. 1999). exp2 showed this adds
@@ -267,7 +309,7 @@ def apply_shaping(steps: List[DnnStep], gamma: float) -> None:
     """
     for i, s in enumerate(steps):
         nxt = 0.0 if i + 1 >= len(steps) else steps[i + 1].phi
-        s.reward += gamma * nxt - s.phi
+        s.reward += scale * (gamma * nxt - s.phi)
 
 
 def returns_to_go(steps: List[DnnStep], gamma: float) -> List[float]:

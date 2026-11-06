@@ -4,6 +4,7 @@
   1000.0
  ],
  "deals_per_pair": 200,
+ "temperature": 1.0,
  "seed0": 46900000,
  "date": "2026-08-30 00:32:46",
  "engine": {

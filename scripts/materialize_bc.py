@@ -41,9 +41,14 @@ def _worker(args):
     killed child left pool.map hanging forever. Files are opened once and
     appended per game; manifests are written at the end from counters.
     """
-    wid, files, variant, action_space, out_dir, holdout_pct = args
+    wid, files, variant, action_space, out_dir, holdout_pct, holdout_set, raw_dir = args
     import torch                                            # noqa: F401
     handles, counts, dims = {}, {"train": 0, "holdout": 0}, {}
+
+    def split_of(path):
+        if holdout_set is not None:                          # exp65: frozen holdout list
+            return "holdout" if os.path.relpath(path, raw_dir) in holdout_set else "train"
+        return "holdout" if is_holdout(path, holdout_pct) else "train"
 
     def get_handles(split):
         if split not in handles:
@@ -56,7 +61,7 @@ def _worker(args):
 
     n_bad = 0
     for path in files:
-        split = "holdout" if is_holdout(path, holdout_pct) else "train"
+        split = split_of(path)
         h = get_handles(split)
         for seat in range(4):
             try:
@@ -101,11 +106,19 @@ def main():
     ap.add_argument("--workers", type=int, default=14)
     ap.add_argument("--holdout_pct", type=int, default=10)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--holdout_list", default=None,
+                    help="file of '<date>/<id>.mjlog' lines that ARE the holdout (exp65: frozen set); "
+                         "overrides --holdout_pct")
     a = ap.parse_args()
 
     files = list_games(a.raw, limit=a.limit)
+    holdout_set = None
+    if a.holdout_list:
+        from src.agents.dnn.human_bc_data import load_holdout_list
+        holdout_set = load_holdout_list(a.holdout_list)
+        print(f"frozen holdout list: {len(holdout_set)} games", flush=True)
     chunks = [files[w::a.workers] for w in range(a.workers)]
-    jobs = [(w, chunks[w], a.variant, a.action_space, a.out, a.holdout_pct)
+    jobs = [(w, chunks[w], a.variant, a.action_space, a.out, a.holdout_pct, holdout_set, a.raw)
             for w in range(a.workers) if chunks[w]]
     t0 = time.time()
     with mp.get_context("spawn").Pool(len(jobs)) as pool:

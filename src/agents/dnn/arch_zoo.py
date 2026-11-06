@@ -20,10 +20,10 @@ import torch.nn.functional as F
 
 from src.agents.dnn.mortal_obs import MORTAL_V3_PLANES
 from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
-from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES,
+from src.agents.dnn.encoder import (ACTION_DIM, ACTION_TYPES, N_PLANES, N_PLANES_V3RG, N_SCALARS_V3G,
                                     N_PLANES_V1R, N_PLANES_V3R, N_PLANES_V3R2,
                                     N_PLANES_V2, N_PLANES_V3, N_SCALARS,
-                                    N_SCALARS_V3, N_SCALARS_V3H, TILE_TYPES)
+                                    N_SCALARS_V3, N_SCALARS_V3H, N_SCALARS_V3S, N_SCALARS_V3F, TILE_TYPES)
 from src.agents.dnn.net import MahjongPolicyNet, ResBlock
 
 
@@ -31,10 +31,18 @@ class CnnPolicy(MahjongPolicyNet):
     """The incumbent, parameterized by input planes for encoder v2."""
 
     def __init__(self, channels=64, blocks=3, in_planes=N_PLANES,
-                 in_scalars=N_SCALARS, encoder_variant="v1"):
+                 in_scalars=N_SCALARS, encoder_variant="v1", aux_waits=False,
+                 action_dim=None, action_space=None, posture_prior=False):
         nn.Module.__init__(self)
+        # exp116: learnable posture prior beta[tenpai, 1-shanten, 2+-shanten] on genbutsu discards (v3rg input only)
+        if posture_prior:
+            self.posture_beta = nn.Parameter(torch.zeros(3))
         self.encoder_variant = encoder_variant
         self.in_planes = in_planes
+        if action_space is not None:          # exp103: native_fold (375 slots); default stays native
+            self.action_space = action_space
+        if action_dim is not None:            # read by the inference server (per-model mask width)
+            self.action_dim = action_dim
         # bypasses MahjongPolicyNet.__init__, so the exp11 critic-variant
         # attributes its inherited forward_with_value reads must exist here
         self.critic_feat_dim = 0
@@ -45,12 +53,23 @@ class CnnPolicy(MahjongPolicyNet):
         self.scalar_fc = nn.Sequential(nn.Linear(in_scalars, 64), nn.ReLU())
         self.head = nn.Sequential(
             nn.Linear(channels * TILE_TYPES + 64, 512), nn.ReLU(),
-            nn.Linear(512, ACTION_DIM),
+            nn.Linear(512, action_dim if action_dim is not None else ACTION_DIM),
         )
         self.value = nn.Sequential(
             nn.Linear(channels * TILE_TYPES + 64, 256), nn.ReLU(),
             nn.Linear(256, 1),
         )
+        # exp69 (pure line): auxiliary prediction of the three opponents'
+        # hidden waits (3 x 34 multi-label) from the PUBLIC observation. The
+        # targets come from the engine at rollout time (critic_feats=oracle
+        # slots 111:213); the head shares the trunk so "reading the river"
+        # is learned into the policy's representation. Never used at play.
+        self.aux_waits = aux_waits
+        self.aux_waits_head = (nn.Sequential(nn.Linear(channels * TILE_TYPES + 64, 256), nn.ReLU(),
+                                             nn.Linear(256, 3 * TILE_TYPES)) if aux_waits else None)
+
+    def aux_waits_logits(self, planes, scalars):
+        return self.aux_waits_head(self.trunk(planes, scalars))
 
 
 class SEChannelAttention(nn.Module):
@@ -208,8 +227,8 @@ class TilesTransformer(nn.Module):
                 self.value_head(h[:, 0, :]).squeeze(-1))
 
     @torch.no_grad()
-    def act(self, planes, scalars, mask, temperature: float = 1.0):
-        if not bool(mask.any(dim=1).all()):
+    def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):
+        if check and not bool(mask.any(dim=1).all()):
             raise ValueError("act() got a row with no legal actions")
         logits = self.forward(planes, scalars, mask)
         if temperature <= 0:
@@ -221,6 +240,88 @@ class TilesTransformer(nn.Module):
             lp = logb.gather(1, idx[:, None]).squeeze(1)
         return idx, lp
 
+
+
+class EnsemblePolicy(MahjongPolicyNet):
+    """exp92 (2026-09-14): logit-level ensemble of K same-variant zoo nets — the
+    policy is the mean of the members' masked log-softmax (geometric mean of the
+    member policies), the value the mean of member values. Members are stored as
+    a ModuleList so a single checkpoint carries the whole ensemble and every
+    loader (play_pair_vector, infer_server, mjai bridge) treats it as one net.
+    Build with scripts: torch.save({"arch": "ens5_cnn_m_v3r", "state_dict": ens.state_dict(), ...})."""
+
+    def __init__(self, members, encoder_variant="v3r"):
+        nn.Module.__init__(self)
+        self.members = nn.ModuleList(members)
+        self.encoder_variant = encoder_variant
+        self.in_planes = members[0].in_planes
+        self.critic_feat_dim = 0
+        self.hazard = False
+        self.hazard_head = None
+
+    def forward(self, planes, scalars, mask):
+        lp = torch.stack([torch.log_softmax(m(planes, scalars, mask), 1) for m in self.members]).mean(0)
+        return lp.masked_fill(~mask, float("-inf"))
+
+    def forward_with_value(self, planes, scalars, mask, cfeats=None):
+        outs = [m.forward_with_value(planes, scalars, mask) for m in self.members]
+        lp = torch.stack([torch.log_softmax(o[0], 1) for o in outs]).mean(0)
+        return lp.masked_fill(~mask, float("-inf")), torch.stack([o[1] for o in outs]).mean(0)
+
+
+class AnchoredQPolicy(MahjongPolicyNet):
+    """exp96 (2026-09-20): prior-anchored Q network. `prior` is a frozen policy net pi0;
+    `q` is a same-arch net whose policy head is reread as the advantage A(s,a) (last layer
+    zero-initialised by the trainer) and whose value head is V(s). Q = V + A - E_pi0[A].
+    The ACTING logits are log(pi0 + eps) + A/tau, so with A = 0 the net is pi0 bit for bit,
+    a 30-point Q error is a 0.3-nat nudge and only a large advantage overrules the prior
+    (exp59: raw Q regression erodes the near-tie tile-efficiency ordering). One checkpoint
+    carries both members, so every loader treats it as an ordinary policy net."""
+
+    def __init__(self, prior, q, tau=0.05, eps=0.02, encoder_variant="v3r"):
+        nn.Module.__init__(self)
+        self.prior, self.q = prior, q
+        for p in self.prior.parameters():
+            p.requires_grad_(False)
+        self.register_buffer("tau", torch.tensor(float(tau)))
+        self.register_buffer("eps", torch.tensor(float(eps)))
+        self.encoder_variant = encoder_variant
+        self.in_planes = prior.in_planes
+        self.critic_feat_dim = 0
+        self.hazard = False
+        self.hazard_head = None
+
+    def train(self, mode=True):
+        super().train(mode)
+        self.prior.eval()
+        return self
+
+    def parts(self, planes, scalars, mask):
+        """(log(pi0+eps) masked to -inf, centred advantage A [illegal = 0], V)."""
+        with torch.no_grad():
+            p0 = torch.softmax(self.prior(planes, scalars, mask).float(), 1)
+        h = self.q.trunk(planes, scalars)
+        a = self.q.head(h).float().masked_fill(~mask, 0.0)
+        a = (a - (p0 * a).sum(1, keepdim=True)).masked_fill(~mask, 0.0)
+        v = self.q.value(h).squeeze(-1).float()
+        lp0 = torch.log(p0 + self.eps).masked_fill(~mask, float("-inf"))
+        return lp0, a, v
+
+    def forward(self, planes, scalars, mask):
+        lp0, a, _ = self.parts(planes, scalars, mask)
+        return lp0 + a / self.tau
+
+    def forward_with_value(self, planes, scalars, mask, cfeats=None):
+        lp0, a, v = self.parts(planes, scalars, mask)
+        return lp0 + a / self.tau, v
+
+
+def _aq(member_arch, variant):
+    return lambda: AnchoredQPolicy(ZOO[member_arch][0](), ZOO[member_arch][0](), encoder_variant=variant)
+
+
+def _ens(k, member_arch, variant):
+    return lambda: EnsemblePolicy([ZOO[member_arch][0]() for _ in range(k)], encoder_variant=variant)
 
 ZOO = {
     # name: (factory, needs_order_planes)
@@ -240,12 +341,51 @@ ZOO = {
                                            in_scalars=N_SCALARS_V3, encoder_variant="v3"), False),
     # red-dora variants (Majsoul rules, 2026-08-23): +5 red planes
     "cnn_m_r": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R, encoder_variant="v1r"), False),
+    # exp68 pure line: cnn_m_r + 8 oracle planes (zeros at play time; filled only
+    # by the training rollout under the hide-probability schedule)
+    "cnn_m_ro": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R + 8, encoder_variant="v1ro"), False),
+    # exp70 pure line (hanchan training): cnn_m_r + 3 match-context scalars (round number / honba / all-last)
+    "cnn_m_rh": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R, in_scalars=N_SCALARS + 3, encoder_variant="v1rh"), False),
+    # exp69 pure line: cnn_m_r + auxiliary opponents'-waits prediction head (public input only)
+    "cnn_m_r_aux": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V1R, encoder_variant="v1r", aux_waits=True), False),
     "convformer_m_r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V1R,
                                           encoder_variant="v1r"), False),
     "cnn_m_v3r": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R,
                                     in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp89: same trunk, +2 style scalars; a v3r checkpoint loads with the new
+    # input columns zero-initialised (net.load_compatible), so tau=0 reproduces it
+    "cnn_m_v3s": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R,
+                                    in_scalars=N_SCALARS_V3S, encoder_variant="v3s"), False),
     "convformer_m_v3r": (lambda: ConvFormer(160, 6, 5, in_planes=N_PLANES_V3R,
                                             in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp101 (2026-09-25, pure line capacity x scale): wider/deeper CNN trunks on the v3r encoder.
+    # cnn_l_v3r 4.0M params costs ~4% rollout throughput vs cnn_m_v3r on the Rust engine; cnn_xl_v3r 6.6M costs ~40%.
+    "cnn_l_v3r": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R,
+                                    in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp112 (pure-line hanchan v2): cnn_l trunk + match-context scalars (within-wind round number, honba,
+    # all-last). A v3r checkpoint loads through net.load_compatible (scalar_fc gains three zero columns).
+    "cnn_l_v3rh": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R,
+                                     in_scalars=N_SCALARS_V3H, encoder_variant="v3rh"), False),
+    "cnn_xl_v3r": (lambda: CnnPolicy(192, 6, in_planes=N_PLANES_V3R,
+                                     in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp113 (2026-10-16, pure line order-of-magnitude scale): 384 channels x 12 blocks, 21M params (5.3x cnn_l).
+    # Warm-started function-preservingly from a cnn_l_v3r checkpoint by scripts/net2net_widen.py.
+    "cnn_c384b12_v3r": (lambda: CnnPolicy(384, 12, in_planes=N_PLANES_V3R,
+                                          in_scalars=N_SCALARS_V3, encoder_variant="v3r"), False),
+    # exp116 (2026-10-21, rule-feature prior arm -- NOT pure-leaderboard): cnn_l on v3rg (+ genbutsu plane, + shanten
+    # one-hot) with the learnable posture prior beta on genbutsu discards. A v3r checkpoint widens into it by
+    # net.load_compatible (zero input channel / zero scalar columns; beta set by the trainer's --posture_beta).
+    "cnn_l_v3rg": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3RG, in_scalars=N_SCALARS_V3G,
+                                     encoder_variant="v3rg", posture_prior=True), False),
+    # exp103 (2026-10-02, pure line fold option): v3r trunk + in_fold_mode scalar + ENTER_FOLD slot (375).
+    # A v3r checkpoint loads through net.load_compatible: zero input column, new head row at bias -6.
+    "cnn_m_v3rf": (lambda: CnnPolicy(64, 3, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3F,
+                                     encoder_variant="v3rf", action_dim=ACTION_DIM + 1, action_space="native_fold"), False),
+    "cnn_l_v3rf": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3F,
+                                     encoder_variant="v3rf", action_dim=ACTION_DIM + 1, action_space="native_fold"), False),
+    # arm M2: same option but NO mask restriction inside fold mode (sub-policy fully learned; only the flag is imposed)
+    "cnn_l_v3rfl": (lambda: CnnPolicy(128, 4, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3F,
+                                      encoder_variant="v3rf", action_dim=ACTION_DIM + 1, action_space="native_fold_free"), False),
 }
 
 
@@ -355,12 +495,19 @@ class ConvFormer46(ConvFormer):
 
 
     def __init__(self, d=160, layers=6, heads=5, in_planes=N_PLANES,
-                 in_scalars=N_SCALARS, encoder_variant="v1"):
+                 in_scalars=N_SCALARS, encoder_variant="v1", critic_feat_dim=0):
         super().__init__(d, layers, heads, in_planes=in_planes,
                          in_scalars=in_scalars, encoder_variant=encoder_variant)
         from src.agents.dnn.mortal_action import MORTAL_ACTION_DIM
         self.action_space = "mortal46"
         self.action_dim = MORTAL_ACTION_DIM
+        # exp67 oracle critic: privileged features enter the VALUE path only
+        # (concatenated to the global token); the policy logits never see them
+        self.critic_feat_dim = critic_feat_dim
+        if critic_feat_dim > 0:
+            self.value_cfeat_proj = nn.Sequential(nn.Linear(critic_feat_dim, 128), nn.GELU())
+            self.value_head = nn.Sequential(nn.Linear(d + 128, 128), nn.ReLU(),
+                                            nn.Linear(128, 1))
         # red-five tokens as a device buffer: a python-list index creates a
         # CPU tensor every forward, which breaks CUDA graph capture in the
         # infer server (exp46 launch crash, 2026-08-28)
@@ -391,8 +538,13 @@ class ConvFormer46(ConvFormer):
         # ~0.02-0.07 by deal luck, value gradients into the trunk are mostly
         # noise continuously eroding the policy's representation
         hv = h.detach() if getattr(self, "value_detach", False) else h
+        g = hv[:, 0, :]
+        if getattr(self, "critic_feat_dim", 0) > 0:
+            if cfeats is None:
+                cfeats = torch.zeros(g.shape[0], self.critic_feat_dim, device=g.device, dtype=g.dtype)
+            g = torch.cat([g, self.value_cfeat_proj(cfeats.to(g.dtype))], dim=1)
         return (self._logits46(h).masked_fill(~mask, float("-inf")),
-                self.value_head(hv[:, 0, :]).squeeze(-1))
+                self.value_head(g).squeeze(-1))
 
 
 # ----------------------------------------------------------------------
@@ -553,6 +705,11 @@ ZOO.update({
     "convformer_m_v3r_m46": (lambda: ConvFormer46(
         160, 6, 5, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3,
         encoder_variant="v3r"), False),
+    # exp67: same trunk/head, value path additionally reads the 319-dim oracle
+    # (hidden-state) features; policy keys load from any *_v3r_m46 checkpoint
+    "convformer_m_v3r_m46_oc": (lambda: ConvFormer46(
+        160, 6, 5, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3,
+        encoder_variant="v3r", critic_feat_dim=319), False),
     "convformer_m_v3rh_m46": (lambda: ConvFormer46(
         160, 6, 5, in_planes=N_PLANES_V3R, in_scalars=N_SCALARS_V3H,
         encoder_variant="v3rh"), False),
@@ -770,8 +927,8 @@ class HandRiverFormer(nn.Module):
                 self.value(h).squeeze(-1))
 
     @torch.no_grad()
-    def act(self, planes, scalars, mask, temperature: float = 1.0):
-        if not bool(mask.any(dim=1).all()):
+    def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):
+        if check and not bool(mask.any(dim=1).all()):
             raise ValueError("act() got a row with no legal actions")
         logits = self.forward(planes, scalars, mask)
         if temperature <= 0:
@@ -795,3 +952,7 @@ ZOO.update({
     "hrf_xl_notime_v4": (lambda: HandRiverFormer(320, 8, 8, 2, no_temporal_pe=True), False),
     "hrf_xl_freerank_v4": (lambda: HandRiverFormer(320, 8, 8, 2, free_rank_emb=True), False),
 })
+
+ZOO.update({f"ens{k}_cnn_m_v3r": (_ens(k, "cnn_m_v3r", "v3r"), False) for k in (3, 5, 7)})
+ZOO["aq_cnn_m_v3r"] = (_aq("cnn_m_v3r", "v3r"), False)
+

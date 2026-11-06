@@ -60,7 +60,8 @@ class _Shared:
         self.done_gen = torch.zeros(n_slots, dtype=torch.int64).share_memory_()
         self.planes = torch.zeros(n_slots, n_planes, TILE_TYPES).share_memory_()
         self.scalars = torch.zeros(n_slots, n_scalars).share_memory_()
-        self.mask = torch.zeros(n_slots, ACTION_DIM, dtype=torch.bool).share_memory_()
+        # widest hosted space: native 374 + the exp103 ENTER_FOLD slot; narrower spaces use a prefix
+        self.mask = torch.zeros(n_slots, ACTION_DIM + 1, dtype=torch.bool).share_memory_()
         self.temp = torch.ones(n_slots).share_memory_()
         self.out_idx = torch.zeros(n_slots, dtype=torch.int64).share_memory_()
         self.out_lp = torch.zeros(n_slots).share_memory_()
@@ -85,6 +86,9 @@ def _server_main(shared, req_q, events, state_np, cfg, device, max_batch,
         from src.agents.dnn.net import MahjongPolicyNet
         net = MahjongPolicyNet(channels=cfg["channels"], blocks=cfg["blocks"])
     load_compatible(net, {k: torch.from_numpy(v) for k, v in state_np.items()})
+    if cfg.get("symmetrize"):                   # exp61: 6-view suit-averaged policy
+        from src.agents.dnn.symmetry import maybe_symmetrize
+        net = maybe_symmetrize(net, cfg["symmetrize"])
     models = [net]                              # model 0 = learner
     if cfg.get("gpu_infer_opponents") and cfg.get("league"):
         from src.agents.dnn.parallel_rollout import _load_policy_ckpt

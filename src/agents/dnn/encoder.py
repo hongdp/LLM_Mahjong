@@ -51,6 +51,15 @@ N_SCALARS_V3 = N_SCALARS + 4 + 4 + 1        # + riichi turn x4, discard count x4
 # only match context v3 scalars were missing (points/kyotaku/wind/dealer
 # are already in s[0..17]); honba lives driver-side, read via getattr
 N_SCALARS_V3H = N_SCALARS_V3 + 3
+# exp116 v3rg: v3r + genbutsu plane (vs every riichi opponent, only while >= 1 opponent is in riichi and the seat is
+# not) + own-shanten one-hot (tenpai / 1 / 2+, same gate). Rust encoder v3rg is bit-identical (tests/test_rust_encoder_parity.py).
+# v3s (exp89 style-conditioned population): v3r + [tau_d / 8, tau_a] of this
+# seat's reward style (Table.seat_style; zeros = the pure objective, used at play)
+N_SCALARS_V3S = N_SCALARS_V3 + 2
+# v3rf (exp103 fold option): v3r + [in_fold_mode] of this seat (Table.fold_mode,
+# set by the ENTER_FOLD option; zero = plain v3r, so a v3r checkpoint loads
+# unchanged with the new input column zero-initialised)
+N_SCALARS_V3F = N_SCALARS_V3 + 1
 # red-dora variants (2026-08-23): base planes + 6 — own red fives (at the
 # 5x columns), per relative seat red fives visible in river/melds, and the
 # yakuhai plane (round wind, seat wind, dragons: a rule fact placed on the
@@ -59,6 +68,19 @@ N_SCALARS_V3H = N_SCALARS_V3 + 3
 N_PLANES_RED = 6
 N_PLANES_V1R = N_PLANES + N_PLANES_RED      # 21
 N_PLANES_V3R = N_PLANES_V3 + N_PLANES_RED   # 56
+N_PLANES_V3RG = N_PLANES_V3R + 1
+N_SCALARS_V3G = N_SCALARS_V3 + 3
+# exp68 oracle POLICY guiding (Suphx-style, pure line): 8 hidden-state planes
+# appended to v1r — 3 opponents' concealed hand counts /4, 3 opponents' wait
+# masks, live wall counts /4, hidden ura indicator one-hot. They are filled
+# ONLY when the table carries `oracle_visible=True` (set by the training
+# rollout with the schedule's probability); every other path (arena, ladder,
+# bridge, tests) sees zeros, so a "_ro" checkpoint can never cheat at play.
+N_PLANES_ORACLE = 8
+N_PLANES_V1RO = N_PLANES_V1R + N_PLANES_ORACLE   # 29
+# exp70 (pure line, hanchan training): v1r planes + the three match-context
+# scalars v3rh carries (within-wind round number, honba, all-last flag)
+N_SCALARS_V1H = N_SCALARS + 3
 # v3r2 (exp51): +12 defense-theory planes, still zero derived features —
 # post-riichi discards, first-occurrence discard order (the last-write
 # collision fix), and meld call junme recovered from the discarder's
@@ -80,9 +102,14 @@ EV_PLANES = (EV_MAX * EV_F + TILE_TYPES - 1) // TILE_TYPES   # 31
 N_PLANES_V4 = N_PLANES_V1R + EV_PLANES
 VARIANT_SHAPE = {                            # encoder variant -> (planes, scalars)
     "v1": (N_PLANES, N_SCALARS), "v1r": (N_PLANES_V1R, N_SCALARS),
+    "v1ro": (N_PLANES_V1RO, N_SCALARS),
+    "v1rh": (N_PLANES_V1R, N_SCALARS_V1H),
     "v3": (N_PLANES_V3, N_SCALARS_V3), "v3r": (N_PLANES_V3R, N_SCALARS_V3),
     "v3r2": (N_PLANES_V3R2, N_SCALARS_V3),
     "v3rh": (N_PLANES_V3R, N_SCALARS_V3H),
+    "v3rg": (N_PLANES_V3RG, N_SCALARS_V3G),
+    "v3s": (N_PLANES_V3R, N_SCALARS_V3S),      # exp89 style-conditioned (v3r + 2 style scalars)
+    "v3rf": (N_PLANES_V3R, N_SCALARS_V3F),     # exp103 fold option (v3r + in_fold_mode scalar)
     "v4": (N_PLANES_V4, N_SCALARS_V3),
     # exp41: Mortal-aligned observation (934 planes). The two variants share a
     # shape so arm A / arm B checkpoints stay swappable; they differ only in
@@ -102,11 +129,13 @@ def variant_of_arch(arch: str) -> str:
     arch = arch or ""
     # action-space suffix ('..._m46') is not an encoder marker and would
     # shadow the real one under endswith (exp46-C: v3r opponents read as v1)
+    arch = re.sub(r"_oc$", "", arch)          # exp67 oracle-critic suffix is not an encoder marker
+    arch = re.sub(r"_aux$", "", arch)         # exp69 auxiliary-head suffix is not an encoder marker
     arch = re.sub(r"_m\d+$", "", arch)
     if arch.startswith("mortal_full"):
         return "mortal_v3_pure" if "_pure" in arch else "mortal_v3"
-    for suf, v in (("_v4", "v4"), ("_v3rh", "v3rh"), ("_v3r", "v3r"),
-                   ("_v3", "v3"), ("_r", "v1r")):
+    for suf, v in (("_v4", "v4"), ("_v3rg", "v3rg"), ("_v3rh", "v3rh"), ("_v3rfl", "v3rf"), ("_v3rf", "v3rf"), ("_v3r", "v3r"),
+                   ("_v3", "v3"), ("_ro", "v1ro"), ("_rh", "v1rh"), ("_r", "v1r")):
         if arch.endswith(suf):
             return v
     return "v1"
@@ -237,6 +266,32 @@ def _red_planes(table, player_id: int) -> np.ndarray:
     return R
 
 
+def _oracle_planes(table, player_id: int) -> np.ndarray:
+    """[8, 34] hidden-state planes for oracle policy guiding (exp68). All zero
+    unless `table.oracle_visible` is True — the training rollout is the only
+    code path that ever sets it."""
+    O = np.zeros((N_PLANES_ORACLE, TILE_TYPES), dtype=np.float32)
+    if not getattr(table, "oracle_visible", False):
+        return O
+    for off in range(1, 4):
+        opp = (player_id + off) % 4
+        for t in table.hands[opp]:
+            O[off - 1][tile_to_34(t)] += 0.25
+        try:
+            if len(table.hands[opp]) % 3 == 1:          # 13-tile state: waits defined
+                for w in table._waits(opp):
+                    O[2 + off][tile_to_34(w)] = 1.0
+        except Exception:                                # noqa: BLE001
+            pass
+    for t in table.wall:
+        O[6][tile_to_34(t)] += 0.25
+    try:
+        O[7][tile_to_34(table.dead_wall[9])] = 1.0       # ura indicator under the first dora
+    except Exception:                                    # noqa: BLE001
+        pass
+    return O
+
+
 def _event_planes(table, player_id: int) -> np.ndarray:
     """[EV_PLANES, 34]: the packed event buffer (see the layout note above).
     Events in global order: every seat's river events (tile, tsumogiri,
@@ -316,6 +371,34 @@ def encode_state(table, player_id: int,
         P, sc = _encode_v3(table, player_id, as_numpy=True)
         return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
                 torch.from_numpy(sc))
+    if variant == "v3s":
+        P, sc = _encode_v3(table, player_id, as_numpy=True)
+        ex = np.zeros(2, dtype=np.float32)
+        st = getattr(table, "seat_style", None)
+        if st is not None:
+            ex[0] = float(st[player_id][0]) / 8.0
+            ex[1] = float(st[player_id][1])
+        return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
+                torch.from_numpy(np.concatenate([sc, ex])))
+    if variant == "v3rf":
+        P, sc = _encode_v3(table, player_id, as_numpy=True)
+        f = getattr(table, "fold_mode", None)
+        ex = np.array([1.0 if (f is not None and f[player_id]) else 0.0], dtype=np.float32)
+        return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id)])),
+                torch.from_numpy(np.concatenate([sc, ex])))
+    if variant == "v3rg":
+        P, sc = _encode_v3(table, player_id, as_numpy=True)
+        g = np.zeros((1, TILE_TYPES), dtype=np.float32)
+        ex = np.zeros(3, dtype=np.float32)
+        if not table.riichi[player_id]:
+            from src.agents.dnn.fold_option import genbutsu_34
+            gb = genbutsu_34(table, player_id)
+            if gb is not None:
+                g[0] = gb.astype(np.float32)
+                sh = int(table._shanten(table.hands[player_id], len(table.melds[player_id])))
+                ex[0 if sh <= 0 else (1 if sh == 1 else 2)] = 1.0
+        return (torch.from_numpy(np.concatenate([P, _red_planes(table, player_id), g])),
+                torch.from_numpy(np.concatenate([sc, ex])))
     if variant == "v3rh":
         P, sc = _encode_v3(table, player_id, as_numpy=True)
         ex = np.zeros(3, dtype=np.float32)
@@ -334,6 +417,17 @@ def encode_state(table, player_id: int,
     if variant == "v1r":
         P, sc = encode_state(table, player_id, with_order=False, variant="v1")
         return torch.cat([P, torch.from_numpy(_red_planes(table, player_id))]), sc
+    if variant == "v1ro":
+        P, sc = encode_state(table, player_id, with_order=False, variant="v1r")
+        return torch.cat([P, torch.from_numpy(_oracle_planes(table, player_id))]), sc
+    if variant == "v1rh":
+        P, sc = encode_state(table, player_id, with_order=False, variant="v1r")
+        ex = np.zeros(3, dtype=np.float32)
+        ex[0] = getattr(table, "round_number", 1) / 4.0
+        ex[1] = min(getattr(table, "honba", 0) / 8.0, 1.0)
+        ex[2] = 1.0 if (table.round_wind_idx >= 1
+                        and getattr(table, "round_number", 1) >= 4) else 0.0
+        return P, torch.cat([sc, torch.from_numpy(ex)])
     if variant == "v4":
         P, _ = encode_state(table, player_id, with_order=False, variant="v1")
         Pr = _red_planes(table, player_id)

@@ -9,9 +9,56 @@ consumer GPU, which is the whole point of the comparison.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.agents.dnn.encoder import (ACTION_DIM, LEGACY_ACTION_DIM, LEGACY_ACTION_TYPES,  # noqa: F401
                                     ACTION_TYPES, N_PLANES, N_SCALARS, TILE_TYPES)
+
+_POSTURE_SLOTS = (ACTION_TYPES.index("discard") * TILE_TYPES, ACTION_TYPES.index("discard0") * TILE_TYPES)
+
+
+def _conv3_cl(x: torch.Tensor, conv: nn.Conv1d) -> torch.Tensor:
+    """Conv1d(k=3, pad=1) on a channels-last [B, L, Cin] tensor as ONE GEMM over the stacked
+    neighbours (k = 0, 1, 2). Same parameters as `conv`; float64-identical to conv(x.transpose)."""
+    xp = F.pad(x, (0, 0, 1, 1))
+    xs = torch.cat([xp[:, :-2], xp[:, 1:-1], xp[:, 2:]], dim=2)          # [B, L, 3*Cin]
+    w = conv.weight.permute(0, 2, 1).reshape(conv.weight.shape[0], -1)  # [Cout, 3*Cin], (k, cin) order
+    return F.linear(xs, w, conv.bias)
+
+
+def _bn_cl(x: torch.Tensor, bn: nn.BatchNorm1d) -> torch.Tensor:
+    B, L, C = x.shape
+    if bn.training and bn.track_running_stats and bn.num_batches_tracked is not None:
+        bn.num_batches_tracked.add_(1)      # keep the counter in step with nn.BatchNorm1d's own forward
+    return F.batch_norm(x.reshape(B * L, C), bn.running_mean, bn.running_var, bn.weight, bn.bias,
+                        bn.training or not bn.track_running_stats, bn.momentum, bn.eps).view(B, L, C)
+
+
+def trunk_channels_last(net: nn.Module, planes: torch.Tensor, scalars: torch.Tensor) -> torch.Tensor:
+    """exp113 fast path for the stem + ResBlock trunk: the whole residual stack runs channels-last so every
+    conv is a dense [B*34, 3C] x [3C, C] GEMM (tensor-core friendly; fuses well under torch.compile).
+    Output is laid out exactly like `trunk` ([B, C*34] in (C, L) order, then scalars), so heads,
+    checkpoints and every caller are unchanged. Verified float64-identical in eval and train mode
+    (tests/test_fast_trunk.py)."""
+    x = planes.transpose(1, 2)
+    h = torch.relu(_conv3_cl(x, net.stem))
+    for blk in net.blocks:
+        y = torch.relu(_bn_cl(_conv3_cl(h, blk.c1), blk.n1))
+        y = _bn_cl(_conv3_cl(y, blk.c2), blk.n2)
+        h = torch.relu(h + y)
+    return torch.cat([h.transpose(1, 2).flatten(1), net.scalar_fc(scalars)], dim=1)
+
+
+def enable_fast_trunk(net: nn.Module, compile: bool = False) -> nn.Module:
+    """exp113: switch a stem + ResBlock CnnPolicy to the channels-last GEMM trunk, optionally torch.compile'd
+    (dynamic batch dim: rollout batches change size every step; measured as fast as static shapes).
+    The compiled callable lives in the instance __dict__ (not a submodule), so state_dict / checkpoints
+    are untouched."""
+    net.fast_trunk = True
+    if compile:
+        net.__dict__["_trunk_compiled"] = torch.compile(
+            lambda p, s: trunk_channels_last(net, p, s), dynamic=True)
+    return net
 
 
 class ResBlock(nn.Module):
@@ -91,6 +138,9 @@ class MahjongPolicyNet(nn.Module):
         )
 
     def trunk(self, planes: torch.Tensor, scalars: torch.Tensor) -> torch.Tensor:
+        if getattr(self, "fast_trunk", False):
+            fn = self.__dict__.get("_trunk_compiled")          # set by enable_fast_trunk(compile=True)
+            return fn(planes, scalars) if fn is not None else trunk_channels_last(self, planes, scalars)
         h = torch.relu(self.stem(planes))
         h = self.blocks(h).flatten(1)
         return torch.cat([h, self.scalar_fc(scalars)], dim=1)
@@ -98,13 +148,26 @@ class MahjongPolicyNet(nn.Module):
     def forward(self, planes: torch.Tensor, scalars: torch.Tensor,
                 mask: torch.Tensor) -> torch.Tensor:
         """planes [B,P,34], scalars [B,S], mask [B,A] -> masked logits [B,A]."""
-        logits = self.head(self.trunk(planes, scalars))
+        logits = self._posture(self.head(self.trunk(planes, scalars)), planes, scalars)
         # -inf on illegal actions so softmax/sampling can never pick them
         return logits.masked_fill(~mask, float("-inf"))
 
+    def _posture(self, logits, planes, scalars):
+        """exp116 posture prior (v3rg nets only): + beta[shanten bucket] on the genbutsu discard slots (discard and
+        discard0). The genbutsu plane is the LAST input plane and the shanten one-hot the LAST 3 scalars; both are
+        zero unless an opponent is in riichi and the seat is not, so the prior is inert elsewhere."""
+        beta = getattr(self, "posture_beta", None)
+        if beta is None:
+            return logits
+        add = (scalars[:, -3:].to(beta.dtype) @ beta)[:, None] * planes[:, -1, :].to(beta.dtype)     # [B, 34]
+        add = add.to(logits.dtype)
+        d, d0 = _POSTURE_SLOTS
+        return torch.cat([logits[:, :d] , logits[:, d:d + TILE_TYPES] + add, logits[:, d + TILE_TYPES:d0],
+                          logits[:, d0:d0 + TILE_TYPES] + add, logits[:, d0 + TILE_TYPES:]], dim=1)
+
     def forward_with_value(self, planes, scalars, mask, cfeats=None):
         h = self.trunk(planes, scalars)
-        logits = self.head(h).masked_fill(~mask, float("-inf"))
+        logits = self._posture(self.head(h), planes, scalars).masked_fill(~mask, float("-inf"))
         if self.hazard:
             v = self.value(h).squeeze(-1) + self.hazard_head.value_component(cfeats)
         elif self.critic_feat_dim:
@@ -113,15 +176,62 @@ class MahjongPolicyNet(nn.Module):
             v = self.value(h).squeeze(-1)
         return logits, v
 
+    # ---- exp97 parameter-space noise (NoisyNet factorised, per-row) -------
+    # Perturb the policy head's Linear layers with rank-1 noise
+    # W + s * f(e_out) f(e_in)^T, b + s * f(e_out), s = sigma / sqrt(fan_in),
+    # f(x) = sign(x) sqrt|x| (Fortunato et al. 2017). Each ROW of a batch may
+    # carry its own (e_in, e_out), so 1,024 tables can each act under their own
+    # perturbed head without materialising 1,024 weight copies: the perturbed
+    # product is W x + s * f(e_out) * (f(e_in) . x). The noise is sampled once
+    # per deal and held for the whole deal (rollout side), which turns a
+    # multi-step, deal-coherent deviation into a sampleable event — the thing
+    # per-step action noise cannot produce (exp97 prereg).
+    def noise_dims(self):
+        """[(fan_in, fan_out)] of the head's Linear layers, in forward order."""
+        return [(m.in_features, m.out_features) for m in self.head if isinstance(m, nn.Linear)]
+
+    @staticmethod
+    def sample_noise(n, dims, device, generator=None):
+        """Per-row factorised noise: list of (f(e_in) [n, in], f(e_out) [n, out]) per Linear."""
+        out = []
+        for fi, fo in dims:
+            ei = torch.randn(n, fi, device=device, generator=generator)
+            eo = torch.randn(n, fo, device=device, generator=generator)
+            out.append((ei.sign() * ei.abs().sqrt(), eo.sign() * eo.abs().sqrt()))
+        return out
+
+    def head_noisy(self, h, eps, sigma: float):
+        """Policy head with per-row rank-1 noise (eps from sample_noise, rows aligned with h)."""
+        x, k = h, 0
+        for m in self.head:
+            if isinstance(m, nn.Linear):
+                fi, fo = eps[k]
+                s = float(sigma) / (m.in_features ** 0.5)
+                x = F.linear(x, m.weight, m.bias) + s * fo * ((fi * x).sum(1, keepdim=True) + 1.0)
+                k += 1
+            else:
+                x = m(x)
+        return x
+
+    def forward_clean_and_noisy(self, planes, scalars, mask, eps, sigma: float):
+        """(clean masked logits, noisy masked logits) from one trunk pass."""
+        h = self.trunk(planes, scalars)
+        clean = self.head(h).masked_fill(~mask, float("-inf"))
+        noisy = self.head_noisy(h, eps, sigma).masked_fill(~mask, float("-inf"))
+        return clean, noisy
+
     @torch.no_grad()
-    def act(self, planes, scalars, mask, temperature: float = 1.0):
+    def act(self, planes, scalars, mask, temperature: float = 1.0, check: bool = True):
         """Sample one legal action index per row. Returns (idx, logprob).
 
         Every row must have at least one legal action: an all-masked row
         makes softmax return NaN and multinomial raise a device-side
         assert. Callers handle the no-legal-action case themselves.
+        `check=False` skips the on-device legality assert (a host sync) for
+        callers that already verified the mask on the host (collect_rust
+        pipelining, 2026-09-09) — the call then stays fully asynchronous.
         """
-        if not bool(mask.any(dim=1).all()):
+        if check and not bool(mask.any(dim=1).all()):
             raise ValueError("act() got a row with no legal actions; "
                              "the caller must handle empty legal lists")
         logits = self.forward(planes, scalars, mask)
@@ -152,14 +262,61 @@ def load_compatible(net: nn.Module, state: dict) -> list:
     model_sd = net.state_dict()
     state = {k: _widen_legacy_head(k, v, model_sd[k]) if k in model_sd else v
              for k, v in state.items()}
+    state = {k: _widen_scalar_input(k, v, model_sd[k]) if k in model_sd else v
+             for k, v in state.items()}
+    state = {k: _widen_plane_input(k, v, model_sd[k]) if k in model_sd else v
+             for k, v in state.items()}
+    state = {k: _widen_fold_head(k, v, model_sd[k]) if k in model_sd else v
+             for k, v in state.items()}
     ok = {k: v for k, v in state.items()
           if k in model_sd and tuple(model_sd[k].shape) == tuple(v.shape)}
     net.load_state_dict(ok, strict=False)
     bad = [k for k in model_sd if k not in ok
-           and not k.startswith(("value", "hazard_head"))]
+           and not k.startswith(("value", "hazard_head", "posture_beta"))]
     if bad:
         raise RuntimeError(f"policy keys failed to load: {bad[:5]}")
     return [k for k in model_sd if k not in ok]
+
+
+FOLD_SLOT_INIT_BIAS = -6.0     # p(ENTER_FOLD) ~ e^-6 of the top logit at load: the loaded net plays like the v3r one
+
+
+def _widen_fold_head(k: str, v, target):
+    """exp103: a 374-slot native checkpoint loading into a 375-slot native_fold
+    net: the flat policy head's last Linear gains one output row (zero weights,
+    bias FOLD_SLOT_INIT_BIAS), so ENTER_FOLD starts rare but reachable."""
+    if (k.startswith("head.") and v.dim() in (1, 2) and v.dim() == target.dim()
+            and v.shape[0] == ACTION_DIM and target.shape[0] == ACTION_DIM + 1
+            and (v.dim() == 1 or tuple(v.shape[1:]) == tuple(target.shape[1:]))):
+        out = torch.zeros_like(target)
+        out[:ACTION_DIM] = v
+        if v.dim() == 1:
+            out[ACTION_DIM] = FOLD_SLOT_INIT_BIAS
+        return out
+    return v
+
+
+def _widen_plane_input(k: str, v, target):
+    """exp116: a v3r checkpoint (56 planes) loading into a v3rg net (57): the stem conv gains a zero input channel
+    for the genbutsu plane, so the loaded net is exactly the old one until training moves those weights."""
+    if (k.endswith("stem.weight") and v.dim() == 3 and target.dim() == 3
+            and v.shape[0] == target.shape[0] and v.shape[1] < target.shape[1] and v.shape[2] == target.shape[2]):
+        out = torch.zeros_like(target)
+        out[:, :v.shape[1]] = v
+        return out
+    return v
+
+
+def _widen_scalar_input(k: str, v, target):
+    """exp89: a v3r checkpoint (29 scalars) loading into a v3s net (31): the
+    first scalar Linear gains zero columns for the new inputs, so the loaded
+    net is exactly the old one whenever the style scalars are zero."""
+    if (k.endswith("scalar_fc.0.weight") and v.dim() == 2 and target.dim() == 2
+            and v.shape[0] == target.shape[0] and v.shape[1] < target.shape[1]):
+        out = torch.zeros_like(target)
+        out[:, :v.shape[1]] = v
+        return out
+    return v
 
 
 # Pre-red checkpoints (2026-08-23 Majsoul rules) have 8 action types / 272

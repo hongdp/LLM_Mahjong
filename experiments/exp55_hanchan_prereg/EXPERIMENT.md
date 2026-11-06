@@ -17,6 +17,51 @@
 ## Success Criteria（训练阶段，预注册）
 ①贪心席半庄 Elo 曲线持续正斜率；②终检半庄 n=300 vs bc49 ≥0.50；③T=0 族外梯子 ≥bc49_T0（1210.6）；④defense_iq ≥0.17；⑤bc_kl 走平（健康指纹）。
 
+**判据③刻度重校（2026-08-30 深夜，发射前）**：原文 1210.6 是已作废的 12 锚外推刻度；
+纪元 6 重锚后 bc49_T0 = **1189.0±7.9**（单局）/ 半庄 C 池 1443.1±11.0。判据③改读
+「T=0 族外单局梯子 ≥ 1189.0」，实质不变（≥bc49 部署刻度）。终检加半庄口径
+（vs bc49 双 T=0 n≥300，逐场计分——exp56 度量学）。
+
+## 训练阶段 Config（首个 tranche，2026-08-30 深夜发射）
+- 平台：RunPod 3090Ti community（exp58 已验证；runbook：cgroup <16 核 re-roll、
+  bootstrap 补 tensorboard、kill 附清场、ckpt scp 逃逸、30min 自停保险）。
+- 命令形态（= exp58 stage3 冒烟 + I 配方）：
+  `--arch convformer_m_v3rh_m46 --init bc49_v3rh_init.pt --hanchan
+   --hanchan_w_path w_resid.pt --league {bc49, exp46I} --value_detach
+   --bc_anchor bc49_v3rh_init.pt --bc_kl_coef 0.3 --entropy_coef 0
+   --gpu_infer --gpu_infer_opponents --games_per_worker 8 --ckpt_every 10`
+  league 双元：entry0=bc49（bc 锚席），entry1=exp46I（top 席）——都是纪元 6 前二强。
+- **规模：200,000 场半庄（≈2.1M 局）**；按 15.4 场/s（10 核）估 ~3.6h ≈ $1.0，
+  23 核宿主更快。预算上限 **$3**（含 re-roll 与余量）。
+- 心跳：发射相 15 分钟死线 + 训练相 20 分钟 STALL；TB 镜像 rsync-over-ssh 到
+  `experiments/_cloud_mirror/exp55D_t1/`（两段式防 inode 换）。
+
 ## Progress
 - [08-30 深夜] W 训练集抽取中；W 训练器就绪；MatchState/play_hanchan_gen 地基已合入（3672ba8）。
+- [08-30 深夜] **训练阶段 tranche-1 发射**（exp58 验证链后首个 RunPod 正式 run）：
+  pod `kkvad8c36c5l77`（3090Ti community $0.27/h，Threadripper 10.2 核宿主——runbook 的
+  <16 核 re-roll 规则本次破例：库存 Low、成本无差、墙钟 ~5.8h 可接受，记录在案）。
+  200k 场半庄，I 配方全套 + league={bc49, exp46I}，run 目录 pod:/workspace/exp55D_t1。
+  首迭代 9.5 场/s（passes=4 完整口径），KL 0.0043 正常 → 预计 5.8h ≈ $1.58。
+  心跳（STALL 20min/DONE/crash）+ TB 两段式镜像（exp55D_t1_LIVE 已挂 6006）+
+  每 30min ckpt 回拉（损失上界 30min）全部就位。
+- [08-31 00:20] **首发射 20 分钟后死于已知棘轮**：训练主进程显存逐迭代膨胀（iter1 后 19.7GB →
+  iter5 后 22GB/23.5GB），推理服务器先丢 CUDA graph 落 eager、最终 2MiB 都拿不到 → 全线崩。
+  指纹 = SKILLS 2026-08-29「CUDA 分配器尺寸类碎片棘轮」（注意力架构易触发，convformer 正中；
+  hanchan 模式 33 万行/迭代的变长 cat 张量放大触发面）。**修法就是 08-22 既有用户规则的那行
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`——发射时漏设，纯执行失误**。
+  已清场重发（脚本化发射 + /proc/PID/environ 验证环境变量确实生效），25 分钟显存趋势窗观察中。
+  **教训**：RunPod 发射脚本模板必须内置该 env（不是"记得设"，是写进脚本）；
+  另外 ssh 复合命令 nohup 尾无回显 ≠ 已执行，重发后必须独立验证进程与 environ。
+- [08-31 09:40] **tranche-1 收官**：200,704 场半庄 / 353 分钟（9.5 场/s 全程稳定，
+  expandable_segments 后显存恒定 14.06GB，KL 0.0043→0.0046 走平 = 判据⑤过，无 NaN）。
+  **强度判定：判据①未达成**（贪心孪生席 uma 首末四分位 +758→+703，平）；
+  **判据②终检 = 打平不劣于**：final vs bc49 双 T=0 **n=4000 逐场 0.4930±0.0079，
+  pt −0.047±0.237**（`probes/exp55D_t1_final_vs_bc49.json`，种子段 60000000 不与既有重叠）。
+  解读：98 个优化器更新太短，排位训练的学习信号尚不可见——管线已在生产规模验证，
+  增益问题留给更长 tranche 或超参迭代（lr/passes/entropy 均为 I 配方原值未调）。
+  ckpt/日志已回收 `experiments/exp55D_t1_ckpts/`（sha256 校验一致），pod 已 terminate。
+- [08-31 09:40] **两笔运维学费（已入 SKILLS + 文档修订）**：①pod 内 `kill 1` 不停表
+  （容器被重启计费继续），完赛后空烧 ~5h ≈ $1.3——自停保险必须由工作站侧调 API 执行；
+  ②完赛检测挂在 nohup 孤儿上不会叫醒操作者。tranche-1 总花费 **~$3.26**（预算 $3，超 $0.26）。
 - [08-30] **W v1 定稿（残差参数化）**：`W = rank_uma解析式 + MLP残差`。纯 MLP 版在 S4 比解析基线差 1043 点（光滑网络拟合不了排名不连续）→ 残差版八盘位全部 ≥ 基线（E1 +1936，S4 -32≈平），整体 15140 vs 15480。工件：experiments/placement_value/{states.npz, w_resid.pt}（87 万行人类局间状态）。教训入档：信用函数必须分盘位验收，全局 MAE 会骗人。

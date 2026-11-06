@@ -2,7 +2,7 @@
 
 > **🤖 AI Agent Directive**: Whenever you start a new session or work on this repository, you MUST read this file first. As the project evolves, if you encounter new bugs, hardware limitations, or make architectural decisions, you are required to **continuously update and append** to this skill file so that the project's context is never lost.
 >
-> **当前状态快照不在本文件**：看 [README「当前状态」](README.md)（冠军/纪元/进行中实验）和
+> **当前状态快照不在本文件**：看 [README「Current status」](README.md)（中文 README.zh.md）（冠军/纪元/进行中实验）和
 > [docs/roadmap_epoch3.md](docs/roadmap_epoch3.md)（队列与路线）。本文件是**追加式教训账本**（时间序）。
 > 早期条目（Phase 1 LLM 时代：A100/QLoRA/文本 rollout）保留为历史，Phase 2 已转 DNN + G4 flex，机型/费用见
 > docs/gcp_compute_cost_and_quota.md §8。
@@ -53,7 +53,7 @@
 - **Algorithm stack**: PBRS potential rewards (telescoping-consistent, unfarmable) + optional dora value term; PPO (no critic, KL early stop) or REINFORCE; optional initial-hand covariate baseline. 47 unit tests.
 - **Throughput stack**: batched parallel rollout (near-linear to 24 games), bf16 LoRA on A100 (+55% over nf4), fast-path kernels; per-game cost 525s → 100s (5.2×).
 - **Next majors queued** (TASKS.md): v3 threaded-context architecture (design doc ready), critic head vs duplicate-deal decision pending variance decomposition from the current fleet's data.
-- **Repo layout**: legacy `checkpoints/`/`logs/` and `src/data_loader.py`/`src/models/` stubs unchanged (archive/delete manually when convenient).
+- **Repo layout**: legacy `checkpoints/`/`logs/` and `src/data_loader.py`/`src/models/` stubs unchanged (archive/delete manually when convenient). → `src/data_loader.py` and the whole LLM stack were deleted 2026-11-01 (see that entry); `checkpoints/`/`logs/` stay frozen on disk, untracked.
 
 ### Ops Lessons (Aug 2026, GCP session)
 > The generalizable GCP practices from this project (and the other workspace trainers) are consolidated in the shared **`gcp-trainer`** skill (`~/Workspace/SKILLS/gcp-trainer`, loaded via `~/.claude/skills`) — consult it first when launching cloud runs; new *generalizable* lessons go there, project-specific facts stay here.
@@ -377,6 +377,371 @@ KL(π‖π_BC) 写成 `where(finite, p*(logp−alogp), 0)` 时前向有限但反
 ## 实验结果总结的存放地（2026-08-30 起）
 结果类总结一律进 [experiments/FINDINGS.md](experiments/FINDINGS.md)（结果台账）与各 `experiments/*_prereg/EXPERIMENT.md`；本文件只保留教训 / 方法论 / 运维与硬件约束。
 
+## 半庄刻度没有纪元守卫，exp53 的读数被静默作废（2026-08-30，exp56 发现）
+引擎指纹只覆盖 `src/tasks/mahjong/{table,shanten,claims,wrapper,arena}.py`，而半庄的规则有**第二张皮**：
+驱动侧的 `src/tasks/mahjong/hanchan.py`（连庄/本场/供托/uma/流局满贯）。exp53 终审（08-29 10:20）之后，
+`hanchan.py` 被改了两次规则——e12c5c6「途中流局=连庄，庄家不得轮转」(17:41)、801d617「流局满贯」(17:47)——
+指纹守卫全程沉默，于是 LEADERBOARD 里 Mortal +44±20、旗舰-纯冠军 +246、"1.8× 放大系数"这三条**都是旧规则下的数**，
+却被当作现行刻度引用了一整天。**规则**：任何新增的"刻度层"必须连同它自己的规则文件一起指纹化；
+exp56 已给半庄梯子加 `hanchan_fingerprint`（`HANCHAN_FILES`，写进半庄 anchors.json 并在 rate 时校验），
+单局梯子的指纹保持不变以免作废现有锚池。**同类风险仍在**：`action_space.py` 也不在 ENGINE_FILES 里。
+
+## spawn 语境：直接调 `play_pair_vector` 的脚本必须有 `__main__` guard（2026-08-30）
+`InferenceServer` 用 spawn 起进程，子进程会重新 import 主模块。把 `play_pair_vector(...)` 写在模块顶层的
+一次性探针脚本，子进程会重跑顶层代码 → `RuntimeError: An attempt has been made to start a new process
+before the current process has finished its bootstrapping phase` → **父进程静默挂死**（我先误判成 conda run
+的锅，换成 env python 直连仍挂）。教训还有一条：诊断挂起时**不要把命令 `| tail -N`**，管道尾部要等 EOF，
+超时被杀时什么都看不到——直接重定向到日志文件再读。
+
+## 榜单行不得指向别的会话 scratchpad（2026-08-30）
+纪元 6 榜单里 exp46 C/C'a/H2/H3/J 五行的 ckpt 路径指向另一个会话的 `/tmp/claude-*/scratchpad/`——
+会话结束即蒸发，榜单当场不可复现。exp56 已把它们拷进 `experiments/_anchors_epoch6/`（durable，gitignored）。
+**规则**：进入任何在册榜单/台账的 checkpoint，必须先落到 `experiments/` 下的持久目录再记路径。
+
+## 等价性测试要防"退化策略空转"（2026-08-30，变异测试抓到）
+给"向量化生成器 ≡ batch-1 驱动"写等价测试时，第一版用了 `always actions[0]` 的确定性策略：
+四家都打第一个合法动作 ⇒ 每局都是全员不听的流局 ⇒ 点数永不移动 ⇒ uma 恒为 `[15000,5000,-5000,-15000]`
+**与牌山无关**。把逐局种子改错（`+ ms.n + 1`）测试照样通过——测试完全空转。
+改成"按 action 列表内容哈希选择"的纯函数策略后，同一变异立刻被抓。
+**规则**：等价/回归测试必须先做一次变异验证；确定性策略要保证**输出确实依赖被测的随机源**，
+并在测试里断言"至少有一局点数发生了移动"这类反空转守卫。
+
+## 计分口径的三条度量学（2026-08-30，exp56 实测，全部有 n=4000 的 z 值支撑）
+
+同一批 4000 场半庄，四种口径并算，用 **z =（效应）/SE** 比较统计效率（同局数下 z 越大尺子越好）：
+
+1. **复式对聚合是虚胖，不增信息**。把两个定向的 uma 加总再取符号：z 几乎不变
+   （1.84 vs 逐场 1.79；45.18 vs 46.73），但 Elo 从 9.8→14.3、从 237→308。
+   **它只是把胜份推离 0.5，把 Elo 数字吹大**。镜像对打的真实价值是消**席位偏置**，
+   不是消方差（那份被样本数减半正好抵消）。**规则**：镜像照打（控偏置），但**记录与计分以单场为单位**；
+   任何"复式对 Elo"不得与"逐场 Elo"并列同一张表。
+2. **幅度口径统计上优于符号口径**（两个体制都成立）：pt 幅度 z=1.81/52.81，截尾 ±40k 后 z=1.87/53.67，
+   均高于逐场符号的 1.79/46.73。换算信息量（z²）：近平手对 +9%、大差距对 +32%。
+   **规则**：主榜用 pt（雀魂货币 = 顺位点 + (点数−返点)/1000），符号 Elo 作并列视图。
+3. **"1&4 拆分判平局"提案被数据否决**。该拆分是点数口径与顺位口径唯一可能分歧的情形
+   （1&2、1&3 拆分恒同号），占比 26-34%。但其子集上的点数判决**携带真信号**：
+   bc49 vs 纯冠军在该子集胜率 **0.6012±0.0151（z=6.72）**。判平 = 扔掉三成对局的信息，
+   整体 z 从 1.79 掉到 1.44。**规则**：想"降噪"前先测被丢弃子集的条件效应，别按直觉削信息。
+
+## 采样税按强度变号，不是一个常数（2026-08-30）
+把同一批 13 个模型分别在 T=1 全循环池和 T=0 全循环池标定，评分差：
+现代强模型 −59 ~ −109，**老弱模型 +126 ~ +191**。采样噪声**对弱模型是净伤害、对强模型是净保护**。
+所以"候选 T=0 对锚 T=1"这种混合条件评分**按强度扭曲整条刻度**，不是可以用一个常数校正的偏移。
+**规则**：评分池的标定条件必须写进池文件并由 `rate` 读取（已实现），候选与锚**必须同条件**；
+要测部署形态就整池按 T=0 重标，不要混。
+
+## 榜单只信"能重拟合"的数据（2026-08-30）
+v1 的对局存档只留了复式对聚合 diff，于是任何换口径的问题都得重打一遍对局——而模块自述里
+写着「any fit can be redone later from primary data」。**自述不等于实现**。
+v2 起对局账本一行一场、含每席 uma/顺位/局数/击飞，口径成为**拟合期的选择**而非重放。
+**规则**：任何"以后可以再分析"的承诺，必须当场用一个真的重拟合脚本验证过才算数。
+
+## 秒级吞吐基准 = 固定启动的摊销假象；worktree 里的 durable 工件不 durable（2026-08-30 exp57）
+- rollout 栈每次冷起有 ~3.4s 固定开销（spawn 推理服务器 + CUDA graph + 进程池）。每点只跑
+  3-5s 的曲线整条都是这笔开销的摊销曲线（v1 给「每核 7」，差分修正后同点位 23-29）。
+  **规则：<30s 的吞吐点必须跑短+长两遍取边际吞吐**（差分精确消掉固定项）。
+- rl-vs-bc worktree 在会话交接窗口被清理，gitignored 的评测原始数据（半庄账本/mortal 逐场
+  分片）随之蒸发——commit 都在（对象库共享），但「durable 目录」只在 worktree 里就不 durable。
+  幸运：T=0 数据是种子的确定函数，可逐字节再生。**规则：评测原始数据落主检出或 GCS，
+  不落 worktree**；worktree 收摊前先把 gitignored 工件搬走。
+- RunPod 复踩两坑：Ubuntu 24.04 pip 要 `--break-system-packages`（文档坑 3 明明写了）；
+  community pod `nproc` 是宿主全部线程（112），保证核数看 `/sys/fs/cgroup/cpu.max`。
+
+## RunPod：kill 1 不停表；完赛不叫人 = 静默烧钱（2026-08-31，exp55-D tranche-1 学费 ~$1.3）
+- **`kill 1` 在 community pod 上只是容器重启**（PID 归零、进程全灭、/workspace 保留），
+  **计费继续**——docs/runpod_cost_and_ops.md §2 的「kill 1 = 优雅退出并停止计费」不成立
+  （至少对带重启策略的 community pod）。pod 内自停保险因此整个失效。**真正停表只有
+  API stop/terminate**：自停保险必须由工作站侧监控执行（收到 DONE/STALL 后调 delete-pod），
+  pod 内看门狗只配当最后防线的日志证人。
+- **值守链必须闭环到「能叫醒操作者」的通道**：nohup 孤儿进程检测到 DONE 只会写日志退出，
+  没人被叫醒，完赛后 pod 空转 ~5h。规则：长跑监视必须挂在会重新调起操作者的机制上
+  （托管后台任务/cron），nohup 循环只能作为它的内层执行体，不能是唯一一层。
+
+## 价值方法（DQN）在本引擎上的五条硬教训（2026-09-02，exp59 七臂 + 正式 run）
+1. **"TD 收敛"不等于"学到东西"**：行为策略挂在 Q 上时，Q 一歪数据就歪，TD 在垃圾数据上照样收敛到 0.01
+   （v1 贪心 0.142）。任何 Q 实验必须配**贪心对局终评 + A/A 对照**，TD 曲线只看发散不看好坏。
+2. **监督先验的动作排序是最值钱也最脆弱的资产**：把 log-概率头当 Q 头回归回报，压缩尺度（±5→±0.1）时
+   σ≈0.8 的样本噪声会抹掉排序；冻结 trunk 不救（排序在头里）；校准后去锚仍漂（−6.7σ/60k 局）。
+   **DQfD 大间隔锚必须常驻**（它同时压住未训动作的 max 过估计），可调间隔 m，不可去掉。
+3. **稀疏终局奖励下 n-step 是必需**（1-step 一次同步只传一跳）；MC→TD **切换瞬间必须同步目标网**
+   （否则自举用的是热启动 logits，目标 +1.0 持续到第一次同步）；重启会一次性摄入积压，MC 期要按**更新数**计。
+4. **覆盖是改进的必要条件、样本效率是充分条件**：单点偏离、在线采集、四席数据各自都没动针，
+   与 (σ/Δ)² 的样本账一致；逐步 ε 会毁掉整局连贯性（0.9¹¹⁰≈0），探索要以局/单点为单位。
+5. **评测口径坑**：单局模式 `play_pair_vector` 返回的 `games[].a_pts` 是 A 两席点数**总和**（恒正），
+   半庄模式才是 uma 差；用返回的 `sc` 复式对胜份。**新指标先跑 A/A** 再次救场（share=1.0 的假大胜）。
+   1000 对 ±0.016 判不了 >0.5（0.5115 复评 0.4901），要 n≥4000。
+
+## TB 面板用 symlink 目录 + `--logdir`，发射即 `ln -s`，不再重启（2026-09-02）
+固定 `--logdir_spec` 字串的面板三次漏挂新 run（exp59 v1.6/exp60），还曾因从进程命令行刮 spec 把
+40 个历史 run 刮丢。改法：`experiments/_tb_qlearning/<run名> -> <run>/tensorboard` 的符号链接目录，
+TB `--logdir` 指向它，reload 自动发现新子目录。**规则**：发射脚本/命令里紧跟一条 `ln -sfn`，
+TB 本体永不重启；spec 类文件只作备份（`_cloud_mirror/TB_*_SPEC.txt`）。
+
+## RunPod 安全分层：核心权重只上 Secure Cloud（2026-09-01，用户裁定）
+Community pod 的容器隔离防的是其他租户，防不了宿主机主人（对物理机有 root，可读容器文件/
+内存/显存；消费卡无 TEE）。「宿主不看数据」只是服务条款 + 审核，非密码学保证；官方也把
+Community 定位为低安全档、敏感负载建议 Secure。**规则**：①凡带**冠军谱系权重**
+（bc49/exp46I/v3rh 热启动等）的训练/评测 → **Secure Cloud**（3090 secure $0.50/h、32 核，
+仍是 g4 flex 的 1/4.5）；②Community 只跑不带核心资产的活：infra 基准、纯血谱系从零训练、
+一次性探针；③凭证永不上 pod（既有纪律），锚点从 GCS 拉用只读、限桶的短期签名 URL；
+④Mortal 权重永不出工作站；⑤terminate 只是逻辑删除，不假设宿主磁盘被安全擦除。
+已暴露面（存档）：2026-08-30/31 三个 community pod 上过 bc49/exp46I/bc49_v3rh_init/w_resid。
+2.2σ 批间分歧结案：确定性回放逐字节一致证明 T=0 下二项 SE 严格成立，分歧=牌山运气；
+「第二个锚同向偏」不是独立复现——两锚共用 seed0 同段牌山，且相似策略锚（bc49↔exp46I）
+逐对结果相关 r≈+0.2~0.3。规则：多锚评分每锚用不重叠种子段；怀疑 SE 先做确定性回放闭环。
+
+## exp60 第 2 轮（2026-09-02）：分布式训练与晋级机制的四条教训
+1. **代际晋级判据必须锚在固定参照上**。"候选 vs 上一代 ≥0.5"是非传递的：在 n=2000（±0.011）噪声下每次
+   都是掷硬币，10 代里过半是噪声晋级，绝对刻度（vs bc49）从 0.5075 一路滑到 0.4859 而"连续两次 <0.48 冻结"
+   从未触发。规则：晋级 = 绝对刻度 ≥ 上一代绝对读数 − 1σ（且相对 ≥0.5）；冻结阈值也要相对上一代而非固定常数。
+2. **演员吞吐与池子多样性反相关**（GPU 推理服务器按模型分批）：池子 2→6 模型，L40S 演员 62→34 局/s。
+   联赛式凑桌时每桌对手模型数要封顶（≤2），否则"历史 ckpt 越多越慢"会随训练自动恶化。
+3. **演员/学习者配比先算再开**：学习者 bf16 消耗 22–30k 样本/s，一台 13 核 GPU 演员只出 4–7k 步/s，
+   有效回放比 8——学习者的钱一半在等饭。公式 N_actor ≈ 学习者消耗 /（演员产出 × 目标回放比 2）；
+   演员机型按"保证核数/价格"选，不按 GPU。
+4. **云 run 收摊顺序**：STOP 演员 → kill 学习者 → 最后一拉（store/pool/run/stdout）→ GCS 同步 → **API terminate**
+   （pod 内 kill 1 不停表）→ 本地终评。终评在工作站跑（0 元），pod 只做训练与晋级评测。本轮 $4.3 ≤ 预算 $5。
+
+## A/B 的控制臂必须同批重训；训练级噪声地板 ±0.5–0.9% 胜份（2026-09-03，exp62）
+bc49 配方原样重跑（同 seed、同数据）对原版 bc49 的 T=0 配对头对头 = 0.5059±0.0035，增广臂 0.5090，两臂互比 0.5025。
+即**训练级随机性（数据加载顺序、硬件/bf16、物化 vs 流式）在胜份上就是 ±0.5–0.9%**，与我们通常在找的效应同阶；
+配对牌山只消评测噪声，消不掉这一层。规则：①拿历史 ckpt 当控制臂的 A/B 无效，控制臂要同批重训；②效应预期 <1% 时至少 2–3 个种子
+或把判据定在 ≥ +2%；③exp46/59/60 里 ±0.5% 的"信号"按此地板视为噪声。
+④（exp64 补充，2026-09-04）seed 67M 牌山段对 4 个"重跑/续训"模型系统性偏高 +0.5–1.8%，换到 68M 段全部回到 0.500–0.505：
+"噪声地板"有一半其实是牌山段与策略相似度的相关性。**头对头终评一律跑两个不重叠牌山段（67M + 68M）合并报数，单段不下结论。**
+
+## 训练器默认值会漂移：从零 RL 配方必须显式钉死（2026-09-06，exp68 三轮）
+exp46 之后 `train_dnn_ppo.py` 的默认值改成了 ppo_epochs 4 / 无 adv_clamp / target_kl 0.02（对"人类先验 + RL"合适），
+而纯血冠军 exp27A 用的是 **1 / 5.0 / 0.03 / batch 4096**。用当前默认重跑"冠军配方"，100 万局停在"见牌就碰"（对 exp27A 0.31–0.37），
+旗标对齐后复现到 0.49。规则：①引用历史配方时以该 run 的 `config.json`（GCS）为准逐项对照，不信 README 摘要；
+②从零 RL 发射脚本显式写全 `--ppo_epochs 1 --adv_clamp 5.0 --target_kl 0.03 --batch 4096 --games_per_iter 2048`；
+③A/B 之前先跑一次复现检查臂（P vs 历史冠军 ≥0.45）再解读"是否越过冠军"。
+
+## Community 宿主的 CUDA 驱动可能低于镜像（2026-09-05，exp68 首发）
+create-pod 响应里的 `cudaVersion` 是**宿主驱动**版本；Community 拿到 12.4 宿主时 cu128 镜像的 torch 看不到 GPU，
+训练器不会报错——`gpu_infer` 静默退到 CPU（日志只有一行 `_cuda_getDeviceCount` 警告），两臂空转烧钱。
+规则：①建 pod 后先看响应的 `cudaVersion`，按它选镜像（12.4 → `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04`；
+≥12.8 → cu128 镜像）；②发射脚本在启动训练前必须 `python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"`；
+③心跳把"首迭代 GPU 显存 < 1GB"当异常。Secure 机型迄今都是 12.8+，Community 不保证。
+
+## 远程 kill 自匹配的两次重犯（2026-09-04/05，exp64/exp67）
+`ssh pod 'P=$(pgrep -f "seat_min_rate"); kill $P'` 与 `ssh pod 'pkill -9 -f "scripts/train_dnn_ppo"'` 都把**远端 sh -c 自己的命令行**
+（含目标字串）匹配进去，先杀了自己 → ssh 255 退出，后续步骤全没执行、还以为执行了。规则细化：①远程也一样：
+pgrep/pkill 的模式用方括号技巧 `"train_dnn_pp[o]"`（模式本身不再匹配含该字面量的命令行），或者先 `pgrep` 列出 pid、
+下一条独立命令 `kill <pid...>`；②任何"kill 后接着做事"的链，kill 必须单独一条 ssh；③两台 PPO 臂共用一张 44GB 卡时
+batch 4096 各占 21GB，推理服务器重启即 OOM——先算显存再并行。
+
+## 大缓存训练：容器 cgroup 内存上限 + memmap 预读 = 5× 慢（2026-09-05，exp65）
+145GB 物化缓存在 188GB 容器（`/sys/fs/cgroup/memory.max`）里放不进页缓存，np.memmap 随机行访问触发内核预读（每 2KB 行读 ~128KB），
+磁盘 1GB/s、GPU 0%、5.6k 样本/s；同时 7,400 万行的 Python 元组索引让每个 DataLoader worker 多 6GB 私有 RSS。
+修复后 30k 样本/s：①索引用 numpy 数组；②`mm.madvise(MADV_RANDOM)`；③删掉已完成臂的缓存释放页缓存；④worker 数按核数给满。
+规则：缓存 > 容器内存 × 0.7 时先看 `vmstat` 的 bi 列，磁盘读 ≫ 样本字节数就是预读放大；发射前算一遍"缓存 + worker RSS 是否 < memory.max"。
+心跳的 STALL 判据只看 done=0 的臂（已完成臂日志静默是正常的）。
+
+## pod 归档不含 gitignore 的锚点权重；心跳的"完成"标记要能区分假完成（2026-09-04，exp64 假发射）
+`git archive HEAD` 打的 repo.tar 不含 `experiments/`（整体 gitignore），pod 上 `--init experiments/_anchors_epoch6/bc49.pt`
+3 秒内 FileNotFoundError，四臂全退出，驱动脚本照样打出 TRAIN_DONE，心跳把它当"✅ DONE"退出——白烧 3 分钟不算什么，
+但若没人看日志会以为跑完了。规则：①发射清单里显式列出锚点/初始化权重并 scp；②驱动脚本的完成标记必须以"各臂都打出 ✅"为条件，
+退出码非零时写 TRAIN_FAILED；③心跳把"启动后 5 分钟内完成"视为异常而非成功。
+
+## AST 合法不等于结构正确（2026-09-03，exp61 事故）
+用 Edit 往类体中间插入一个模块级函数，后面的方法全部缩进在该函数体内变成嵌套函数：AST 校验过、单元测试（编辑前跑的）过、
+类却没有 `forward`。症状是推理服务器**静默挂 10 分钟**（worker 等一个永不返回的响应），不是报错。规则：
+①对同一文件的每次 Edit 之后都重跑该文件的测试，不复用编辑前的绿灯；②往类里加方法时锚定到类的最后一个方法之后，
+往模块加函数时锚定到文件末尾；③生成后加一句结构断言（`assert "forward" in Cls.__dict__`）比 ast.parse 更能抓这类错误；
+④任何依赖多进程服务器的冒烟都要带超时并把 stdout 落文件，挂死时才有现场。
+
+## 2026-09-06 RunPod 余额耗尽 = pod 静默消失
+- 现象：训练中 ssh 突然拒连，`get-pod` 404 "pod not found"，账单查询看不到当前小时；随后 `create-pod` 才报 402 余额不足。
+  RunPod 余额归零时直接**删除**（非 stop）运行中的 pod，工件全丢，控制台/API 不给事件。
+- 规则：**每次发射前先确认余额 ≥ 预算上限 ×1.5**（`get-billing` 只给消耗，余额要看控制台或让用户确认）；运行时段长于 2h 的实验，心跳里加一条
+  "pod 404 → 立即报 402 可能性"的诊断而不是当作 STALL 等 30 分钟；ckpt 拉取间隔（15 分钟）决定了余额事故的最大损失，长跑不要放宽。
+- 充值是用户的财务操作，Claude 不能代做，只能报数字等确认。
+
+## 2026-09-06 回放数据选择与小概率事件重采样的偏差边界（方法论）
+- 详见 `experiments/designs/design_offpolicy_data_and_counterfactual.md`。要点：①提高**罕见状态**采样率基本无偏（只改回归权重），
+  提高**罕见结果**采样率有偏（Q 是转移分布下的期望）；麻将罕见事件几乎全是后者 ⇒ **TD 误差优先回放禁用**，优先只按状态特征 + IS 修正。
+  ②按"牌局水平"（生成者实测评分，非迭代序号）清洗回放安全；按结果筛（只留高分局）有偏。③按学习者**可见**起手做课程（如字牌多→国士）无偏，
+  但四席镜像下只能保留被筛那一席的 episode，其余席位被隐藏条件筛过。④想放大小概率大损失的权重 → 改目标（风险敏感/半庄 uma），不偏数据。
+- Q learning 不自带反事实评估（只有一步 max）；我们的独有资源是模拟器 + 训练时先知信息 → 决策级反事实 rollout（配对差）是下一实现项。
+- 修正：单局点差目标下即使对手是 bc49，最优防守量也低于人类（exp46 C 系列 + exp63 证据）；换强对手不会让防守涌现，要改目标。
+
+## 2026-09-06 Boltzmann(Q) 探索温度必须相对 Q 差尺度设定（exp71 r1 教训，$1.5）
+- 现象：从零 DQN 固定温度表 1.0→0.03，日志 td/q/y 全部"正常"，但 30 万局后对同预算 P3 只有 0.06。诊断：同状态 Q 顶二差中位数 4e-4，
+  T=0.03 下行为熵 = 均匀熵 ⇒ 行为数据全是随机打牌，Q 学的是乱打的价值。日志里看不出来，因为镜像自对弈的 ep_return/lg 均值恒为 0。
+- 规则：①温度按**目标行为熵**自适应（`--target_entropy_frac`，每迭代在回放样本上二分求 T），不用绝对温度表；②reward_scale 让 Q 尺度 ~1，
+  bf16 更新前向在 Q≈0.03 尺度上的分辩率与顶二差同阶，从零 DQN 不开 bf16；③**发射后 15 分钟内必做在轨检查**：里程碑 ckpt 对同局数基线 ckpt
+  T=0 配对 n=600（`eval71_quick.py` 模式），并用 `q71_gaps.py` 核对行为熵 vs 均匀熵。价值方法线的"日志健康 ≠ 学习健康"。
+
+## 2026-09-08 Rust 引擎 riichi_rs（PyO3）——用法与规矩
+- 构建：`cd rust/riichi_rs && CONDA_PREFIX=<env> maturin develop --release`（cargo 在 ~/.cargo/bin，非 PATH）；改 Rust 后必须重装再跑 pytest。
+- **契约 = 与 Python 引擎位级一致**：任何规则/编码改动必须同时改两边并通过 `tests/test_rust_*_parity.py` 全套（随机数/发牌/向听/计分/整局/编码/端到端）。
+  差分测试是唯一裁判，不靠阅读；发现不一致先判定哪边是 bug（本轮两处都是 Rust 端：chi 副露红五计数、役列表未按 yaku_id 排序），Python 引擎的 quirk（里宝并入 Dora、
+  副露首张牌位置的红五平面）按现状复现，不"修正"。
+- 训练：`train_dnn_ppo.py --engine rust --games_per_worker 1024 --workers 1`（K=并发桌数；GPU 前向是瓶颈，K 越大批越大；本机 1,500 局/s vs Python 178）。
+  仅支持镜像单局 + native 动作空间 + v1r 编码；联赛/半庄/oracle/反事实分支仍走 Python 引擎。
+- 性能剖析先看每回合分解（observe/h2d/forward/d2h/step/drain），别猜；rayon 并行让 Rust 步进从 16 ms 降到 2.5 ms/回合。
+
+## 2026-09-08 训练器每迭代 7 秒的隐藏开销：逐步 Python 循环里的 GPU 标量索引
+- 现象：exp76 Rust 引擎 rollout 2.3 s + 更新 0.4 s，但每迭代墙钟 10 s；P3（Python 引擎）同样有 ~8 s 差额被 rollout 掩盖。
+- 根因：`train_dnn_ppo.py` 的 GAE 是 per-step Python 循环，每步对 CUDA 张量做 `v[t]`/`r[t]`/`adv_raw[i]=` 标量索引 → 18 万步 ≈ 55 万次微内核+同步。
+- 修法：按 episode 填充成 [E,T] 矩阵，沿 T 做 30 次向量化反向递推（与参考循环差 0.0），每迭代开销 7 s → 0.4 s。
+- 规矩：**任何按步的 Python 循环都不得触碰 GPU 张量**；新旧实现必须做一次数值等价断言再替换。剖析时看 `main` 的 tottime（自身时间）而不只是子函数 cumtime。
+
+
+## 2026-09-09 Rust 引擎观测传输：planes 以 uint8 走（v3r 提速 45%）、流水线是负优化
+- **现象**：v3r（56 平面）在 pod 上比 v1r 慢 28%（rollout 1.4→2.1 s/迭代，update 不变）。分相剖析：多出的全是 observe/h2d/drain 三个**搬字节**阶段（每行 7.6 KB f32），引擎与前向没变慢。
+- **修法**：所有编码平面值都在 k/20 网格上（0/1 + v3r 河序平面 (j+1)/20），VecEnv 以 `u8 = round(v*20)` 传输（`riichi_rs.PLANE_Q`），训练器/rollout 在设备上 `.float() / 20` 还原——**除法位级一致**于编码器的 f64→f32 值（`*= 1/20` 不一致，k=9/13/18 会差 1 ulp，测试 `test_plane_quantisation_exact` 守着）。回放库 `replay_store` 早就用同一 ×20 网格。
+  本机纯 rollout：v1r 1419→1696 局/s（+20%），v3r 1220→1772（+45%）；端到端训练器 v3r 仅比 v1r 慢 11%。
+- **负结果**：把 K 拆成两个 VecEnv 轮转、让一个的 GPU 前向与另一个的 CPU step 重叠——实测慢 20–30%：单次前向批次减半、每轮固定开销翻倍，而前向只占一轮 30%，藏不出多少；逐调用 `pin_memory()` 更慢（cudaHostAlloc 开销）。另 `net.act` 里 `bool(mask.any().all())` 是一次主机同步，rollout 已改为主机侧 numpy 检查 + `check=False`。
+- **训练器分相**（本机 v3r，2048 局/迭代）：rollout 1.2 / pack 0.35（其中价值前向 0.2 是真算量，cat+h2d 0.15）/ update 0.6 / 其余 0.05。`train_log.json` 新增 `pack_s`、`iter_s`，pod 上直接读分相。
+- **规则**：Rust 侧新增/修改编码后，先跑 `tests/test_rust_encoder_parity.py`（含网格断言）再跑 rollout parity；跨引擎比较吞吐要用同一迭代号（早期局短、吞吐虚高）。
+
+## 2026-09-10 在轨评测（固定 600 牌山）不能做判决：exp79 九点"全部领先"被 20k 对终评推翻
+- **现象**：exp79（v3r）在轨 1–28M 九个里程碑 vs bc49 全部领先 X32 同期，均值 +2.9 pp、"累计 z≈3.6"；20k 对双段终评只有 **+1.0 pp**，vs X32 头对头 0.503，梯子相同。
+- **原因**：在轨脚本每个里程碑都用同一组 600 牌山（固定 seed）。模型对这组牌山的"运气/偏好"（模型×牌山交互）在里程碑之间**完全相关**，九个点≈一个样本；偏差幅度 ±2 pp 级，恰是我们在找的效应量。
+- **规则**：在轨读数只做早停 / 崩溃 / 方向探测；任何"领先/落后 X pp"的判决只认 20k 对双段（67M+68M 种子）终评。写在轨结论时必须注明"同一牌山组，不独立"。
+  若要在轨也有判决力：每个里程碑换一组新 seed（`seed0 = base + games`），代价是里程碑间不可比但对基线仍可比（基线也按同规则重评）。
+
+## 2026-09-10 RunPod MCP 插件 schema 会在会话中途漂移
+- 同一会话内 `delete-pod` 参数名从 `id` 变 `podId` 再变回 `id`；`create-pod` 对一小时前成功的 v2 `body` 请求开始返回 `400 Provide imageName`（v1 字段名），`create-template` 运行时校验要 `name`/`imageName` 扁平字段但公布 schema 仍是 v2。
+- **规则**：发射脚本要能在 pod 创建失败时干等重试而不是重写实验；判决/归档流程不依赖 create-pod；创建失败时先 `list-pods` 确认没有幽灵 pod 计费，再用 `ToolSearch select:` 重载 schema 重试；连续失败就等（记录时间戳），不要花时间凿 API key 走 REST（凭据不在会话内处理）。
+
+## 2026-09-11 半庄奖励审计：credit=none 双重计点 + 引擎 final_rewards 缺本场
+- `play_hanchan_gen` 终局给 `uma_points`（=终点−25000+UMA），而每局末步已给引擎点差 ⇒ 点差算两遍，顺位项权重被稀释一半（exp70 H0 臂即此目标）。引擎 `final_rewards` 也不含驾驭层的本场支付与流局满贯修正。
+- **规则**：多局奖励的不变量是"每席全部奖励之和 = 终点−25000+UMA（+余棒）"，任何信用方案（none / rank / W）都要有脚本化对局的望远镜测试守着（`tests/test_hanchan.py`）；发射前先跑这个不变量，别只看单局引擎测试。
+
+## 2026-09-11 Rust 半庄：VecEnv 跨局续打 + MatchState 移植，与 Python 驾驭层逐局一致
+- `Table::new_hanchan(seed, dealer, rw, points, kyotaku, honba)` 复刻 `HanchanTable`（默认上下文发牌后旋转席位状态）；`DealEnd` 结构化终局事实替代正则；`MatchState`（renchan/本场/供托/飞/顺位/uma）1:1 移植；VecEnv 的 Game 在局末结算并换桌续打，每局末步给驾驭层点差、终局给 UMA+余棒。
+- 一致性：`tests/test_rust_hanchan_parity.py`——上下文发牌 60 组（含 >2^32 的种子）位级一致；P3 贪心 8 场完整半庄的动作/平面/奖励/回报/顺位/uma 与 `collect_parallel --hanchan_pure` 逐步一致，并验证望远镜不变量。
+- 吞吐（本机 4080，W v3r，K=512）：**129 场/s ≈ 1,349 局/s**，Python 引擎 pod 上 17.4 场/s ⇒ 7×。训练器 `--engine rust --hanchan_pure` 每迭代 256 场 3.6 s。
+- 限制：只支持纯血镜像半庄 + `hanchan_credit none`；塑形跨局无定义（构造即报错）；联赛池 + 半庄未做。
+
+## 2026-09-11 社区 pod 出向带宽差时的 Rust 构建备用路径
+- 现象：宿主 140.82.47.249 下载 rustup-init 停摆、pip 首轮漏装包（`No module named mahjong`），bootstrap 卡在 curl 重试。
+- 备用：`apt-get install cargo rustc`（Ubuntu 24.04 = 1.75，4 min）→ 删 `Cargo.lock`（v4 需 cargo ≥1.78）重生成 → `cargo update -p rayon --precise 1.10.0 && -p rayon-core --precise 1.12.1`（1.13 需 rustc 1.80）→ 代码不得用 1.77+ 才稳定的 API（`round_ties_even` 已换成 MSRV 实现）。maturin 用 pip 装即可。
+- 规则：bootstrap 脚本末尾必须 `python -c "import mahjong, riichi_rs"` 硬校验并打印 BOOTSTRAP_DONE/FAILED，不要用 `| tail -1` 吞掉 pip 错误；等待循环要区分"未完成"与"完成"，别只 `grep -q`。
+
+## 不要 scp 覆盖正在运行的 bash 脚本（2026-09-12，exp87 BR2）
+bash 是边读边执行脚本文件的。BR2 训练还在 `wait $P1` 时，我为加 BR3 臂把修改后的 `exp87_pod_train.sh` scp 到同一路径，
+训练正常结束后 bash 从新文件的**旧字节偏移**继续读，执行了半行垃圾（`exp_dir: command not found`，exit 127），
+其中的 `> /workspace/train_BR2.log` 重定向还把训练日志清空了，心跳据此报 TRAIN_FAILED（训练本身 exit 0、ckpt 完好，指标靠 train_log.json/TB 复原）。
+规则：①运行中的脚本只能改副本（新文件名，如 `*_v2.sh`）或等其退出；②发射脚本第一行 `exec bash -c "$(cat "$0")"` 之类的自读全量也可以，但更简单的是**每个臂一个脚本文件**；③心跳的 TRAIN_FAILED 要连同 `games_final.pt` 是否存在一起看再判。
+
+## "最佳响应学不出来"是比"胜份平"更强的判决（2026-09-12，exp87）
+对冻结对手训最佳响应（frac 1.0、1 学习者席、贪心对手）时，`league_stats.jsonl` 的学习者胜份按 200 迭代分块（每块 ≈1.2M 席局，SE≈0.0005）若**全程无趋势**，就不必等 8M 局终点——这说明对手在本优化器可达范围内不可剥削，人口机制（PSRO/防守者池/同族池）无梯度，应转向优化器/正则杠杆而不是加数据或加成员。
+另：学习者席 1 时每局只产 1/4 数据但吞吐反升（930 vs 640 局/s），因为更新相变轻；镜像 4 席时同 pod 只有 290–370 局/s。估成本先看学习者席数。
+
+## Secure pod 的 nproc 是宿主核数，训练吞吐看 cgroup 配额与宿主 CPU（2026-09-12，exp88）
+`nproc`/`os.cpu_count()` 报 48–64，`/sys/fs/cgroup/cpu/cpu.cfs_quota_us` 才是真配额（RTX 2000 Ada 档 5.1 CPU）。训练器已改为 `effective_cpus()`（affinity ∩ cgroup 配额）定 torch 线程并设 `RAYON_NUM_THREADS`；
+但实测只 +3–6%：rayon（Rust std `available_parallelism`）本来就读 cgroup 配额，过度订阅主要是 torch 的 16 线程。本机 `taskset` 模拟（强制 RAYON=48）得到的 +58% 不代表 pod 现状——模拟要先确认 pod 上的线程数构成。
+同规格 Secure pod 的 CPU 速度可差 2×（exp88 Q1 rollout 1.3 s vs Q2 2.9 s/迭代）：镜像自对弈（4 学习者席）在 6 vCPU 上只有 380–590 局/s，而 3090/32 vCPU 社区机 925。**开机后先跑 30 s rollout 基准**（scratchpad `bench_threads.py`，随机合法动作、无 GPU），慢宿主直接换。
+补（同日）：三台同规格 Secure RTX 2000 Ada 的 rollout 基准 6223（带载）/ 3679（空载）/ 2108（带载）局/s——宿主差 2–3×，且抽到快宿主靠运气；
+开机后先跑基准，低于 ≈5000（空载）就换机再装依赖，比事后迁移便宜。
+补（2026-09-12 晚，第三次）：`P=$(pgrep -f "bin/tensorboar[d] --logdir_spec"); kill $P; ... nohup tensorboard --logdir_spec ...` 放在**同一条** bash -c 里，
+方括号技巧只保护模式本身，而同一命令行里后面那段真实的重启命令文本照样匹配 ⇒ 又杀了自己（exit 144）。规则：pgrep 列 PID 与含目标字串的重启命令必须是**两次独立调用**，kill 只用字面 PID。
+
+## RunPod 坏宿主名单补充（2026-09-13）
+- 社区 4090 宿主后缀 **64411a5a**：无公网 TCP 口（只给代理 SSH，账号未注册密钥 ⇒ 不可用），两次抽中，建后立刻终止。
+- Secure RTX 2000 Ada EUR-IS-1 宿主后缀 **64411d59**：`error creating container: container create: exit status 1` 无限重试，runtime 永远 null；两次抽中。
+判别：create-pod 响应的 `ssh.proxy.username` 后缀就是宿主标识，落到名单里的直接 delete 再建；Secure 可用 `dataCenterIds` 换机房（EU-RO-1 之前正常）。
+
+## 在轨偏差第三次（2026-09-14，exp91）
+半庄在轨 n=200 同 seed 组四点单调上行 0.350→0.415，终评 n=1,200 新 seed 0.364——与 exp79（"九点全部领先"被终评推翻）、exp85 同类。规则不变：在轨只用于早停，任何"趋势"都不进判决；预注册延长规则也只认终评。
+补（2026-09-20）：社区 RTX 3090 又两台坏宿主——后缀 **64411661**（99.69.17.69，CUDA unknown error，GPU 守卫拦下）、**64411ad4**（无公网 TCP 口）。两次试机合计 ≈$0.03。Secure EU-RO-1 的 RTX 2000 Ada 仍是可靠兜底。
+另：**PR 合并后推送**（2026-09-19）——`gh pr view` 与 `git push` 写在同一条命令里，读到 MERGED 时已经推出去了（1 个提交挂在已合并分支）。规则细化：查 PR 状态必须是**独立一步**，读到 OPEN 才允许下一步 push；读到 MERGED 就停，只做本地提交并告知用户。
+补（2026-09-20）：社区 3090 宿主后缀 **64411936**（32 vCPU，cuda 12.9）14 分钟拉不完镜像（`still fetching image` 循环）——慢网宿主，后续 rustup/pip 也会拖；超过 8 分钟未出 runtime 就终止。
+
+### 2026-09-21 反事实分支探针的标准误必须按局聚类
+- 接管/弃和类探针在同一局里取多个暴露决策，各分支共享同一副牌山和同一条主线结局 ⇒ 逐决策 SE 把强相关样本当独立，**低估约 2×**（exp94：+258 ± 44 实为 ± 94）。
+- 规则：凡"每局多个决策"的配对探针，一律报按局聚类的 SE（比率估计：Σ_局(和−均值×个数)² 开方 / 总决策数）或只用每局首个决策；逐决策 SE 不得用于判据。
+- 连带：2,000 局的接管探针分辨率只有 ≈±95 分/决策，判 ±100 量级的效应要 ≥2 万局；选变体与确认检验必须用不重叠的种子段。
+
+- 2026-09-22 坏宿主追加：社区 3090 Ti 宿主 **64411a92**（28 vCPU）上传 ≈30 KB/s（24 MB ckpt 8 min 传不完），终止（≈$0.07）。发射脚本应在 scp 大文件前先测 1 MB 传输速率（<1 MB/s 即弃机）。另：清理进程时 pkill -f 又一次自匹配杀了自己的 shell（exit 144）——先 pgrep 列 PID，再单独 kill。
+
+### 2026-09-22 探索噪声与 PPO 更新口径
+- 用与采样策略不同的策略（干净网）记录 logprob、比值从 1 起步、不做重要性加权：PPO 的 clip 只约束比值不约束 logit 尺度，噪声采到的 π≈1e-5 动作偶得正优势就被无限抬高，12M 局后 logit 跨度 8→188、策略崩坏（exp97）。任何离策略采样（参数噪声、混合温度、单点偏离）都要记录**实际行为策略**的 logprob，或显式加 KL(π_old‖π_new) 惩罚；在轨必看 approx_kl 与 logit 跨度。
+- σ 自适应（Plappert）在策略变敏感时会把 σ 缩到名存实亡：把 σ 的下限和 logit 尺度一起进健康判据。
+
+### 2026-09-26 大网在弱卡上是 GPU-bound；跨 pod 迁移 runbook
+- cnn_l_v3r（4M）在 RTX 2000 Ada 上 PPO update 4.8 s + rollout 3.5 s / 2,048 局，GPU 100%（188 局/s）；`--amp_update` 把 update 减半（254）；换 RTX 4000 Ada（$0.28）到 408 局/s——$/局减半。
+  发射前先在目标卡上跑 4 min bench 再定预算；GPU util 看 nvidia-smi，别只看 nproc。
+- 迁移 runbook：①确认 latest.pt 刚落盘（ckpt_every 迭代）；②`pgrep` 列 PID → 单独 `kill`；③rsync 到本机镜像 → scp 到新机（md5 核对）；④`--resume` 起新进程，train_log 行保留；
+  ⑤心跳/拉取循环换主机重挂；⑥把旧 `exp*.log` 里操作员 kill 留下的 `TRAIN_FAILED` 改成 STOPPED_BY_OPERATOR，否则心跳误报（09-26 踩过一次）。
+- 2026-09-27 心跳脚本 bug："发射相 40 min 死线"写成了对任何 ssh 失败都生效，一次瞬时 ssh 失败在 40 min 后就误报 LAUNCH DEADLINE 退出（exp101 p2，训练无恙）。修正：死线只在首个迭代出现前生效；之后连续 4 次失败才报 UNREACHABLE。
+
+- **（2026-10-02 运维事故，≈$34 空转）完成信号必须直接接关机，不能只接报警**：exp101 p2 于 10-01 01:06 PDT 跑完、exp102 A 于 09-29 08:38 跑完，
+  两台 pod 分别空转 24.5 h（4090 $0.74/h）与 65 h（A4000 $0.25/h）到 10-02 01:35 才终止，$200 计划因此超支到 ≈$236。三个漏洞叠加：
+  ①心跳脚本见 `TRAIN_DONE` 只打印 `✅ DONE` 后退出，没有调用终止 pod；②判决作业等的是 `games_<N>.pt`，而训练器把终点存成 `games_final.pt`，永远等不到；
+  ③会话没有用户消息就不会醒来巡检，"等待期主动巡检"规则对跨天空档无效。**规则**：发射脚本里 `TRAIN_DONE` 之后必须紧接 pod 终止（pod 内 `runpodctl`/API，或本机心跳 exit 0 ⇒ `delete-pod`）；
+  依赖终点 ckpt 的作业同时监听 `games_final.pt`；凡是预计跨过无人值守时段的 run，发射时就写好自动关机，不依赖任何会话。
+- **（2026-10-02）单 ckpt 的 20k 对读数有 ≈0.5 pp 的"ckpt 噪声"，判决要看窗口均值**：同一谱系相邻 ckpt（8–16M 局）的 T=0 vs bc49 读数来回摆动
+  （p2 216M 0.4529 / 232M 0.4594；exp102 A 216M 0.4655 / 224M 0.4509），幅度与 20k 对的采样 SE（0.35 pp）同量级甚至更大。
+  单点差 1 pp 可能是两个 ckpt 各抽到一边。规则：判决点前后各评 ≥3 个 ckpt 取均值，臂间比较用窗口均值之差；预注册里写明窗口。
+- **（2026-09-29）评测脚本漏写 `if __name__ == "__main__":` 会在 spawn 子进程里递归执行主模块**：`play_pair_vector` 用 multiprocessing spawn，
+  子进程重新 import 主脚本，顶层代码再跑一次评测，表现为父进程永久等待、一个子进程成僵尸。所有探针/评测脚本一律加 main 保护，并独立跑一次 ast 校验 + 小样本冒烟。
+- **（2026-10-03）自毁握手必须覆盖同一 pod 上的全部臂目录**：exp104 一台 pod 串行跑 R/Q，本机拉取循环只挂了 R，TRAIN_DONE 后握手校验 R 的 md5 即放行自毁，Q 的 ckpt 随 pod 一起消失（日志因 `*.log` 通配得以保留）。
+  规则：pod 脚本把要保全的目录列表写进 `/workspace/ARTIFACT_DIRS`，拉取循环逐一镜像并校验后才发 `PULLED_OK`；一台 pod 多个臂时每臂一个拉取循环或一个循环遍历列表。
+- **（2026-10-03）worktree 目录可能被外部清理，长驻循环的 cwd 会失效**：`cd` 到 worktree 的循环在目录被删后 `os.getcwd()` 抛错、python 导入失败。长驻脚本用 `git worktree add` 重建后必须按 PID 重启；更稳的做法是把代码 tar 到 scratchpad 或用主 checkout 的绝对路径。
+- **（2026-10-03）宏动作（options）的 PG 探索陷阱**：新动作槽位的初始概率 ≈1% 时，若其在随机入口的平均优势为负，PPO 会在几百次迭代内把它整体压到 0，根本来不及学状态依赖的入口。要测"是否存在好的入口"，需要探索地板（ε 钉住）或限定合法状态，否则结论只是"随机入口不值"。
+- **（2026-10-04，exp103 M0 终段工件丢失）拉取循环必须检查 rsync 退出码并在连续失败时报警，不得 `2>/dev/null` 吞错**：worktree 被删后循环 cwd 失效，rsync/gsutil 全部失败但循环照常打印"pulled"，
+  7 小时无人察觉；pod 等握手 2 h 后自毁，236–256M ckpt 丢失。规则：①循环启动时 `cd` 到主 checkout 或 scratchpad 的绝对路径，不用 worktree；②每次 rsync 记录退出码，连续 2 次失败即在心跳日志打 🚨 并 `touch` 一个 ALERT 文件；
+  ③自毁的等待时限至少覆盖两个拉取周期 + 一次完整 ckpt 传输，且 pod 在自毁前把 `games_final.pt` 的 md5 写进 exp.log（便于事后核对是否真的丢失）。
+- **（2026-10-05，exp105 F v1）单向梯度截断会把噪声整流成漂移**：为防共享偏置下沉，只丢弃"往下推"的梯度分量（保留往上的），在策略梯度这种逐样本正负抵消的信号上等价于一个持续的向上力——宏毫无价值时进入率照样 0.4M 局内 0.3%→30%。
+  规则：任何"挡墙/钳位"只能**对称**截断（死区）或作用在前向值上，不得按梯度符号截断；新的梯度改造上云前先跑零优势玩具（优势 ≡ 0 时分布不应移动）。另：新宏臂的读数前先确认进入**有代价**，无代价动作的使用率是漂移不是学习（exp103/105 M2）。
+- **（2026-10-11，exp106）seed 方差下限与"1 条轨迹 = 1 个样本"**：同起点、同配置、只换训练 seed 的两条 16M 续训（C/C′），单 ckpt 20k 对读数相差最高 1.1 pp，4 ckpt × 2 段的窗口均值相差 0.24 ± 0.21 pp。
+  规则：①任何单臂 vs 单臂的窗口差 < 0.5 pp 一律记"无差"；②"8 格 SE"把同一轨迹的 ckpt 当独立样本，低估不确定性，报告时同时给格间 SE 与 seed 方差；③判 ≥ +0.5 pp 的效应至少要 2 个对照 seed（或 2 个处理 seed）。
+  另：周期性/自动评测脚本的输出目录必须在启动命令前 `mkdir -p`——nohup 打不开重定向文件会**静默**不启动（exp106 自动评测器丢了 2 小时）。
+- **（2026-10-12，exp108）独立 critic / 新优势估计器的三条规则**：①独立 critic 从随机初始化起步在 0.7M 局内 EV≈0（策略价值头靠的是 224M 局的 trunk 特征）——一律从策略 trunk 热启动（`--oracle_init_from_policy`）；
+  ②换优势估计器后，优势归一化与熵系数的平衡全变：自归一化的 all-action Q 优势推力是盲 GAE 的 25×（熵 100 迭代 0.27→0.20），按盲 std 缩放又归零（熵发散）——先在本机看 pg_loss/H/α 三个数再上云；
+  ③critic 的"质量闸门"要测跨动作排序（与策略 argmax 一致率、前两名差距），EV 只衡量状态价值，排序差的 critic 当优势会用噪声覆盖策略已学到的偏好（228M −5 pp）。
+- **（2026-10-13，exp109）排序器的尺子是反事实裁判，不是 EV 也不是与策略的一致率**：EV 只看状态价值（oracle Q 在 EV 上只多 0.9 pp，却把待张定价到 −2.7k）；"与策略 argmax 一致率"把策略当真值（更好的 critic 一致率反而更低）。`scripts/cf_judge.py` 用同牌山反事实回滚的实际回报给排序器打分（成对一致率 + 换牌实际收益），20 局/s。
+  另：带 multiprocessing spawn 的脚本不能从 stdin（`python -`）跑——子进程 `run_path` 找不到主模块，父进程静默挂死；一律写成文件 + `if __name__ == "__main__":`。
+
+## 2026-10-15 半庄 1200 墙评测：同 ckpt 跨 seed 段差 2.5 pp
+- exp112：exp106 R 同一 ckpt 半庄 vs bc49（T=0，2v2 duplicate，1200 墙）seed 59300000 读 0.394±0.014、seed 59310000 读 0.369±0.014；差 2.5 pp ≈ 1.8× 单段 SE。
+  原因：一墙半庄 = 8–12 局串行相关，份额按墙 0/1 记，SE 公式低估段间差。
+- 规则：半庄读数一律两段（2400 墙）合并再比；配对差（同墙）比绝对份额稳得多（N−R 两段 −6.0 / −1.9，合并 −3.9±1.3）。单段跌破早停线不触发，合并才算。
+
+## 2026-10-16 大网络（20M 级 CNN）上云前先做性能工程 + 实测选机（exp113）
+- **瓶颈在 PPO 更新，不在 rollout**：384×12 在 4080 上 bf16 推理 66–90k 样本/s，训练步只有 17k；每局 ≈60 个训练样本，更新占一半以上墙钟。
+- **三项零算法改动的提速**（端到端 105 → 207 局/s）：①Conv1d(k=3) 改写为通道在后的 GEMM（`--fast_trunk`，float64 逐位等价、ckpt 不变）；②`torch.compile(dynamic=True)`（rollout 每步 batch 不同，动态形状实测与静态一样快；max-autotune 在消费卡上会报 triton 资源不足，用默认模式）；③rollout 与价值前向 bf16（`--bf16_rollout`）。
+- **bf16 对 PPO 的影响先量化再上**：同状态同权重下，流水线 approxKL 噪声底的主项是 BN 训练/推理模式差（1.3e-3，随机 minibatch；按局顺序切块会假性放大到 4e-2），bf16 rollout 只加 1.3e-4。
+- **选机看"每美元局数"实测，不看理论 TFLOPS**：4090 Secure（$0.89）261 局/s ≈ L40S（$1.09）265、RTX 6000 Ada 180、H100 PCIe 323 但被 CPU 侧 rollout 卡住（每美元只有 4090 的 38%）。消费卡 bf16 累加半速的担心在这个负载上不成立（4090 训练步 36.5k > L40S 32k）。小网络对照臂 CPU 主导，RTX 4000 Ada（$0.28）每美元局数是 4090 的 8 倍。
+- 基准方法：每台候选 pod 跑 GPU 微基准 + 6 轮真实训练迭代取第 3–6 轮中位数；赢家 pod 原地复用为正式训练机（代码和起点已就位）。
+- **net2net 函数保持热启动**：新通道输入随机、输出置零；插入块末层 BN γ=β=0；真实状态 max|logit diff| 6e-5。新通道 BN running stats 起步不对，但输出权重为零所以不影响函数，首轮内收敛。
+- 运维：`pkill -f <含目标串>` 又一次自匹配杀掉了自己的 shell（exit 144）——规则不变：kill 单独成调用、命令里不出现目标字符串明文（用 pgrep 的 `[x]` 技巧取 PID 再 kill）。
+
+## 2026-10-19 RunPod Secure pod 也会被无声整体重启：长跑必须能自动续跑
+- exp113 L 臂（Secure 4090）在第 3 天被容器重启：进程和外层 wrapper 全没、自毁/握手逻辑一起丢，日志无报错；`/workspace` 与已装的 Python 包都还在。
+- 心跳 30 分钟 STALL 能发现，但到人工续跑已过 1.6 h。规则：①checkpoint 存 Adam 状态与控制器状态（lr 倍数）以便无损续跑；②每个长跑配本机看门狗（pod 可达 + 无训练进程 + 无结束标记 ⇒ 用 resume 版 wrapper 自动续跑）；③等待脚本只看心跳的新增行，旧 ALERT 行会让后续 waiter 立刻退出。
+
+## 2026-10-23 ES/随机扰动搜索先做功效计算（exp117）
+- 进化策略方向估计需要 N·SNR² ≳ d（N 配对样本、SNR = 单样本信号/噪声、d 扰动维度）。麻将单墙 Δ 噪声数千分、可改进量数十分，40 万墙只够 d ≈ 10²。全头 19 万维扰动注定无检出力——预注册前先算，别在结果后才发现。
+- 半样本余弦是廉价的信号检验（零假设 SE = 1/√d）；但"有信号"不等于"有好方向"，必须接新鲜牌山步长扫描。
+- 按方差选的子空间会错过稀有局势（受威胁远手只占少数决策）。
+
+## 2026-11-01 仓库结构清理：删 Phase 1 LLM 遗留、评测公共逻辑下沉 src/
+- **删了什么**（每项 grep 零代码引用，或引用方同批删除）：`src/core/{trainer,registry,task,ppo,value_head}.py`、`src/tasks/mahjong/task.py`、
+  `src/data_loader.py`、`scripts/{run_arena,probe_value_decodability,probe_engine_feature_value,probe_teacher_agreement,audit_think_accuracy,
+  analyze_defense_probe}.py`、`scripts/{phase0_local,phase1_ce,phase2_vertex}/`、`Dockerfile`（CMD 指向不存在的 `src/train_rlhf.py`）、
+  `tests/{test_ppo,test_value_head}.py`、`run_arena_dnn.py` 的 LoRA adapter 分支、`requirements.txt` 里的 transformers/trl/peft/bitsandbytes 等。
+  为什么：Qwen+QLoRA 路线 08-14 已退役，这些入口只服务它；留着会让 grep/依赖安装/`--help` 继续撞上 peft/langchain。
+- **为什么没删干净**：`src/tasks/mahjong/arena.py` 在 `run_elo_league.ENGINE_FILES` 指纹集合里（内容 sha256，不是 git commit），**改一个字节 =
+  引擎纪元错配、Elo 池全部作废**；它 import 的 LLM 批量 rollout（`batch_rollout.py` → `prompts.py`/`chat_format.py`/`core/rollout.py`）因此全部保留，
+  `claims.py` 同理（import `chat_format.visible_text`）。`orchestrator.py`（LangGraph）仍是 `tests/test_engine.py` 的引擎驱动，没动。
+  `rewards.py`（LLM 文本 reward registry）和 `generate_sft_data.py`（启发式教师，`bc_cnn` 原点锚的来源）有非 legacy 引用，列入待裁定。
+  教训：想瘦身"被指纹冻结"的模块，只能等下一次纪元重校时一起做，并把指纹文件表写进 PR。
+- **复用到哪里**：`src/agents/dnn/checkpoint.load_dnn`（原 `run_arena_dnn.load_dnn`，后者改为同签名薄包装；`mjai_bridge.load_policy`、
+  `src/eval/arena._cfg`、`parallel_rollout._load_policy_ckpt` 都改走它，消掉了 `src` → `scripts` 的反向 import）；`src/eval/vec_arena.py`
+  （`play_pair_vector` 本体 + 与四实体同桌共用的 `base_cfg`；`run_elo_league.play_pair_vector` 保留同名同签名包装）；`src/eval/probe_loop.play_probe_game`
+  （`probe_defense`/`probe_riichi` 各自复制的自对弈循环，探针只剩统计回调和 CLI）。
+- **等价验证方法**：改前改后同种子同 ckpt 跑 `play_pair_vector` 64 墙（T=0）、`probe_defense --games 8`、`probe_riichi --games 8`，JSON 逐字节比对；
+  两个驱动的 `collect_parallel` 配置字典与旧内联字典 `==`；`tests/test_entry_points.py` 用 `inspect.signature` 钉住稳定入口，并断言探针循环在 T=0 下
+  与 `selfplay.play_game` 复现同一局。T=1 探针因 fork 子进程继承父进程随机 torch 种子，跑两次本就不等，对拍一律 T=0。
+- 常驻进程（雀魂服务、exp124 评测循环）跑在各自 worktree（`LLM_Mahjong_exp124`、`rl-model-defense-learning-*`），合并不影响它们；
+  但以后改入口前先 `ls -l /proc/*/cwd` 看谁在用哪棵树。
+
 ## RunPod 成为算力选项，账户已充值（2026-08-30）
 web_canvas 项目充值并实测了 RunPod 后不再使用，余额留给本项目。**判决（补查 vCPU 后）：
 按保证值打不过 g4-48**——RunPod 每 GPU 只配 9（A40）～16（PRO 6000/A100）个保证核，
@@ -473,3 +838,4 @@ exp124（bc49 同结构 ConvFormer46 纯血从零）32M 局读数 0.481，比 cn
 - 现象：pull_loop 把 pod 上的 `experiments/<run>/config.json` 镜像到**主 checkout**（供 TB 软链），而记录提交发生在 worktree 分支；主 checkout 停在别的会话分支上无人 `git add` → exp59–exp128 共 107 个有效配置快照只在本机磁盘（白名单允许入库，`git status` 一直显示 `??`）。同时 worktree 分支 87 个记录提交从未 push（无 upstream）。
 - 修法：11-06 按原路径复制进 worktree 一次性提交（62354f9）并推送分支。
 - 规矩：**发射记账那一步**（prereg 进度 + INDEX 行）同时把首次拉回的 `config.json` 复制到 worktree 同路径并一起提交；收尾时 `git status --untracked-files=all | grep config` 应为空；记录分支要有 upstream，push 仍需用户确认。
+
