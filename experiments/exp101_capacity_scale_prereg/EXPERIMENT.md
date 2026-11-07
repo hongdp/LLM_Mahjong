@@ -89,3 +89,5 @@ exp72–100 把"单局点差 + 镜像自对弈 + 2M 参数 CNN"设定下的七�
 ## Artifacts
 - ckpt：`experiments/exp101_L/`（p1 0–64M）、`experiments/exp101_L_p2/`（72–392M 每 8/16M + `games_final.pt` 400M）；GCS `gs://llm-mahjong-experiments/exp101_L{,_p2}/`（不含 ckpt）；TB 镜像 `_cloud_mirror/exp101_L{,_p2}`。
 - 评测：`probes/exp101_track_L{,_p2}.jsonl`、`exp101_td_*.txt`、`pairdiff_exp101_L_p2_*.json`。费用 ≈$103（含空转 $18）。
+
+- [2026-11-06 06:20 PST] **重读勘误**：当时的"20k 对"两段牌山几乎重合（见 SKILLS 11-06），且逐牌山文件未存。用当前评测代码在 10,500 去重牌山（101112000–101122499）重跑：32M 0.4270、64M 0.4428、112M 0.4505、160M 0.4512、192M 0.4493（± 0.0046）；与上文记录值相差 −0.35…−0.85 pp，原因未定。与 ConvFormer46 的比较一律用同代码同牌山的配对读数（FINDINGS 11-06）。文件 `experiments/probes/pairdiff_cnn101_n10500_games_*.pt_101112000.json`。

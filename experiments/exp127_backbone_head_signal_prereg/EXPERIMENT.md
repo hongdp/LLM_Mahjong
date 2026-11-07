@@ -41,6 +41,18 @@ ConvFormer-M 2.0M / cnn_l 4.0M（含 46 槽变体 3.84M），v3r 编码，exp124
 
 - [2026-11-06 01:43 PST] **A2 发射**：pod 83u5mfggd84ys4（exp127-A2，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.83:40108，仅 22/tcp）；gates 通过，首迭代 131 局/s；循环 + TB `exp127_A2_convformer374_0-32M_LIVE` 已起。A1 20 min 时 93 万局、751 局/s。B1/B2：本轮 3090/A40 无货，继续重试。
 
+- [2026-11-06 03:13 PST] **B1 发射**：pod v4onbm14zjcs0d（exp127-B1，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.74:40168，仅 22/tcp）；start.pt = exp124_A_p2 games_160000000.pt（md5 校验通过），确认从 160,002,048 局续训，流式落后 ≈11 步；循环 + TB `exp127_B1_stream_160-192M_LIVE` 已起。B2：同轮 3090/A40 无货，继续重试。
+
+- [2026-11-06 03:44 PST] **B2 发射，四臂全部在跑**：pod 9499s5utscnk4p（exp127-B2，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.68:40188，仅 22/tcp）；start.pt md5 校验通过，确认从 160,002,048 局续训，`--value_detach` 已生效（config）；循环 + TB `exp127_B2_stream_vdetach_160-192M_LIVE` 已起。重试 cron 已删除。
+  在跑：A1 cnn_l+46（≈735 局/s）、A2 ConvFormer+374（≈310 局/s）、B1 流式（≈405 局/s）、B2 流式+价值截断。四台合计 $2.00/h。
+
+- [2026-11-06 04:07 PST] **B2 首台 pod 宿主慢，已终止重开**：9499s5utscnk4p 稳定在 95 局/s（B1 同期 414），每迭代 update/rollout/pack 全部慢 4×，宿主 CPU 为 EPYC 7H12（B1 为 7763），同时跑训练时 matmul 30.7 vs 48.4 TFLOPS。本机同配置 4 min A/B：流式 489 局/s，流式+value_detach 488 局/s ⇒ 价值截断本身不降速，是宿主问题。按 95 局/s 跑完 32M 需 ≈94 h ≈ $47，会突破 $65 上限 ⇒ 停本地循环、04:05 终止该 pod（运行 ≈40 min，≈$0.35，产物丢弃）；重开时 3090/A40 无货，cron 继续重试 B2。
+
+- [2026-11-06 06:56 PST] **B2 重开成功**：pod r7lvhb32p3re45（exp127-B2，Secure RTX 3090，32 vCPU，$0.50/h，EU-CZ-1，213.192.2.90:40119，仅 22/tcp，宿主 EPYC 7C13）；从 160,002,048 局续训，`--value_detach`；9 min 时 **404 局/s**（B1 ≈413）。旧慢机镜像改名 `exp127_B2_slowhost_0642` / `exp127_pull_B2_slowhost_0642`。四臂全部在跑，重试 cron 已删。
+
+- [2026-11-06 13:58 PST] **A1（cnn_l + 46 槽）到 32M**：13:37 TRAIN_DONE，镜像 md5 10a523b4… 一致，pod n4zajmh86epzfd 已自毁（get-pod 404），≈12.5 h × $0.50 ≈ **$6.3**；残留 watchdog 已按 PID 停。
+  32M 判决（10,500 去重牌山，见 SKILLS 11-06 两段重叠勘误）：**A1 0.4384 ± 0.0046**（点差 −2114 ± 142）。同牌山配对：A1 − exp101 cnn_l+374 32M（0.4270，11-06 重读）= **+1.13 ± 0.61 pp**（动作头效应，CNN 主干上）；A1 − exp124 ConvFormer+46 32M（0.4810）= **−4.26 ± 0.63 pp**（主干效应，46 槽头上）。2×2 的第四格 A2（ConvFormer+374）≈ 12 h 后到 32M。
+
 ## Results
 
 ## Conclusion
