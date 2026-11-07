@@ -307,6 +307,8 @@ ConvFormer 每 2048 局（训练好策略的样本量）在本机 4080：已测 
 
 - [2026-11-07 10:20 PST] Stage 2 开机：Secure 3090 与 A40（32 vCPU）均无货；cron 每 30 min 自动重试（只限 Secure、≤ $0.59/h），开出即部署。
 
+- [2026-11-07 11:57 PST] **Stage 2 发射**：pod `ighxm9nxie3wo7`（exp124s2-S2），Secure RTX 3090 ×1、32 vCPU（cgroup 31 核）、EU-CZ-1、**$0.50/h**，仅 22/tcp，SSH 213.192.2.110:40008，pod 上无凭据。首次部署因 `exp124s2_ops/pod_boot.sh` 起点检查沿用 exp127 的 160M 而 BOOTSTRAP_FAILED，改为 192000000 后重部署（gate 通过，start.pt md5 校验一致）。19:54 UTC 起训，**从 192,002,048 局续上**；2.9 min 时 **395 局/s**（B1 ≈378）⇒ 192M ÷ 395 ≈ 135 h ≈ **$68**（上限 $85）。本地：pull_loop / watchdog / eval_loop（`exp124s2_ops`）+ latest_eval_loop（`exp124_ops`）；TB `_tb_qlearning/exp124s2_S2_stream_192-384M_LIVE`；配置快照 `experiments/exp124s2_S2/config.json`。
+
 ## Results
 
 ## Conclusion
