@@ -1,6 +1,6 @@
 # exp132：ConvFormer46 上的 oracle 策略引导（臂 O），从零到 32M（2026-11-08）
 
-- **Date**: 2026-11-08 14:40 PST  **Status**: prereg（发射见 Progress）
+- **Date**: 2026-11-08 14:40 PST  **Status**: running（2026-11-08 14:23 PST 起训）
 - **Git**: perf 分支 `claude/perf-rollout-overlap` bf43537（v3ro 编码器 / `convformer_m_v3ro_m46` / VecEnv `oracle_hide_p`）；运维 `experiments/exp132_ops/`（`repo.tgz` = perf bf43537 的 git archive，`riichi_rs` cp312 轮子由同一提交本机构建）
 - **Env**: RunPod Secure RTX 3090（或 A40，≤ $0.59/h），仅 22/tcp，pod 上无凭据；完成后自毁
 - **Approval**: 本会话用户 11-08"都开"（exp132 + exp133，合计约 $30）；论文会话转达其用户"跑"
@@ -25,6 +25,8 @@
   - Rust / Python v3ro 编码逐位一致（120 局随机对局全部状态，隐藏与可见两种情况；`tests/test_v3ro_parity.py`），原 v3r / oracle 平价测试仍通过；
   - 训练冒烟（1,536 局，hide 计划 0 → 1 @ 1,024）：迭代记录的 hide_p 0.0 → 0.5 → 1.0；hide_p = 0 时 rollout 特权平面非零占比 17.5%，hide_p = 1 时 0；
   - 冒烟检查点经 `pairdiff_eval`（判决路径）20 牌山正常运行；pod 启动检查（导入 / 架构 / VecEnv 接口）本机通过。
+
+- [2026-11-08 14:35 PST] **发射**：pod `1h3k7x0pz8e7r7`（exp132-O），Secure RTX 3090 ×1、32 vCPU（cgroup 31 核）、EU-CZ-1、**$0.50/h**，仅 22/tcp，SSH 213.192.2.110:40070，pod 上无凭据。编译门 / 臂门（`convformer_m_v3ro_m46`）通过；22:23 UTC 从 0 局起训，标志 `--rollout_values --ckpt_every 400 --oracle_hide_schedule 0:0.0,8000000:1.0`。8.8 min 时 **291 局/s** ⇒ 32M ≈ 30.5 h ≈ **$15.3**（上限 $20）。train_log 的 hide_p 随局数线性上升（14.95 万局时 0.0184，计划值 0.0187）。本地 pull / watchdog / eval 循环已起；TB `_tb_qlearning/exp132_O_oracle46_0-32M_LIVE`；配置快照 `experiments/exp132_O/config.json`。
 
 ## Results
 
