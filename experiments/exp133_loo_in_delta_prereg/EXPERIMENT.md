@@ -1,0 +1,30 @@
+# exp133：副本留一基线进入优势（配对牌山臂 P），从零到 32M（2026-11-08）
+
+- **Date**: 2026-11-08 14:00 PST  **Status**: prereg（发射见 Progress）
+- **Git**: 代码 perf 分支 `claude/perf-rollout-overlap` 43c6a28（`--loo_in_delta`；`apply_group_baseline` 存 `loo_d`），运维 `experiments/exp133_ops/`（由 exp127_ops 派生，`repo.tgz` = perf 43c6a28 的 git archive）
+- **Env**: RunPod Secure RTX 3090（或 A40，≤ $0.59/h），仅 22/tcp，pod 上无凭据；完成后自毁
+- **Approval**: 本会话用户 11-08"都开"（exp132 + exp133，合计约 $30）；论文会话转达其用户"跑"
+- **Budget**: ≈ 32M ÷ 300 局/s ≈ 30 h × $0.50 ≈ **$15**，上限 **$20**；超过 1.3× 预估时长报用户
+
+## Purpose & Hypothesis
+论文 RQ3"纯自对弈需要什么、能否学得更快"。现行配方（exp124）里，同一牌山同一座位 8 个副本的留一基线 b 只进了 value 目标，GAE 的 δ_t 用原始 r_t，所以 8 份副本对策略梯度不降方差（论文 §Training 的 \pending）。本臂把 δ_t 改成用 r'_t = r_t − b/n，其余全同。
+- 已知先验（exp131 阶段 0，论文审阅会话）：b 项占优势方差 ≈13%、符号翻转 17–18%，但修正后优势方差只降 ≈4%、PG 梯度方差比 1.02–1.03、均值梯度余弦 0.96–0.99 ⇒ **预期 H0**。
+
+## Method
+- 唯一改动：`--loo_in_delta`。其余 = exp124 A 第一段配方（与 exp127 A 臂相同的 perf 代码与同步调度）：`convformer_m_v3r_m46`、lr 1e-4、seed 1241、warmup 3000、batch 4096、1 epoch、dup_k 8、γ 0.995、λ 0.95、entropy 0.03、target_kl 0.03、adv_clamp 5、shaping 0→400k、`--rollout_values --fast_trunk --compile --bf16_rollout`，0 → 32M，里程碑 8 / 16 / 24 / 32M。
+- **对照**：exp124 A 32M（0.4810，同主干同配方同 seed；注意 exp124 A 用的是 exp124 时的代码，本臂用 perf 分支——exp127 A 臂同样如此）。
+- **主判据**：32M 对 bc49 份额，标准 10,500 去重判决牌山（101112000 起 1 万 + 101112500 段末 500），与 exp124 A 32M 逐牌山配对。
+- **次要**：8 / 16 / 24 / 32M 在前 2000 牌山上的曲线（与 exp124 A 同点配对），以及到达 0.48 所需局数。
+
+## Success Criteria（发射前写定）
+Δ = 臂 − 对照（同牌山配对）：**Δ ≥ +1.5 pp ⇒ 加速器**；**Δ ≤ −1.5 pp ⇒ 有害**；其余 ⇒ **H0**。
+1.5 pp ≈ 配对牌山差 3 SE；**不含种子方差**（单种子）——判读时注明。
+
+## Progress
+- [2026-11-08 14:00 PST] 预注册。代码：单测（`tests/test_loo_in_delta.py`：以 r − b/n 折现求和逐步复现减基线后的 returns）通过；真实 Rust rollout 512 局全部带 `loo_d`（SD 0.21，与 exp131 测得的 b/n SD 0.19–0.20 一致）；本机 ConvFormer46 1,024 局训练冒烟通过。
+
+## Results
+
+## Conclusion
+
+## Artifacts
