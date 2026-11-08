@@ -1,0 +1,5 @@
+mortal n=10000 share=0.5071 ± 0.0042 pts/wall=+273 ± 117 bridge {'ok': 590616, 'fallback': 0}
+  192M - Mortal: +0.64 ± 0.61 pp; pts +122 ± 172
+  160M - Mortal: +0.26 ± 0.61 pp; pts +120 ± 174
+  133M - Mortal: -0.55 ± 0.61 pp; pts -139 ± 175
+  112M - Mortal: -0.51 ± 0.61 pp; pts -99 ± 174
