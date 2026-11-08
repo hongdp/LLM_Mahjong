@@ -1,0 +1,20 @@
+none (192M unwrapped, batch-1): walls 10500 share 0.5119 ± 0.0045  pts/wall +357
+
+UK2: share 0.4883  Δ -2.35 ± 0.56 pp (z -4.2)  Δpts/wall -833 ± 155
+  s2: decisions 124,547 replaced 46,367 (37.2%); net choice kept min-shanten 83.5%
+     kept yakuhai 28%  otakaze 9%  terminal 18%  middle 45%  dora 5%  pair 11%  dom_suit 24%
+     cut  yakuhai 3%  otakaze 3%  terminal 40%  middle 53%  dora 1%  pair 22%  dom_suit 37%
+  s3: decisions 102,206 replaced 53,630 (52.5%); net choice kept min-shanten 92.0%
+     kept yakuhai 52%  otakaze 21%  terminal 12%  middle 15%  dora 3%  pair 2%  dom_suit 11%
+     cut  yakuhai 8%  otakaze 8%  terminal 46%  middle 38%  dora 0%  pair 6%  dom_suit 28%
+
+UK1: share 0.4810  Δ -3.09 ± 0.57 pp (z -5.4)  Δpts/wall -1228 ± 162
+  s1: decisions 109,947 replaced 25,595 (23.3%); net choice kept min-shanten 72.6%
+     kept yakuhai 11%  otakaze 4%  terminal 15%  middle 70%  dora 6%  pair 27%  dom_suit 36%
+     cut  yakuhai 2%  otakaze 3%  terminal 35%  middle 60%  dora 1%  pair 26%  dom_suit 40%
+  s2: decisions 119,178 replaced 43,502 (36.5%); net choice kept min-shanten 83.5%
+     kept yakuhai 28%  otakaze 9%  terminal 18%  middle 45%  dora 5%  pair 11%  dom_suit 24%
+     cut  yakuhai 3%  otakaze 3%  terminal 41%  middle 52%  dora 0%  pair 22%  dom_suit 37%
+  s3: decisions 102,143 replaced 53,580 (52.5%); net choice kept min-shanten 91.9%
+     kept yakuhai 52%  otakaze 21%  terminal 12%  middle 15%  dora 3%  pair 2%  dom_suit 11%
+     cut  yakuhai 8%  otakaze 8%  terminal 46%  middle 38%  dora 0%  pair 6%  dom_suit 28%
