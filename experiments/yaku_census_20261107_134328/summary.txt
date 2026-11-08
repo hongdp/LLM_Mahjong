@@ -1,0 +1,62 @@
+== yakuman per 10,000 deals (± Poisson SE), deals per yakuman
+A_8M       deals   200,000 wins/deal 0.743  yakuman  124 =  6.20 ± 0.56 /10k (1 per  1613)  kazoe  41 (2.05/10k)
+A_32M      deals   200,000 wins/deal 0.835  yakuman  107 =  5.35 ± 0.52 /10k (1 per  1869)  kazoe  15 (0.75/10k)
+A_64M      deals   200,000 wins/deal 0.821  yakuman   84 =  4.20 ± 0.46 /10k (1 per  2381)  kazoe  20 (1.00/10k)
+A_96M      deals   200,000 wins/deal 0.842  yakuman   83 =  4.15 ± 0.46 /10k (1 per  2410)  kazoe  10 (0.50/10k)
+A_144M     deals   200,000 wins/deal 0.848  yakuman   91 =  4.55 ± 0.48 /10k (1 per  2198)  kazoe   6 (0.30/10k)
+A_192M     deals   200,000 wins/deal 0.832  yakuman   83 =  4.15 ± 0.46 /10k (1 per  2410)  kazoe  12 (0.60/10k)
+A_192M_T0  deals   200,000 wins/deal 0.874  yakuman   95 =  4.75 ± 0.49 /10k (1 per  2105)  kazoe   4 (0.20/10k)
+bc49       deals   200,000 wins/deal 0.852  yakuman   81 =  4.05 ± 0.45 /10k (1 per  2469)  kazoe   7 (0.35/10k)
+CNN_392M   deals   200,000 wins/deal 0.853  yakuman   81 =  4.05 ± 0.45 /10k (1 per  2469)  kazoe  15 (0.75/10k)
+human      deals 1,214,866 wins/deal 0.847  yakuman  845 =  6.96 ± 0.24 /10k (1 per  1438)  kazoe  44 (0.36/10k)
+
+== yakuman counts by type
+type                                  A_8M     A_32M     A_64M     A_96M    A_144M    A_192M A_192M_T0      bc49  CNN_392M     human
+Suu Ankou                               63        51        39        44        50        39        45        39        27       335
+Suu Ankou Tanki                          5         3         1         2         3         4         2         3         4        38
+Kokushi Musou                            0         0         0         0         0         0         0        10         0       181
+Kokushi Musou Juusanmen Matchi           0         0         0         0         0         0         0         0         0         6
+Daisangen                               48        30        30        19        23        27        35        22        38       169
+Shousuushii                              3        13         6        11        10         4         5         2         7        73
+Dai Suushii                              0         0         0         0         1         0         2         1         1         1
+Tsuu Iisou                               4         9         0         2         2         0         1         2         1        10
+Ryuuiisou                                1         0         1         1         1         1         0         0         1        10
+Chinroutou                               0         0         3         0         0         3         0         2         0         8
+Chuuren Poutou                           0         0         1         1         0         2         2         0         0         6
+Daburu Chuuren Poutou                    0         0         0         0         0         0         0         0         0         0
+Suu Kantsu                               0         0         0         0         0         0         0         0         0         0
+Tenhou                                   0         2         2         2         2         2         2         1         2         6
+Chiihou                                  0         1         1         1         0         1         1         1         0         7
+
+== rare non-yakuman, per 10,000 deals
+yaku                    A_8M     A_32M     A_64M     A_96M    A_144M    A_192M A_192M_T0      bc49  CNN_392M     human
+Chinitsu                15.7      39.0      68.6      66.5      64.0      46.1      40.7      38.6      21.3      46.1
+Honitsu                336.9     509.8     658.8     689.5     560.5     434.9     449.2     372.4     378.2     408.7
+Honroutou                7.2       6.2       4.7       6.8       4.9       3.0       3.1       2.0       3.4       2.5
+San Kantsu               0.7       0.2       0.3       0.6       0.3       0.3       0.1       0.0       0.2       0.1
+Ryanpeikou               3.0       2.5       2.6       2.4       3.4       2.9       2.2       3.3       1.8       3.2
+Shou Sangen              9.7       8.7       6.9       7.3       7.2       4.9       5.9       6.7       8.9       7.4
+Sanshoku Doukou          3.5       2.1       2.1       2.1       1.6       2.8       1.3       1.4       1.7       2.5
+Double Riichi           19.2      14.4      15.1      19.1      16.8      15.8      14.2      12.7      20.0      15.7
+Ippatsu                918.8     758.1     757.4     731.6     666.4     694.2     799.2     736.5     917.9     666.6
+Rinshan Kaihou          35.2      32.6      33.5      35.4      38.5      34.0      32.6      19.9      32.5      21.2
+Haitei Raoyue           53.4      44.8      49.0      45.3      43.0      47.9      39.3      36.7      40.0      37.6
+Houtei Raoyui           61.5      49.4      51.7      47.6      50.3      48.6      44.2      43.2      58.3      36.2
+Chankan                  3.8       2.4       3.1       2.9       2.9       4.0       2.8       1.2       4.3       1.6
+Chiitoitsu             120.5     204.5     147.3     221.7     204.8     190.5     218.8     220.8      73.6     247.3
+Toitoi                 557.1     344.2     267.1     268.6     282.4     205.4     159.6     119.8     178.6     128.7
+San Ankou               83.0      57.3      57.5      55.4      62.1      56.0      50.4      45.2      47.2      53.9
+
+== ESTIMATE: yakuman in exp124 A 0–192M training deals ≈ 86,740 (piecewise-linear over 0/8/32/64/96/144/192M, 0M=0)
+   sampling SE ≈ ±3,847; kazoe ≈ 13,460
+   Suu Ankou                        ≈   43,900
+   Suu Ankou Tanki                  ≈    2,580
+   Daisangen                        ≈   25,400
+   Shousuushii                      ≈    8,100
+   Dai Suushii                      ≈      240
+   Tsuu Iisou                       ≈    2,460
+   Ryuuiisou                        ≈      800
+   Chinroutou                       ≈      840
+   Chuuren Poutou                   ≈      600
+   Tenhou                           ≈    1,720
+   Chiihou                          ≈      620
