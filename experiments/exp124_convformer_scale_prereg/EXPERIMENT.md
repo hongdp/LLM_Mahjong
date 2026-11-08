@@ -309,6 +309,8 @@ ConvFormer 每 2048 局（训练好策略的样本量）在本机 4080：已测 
 
 - [2026-11-07 11:57 PST] **Stage 2 发射**：pod `ighxm9nxie3wo7`（exp124s2-S2），Secure RTX 3090 ×1、32 vCPU（cgroup 31 核）、EU-CZ-1、**$0.50/h**，仅 22/tcp，SSH 213.192.2.110:40008，pod 上无凭据。首次部署因 `exp124s2_ops/pod_boot.sh` 起点检查沿用 exp127 的 160M 而 BOOTSTRAP_FAILED，改为 192000000 后重部署（gate 通过，start.pt md5 校验一致）。19:54 UTC 起训，**从 192,002,048 局续上**；2.9 min 时 **395 局/s**（B1 ≈378）⇒ 192M ÷ 395 ≈ 135 h ≈ **$68**（上限 $85）。本地：pull_loop / watchdog / eval_loop（`exp124s2_ops`）+ latest_eval_loop（`exp124_ops`）；TB `_tb_qlearning/exp124s2_S2_stream_192-384M_LIVE`；配置快照 `experiments/exp124s2_S2/config.json`。
 
+- [2026-11-07 17:54 PST] **Stage 2 重启以加上役种统计（用户"带上"）**：pod 上代码由 perf e5fbbfc 换成 1de99e5（只多役种计数：`style_stats.py` + `train_dnn_ppo.py`，md5 64f3d3b0… / 4803dad9…；原文件备份在 pod `/workspace/yk_patch/*.orig`）。顺序：先按 PID 停 `pod_run.sh`（避免记 TRAIN_FAILED 触发自毁），再停训练进程，然后重新起 `pod_run.sh`，从 `latest.pt` 续训：**200,480,000 局续上**（latest.pt 存于 17:46，重做 ≈ 17 万局，< $0.1）。学习率 / 优化器 / 熵系数从检查点恢复；流式采样随机序列与不重启不同（不影响判决）。役种计数从 200.48M 起累计（192–200.48M 无）；计数存在每个检查点（`yaku_counts` / `yaku_since`）与 TB `yaku/*`、`style/yakuman_per_deal`。已知小问题：pod 上这版 `yaku_counts.json` 只在"整 50 迭代且恰为日志迭代"时写，续训后可能要到结束才出现；读数改从镜像的 `latest.pt` 取。已在两分支修为每个日志迭代都写（perf 2088f02 / 本分支 3591ef7），下次部署生效。
+
 ## Results
 
 ## Conclusion
