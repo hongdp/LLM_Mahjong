@@ -1281,8 +1281,8 @@ def main():
                     yaku_cum[k] = yaku_cum.get(k, 0) + int(v)
             writer.add_scalar("yaku/yakuman_cum", yaku_cum.get("yakuman", 0), games)
             writer.add_scalar("yaku/kazoe_cum", yaku_cum.get("kazoe", 0), games)
-            if it % 50 == 0 or it == 1:
-                write_yaku_counts(exp_dir, games, yaku_since, yaku_cum)
+            write_yaku_counts(exp_dir, games, yaku_since, yaku_cum)   # every logged iteration (a few KB; an
+                                                                      # it-modulo gate can miss stream log phases)
         writer.add_scalar("games_per_sec",
                           (games - start_games) / max(el, 1e-9), games)
         writer.flush()
