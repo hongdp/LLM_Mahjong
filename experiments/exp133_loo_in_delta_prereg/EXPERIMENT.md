@@ -1,6 +1,6 @@
 # exp133：副本留一基线进入优势（配对牌山臂 P），从零到 32M（2026-11-08）
 
-- **Date**: 2026-11-08 14:00 PST  **Status**: prereg（发射见 Progress）
+- **Date**: 2026-11-08 14:00 PST  **Status**: running（2026-11-08 14:52 PST 起训；慢机待定）
 - **Git**: 代码 perf 分支 `claude/perf-rollout-overlap` 43c6a28（`--loo_in_delta`；`apply_group_baseline` 存 `loo_d`），运维 `experiments/exp133_ops/`（由 exp127_ops 派生，`repo.tgz` = perf 43c6a28 的 git archive）
 - **Env**: RunPod Secure RTX 3090（或 A40，≤ $0.59/h），仅 22/tcp，pod 上无凭据；完成后自毁
 - **Approval**: 本会话用户 11-08"都开"（exp132 + exp133，合计约 $30）；论文会话转达其用户"跑"
@@ -22,6 +22,8 @@
 
 ## Progress
 - [2026-11-08 14:00 PST] 预注册。代码：单测（`tests/test_loo_in_delta.py`：以 r − b/n 折现求和逐步复现减基线后的 returns）通过；真实 Rust rollout 512 局全部带 `loo_d`（SD 0.21，与 exp131 测得的 b/n SD 0.19–0.20 一致）；本机 ConvFormer46 1,024 局训练冒烟通过。
+
+- [2026-11-08 15:05 PST] **发射**：pod `c30kwr09vn1ag2`（exp133-P），Secure RTX 3090 ×1、32 vCPU（cgroup v1，31 核）、EU-CZ-1、**$0.50/h**，仅 22/tcp，SSH 213.192.2.92:40112，pod 上无凭据。编译门 / 臂门通过；22:52 UTC 从 0 局起训，标志 `--rollout_values --ckpt_every 400 --loo_in_delta`。**慢机迹象**：前 52 次迭代每次 ≈7.3 s（≈280 局/s），之后 `concat_h2d`（回合数组拼接 + 拷到 GPU）从 0.6–0.7 s 跳到 4–15 s，每次迭代 11–22 s（≈100–180 局/s）；臂 O 同代码同阶段 concat_h2d 0.15 s ⇒ 是这台主机的问题（内存压力 PSI ≈4–5%，与其他租户共享的页缓存），不是 `--loo_in_delta`（GAE 一步 0.012 s）。按规则不擅自动手，已报用户。
 
 ## Results
 
