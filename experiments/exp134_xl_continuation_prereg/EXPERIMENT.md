@@ -30,6 +30,8 @@ scaling law 的"交叉"问题：同类模型放大后，小预算时不占优，
 - [2026-11-08 22:15 PST] **发射**：pod `ep6d5ftlw0lbg2`（exp134-X），Secure RTX 3090 ×1、32 vCPU、**$0.50/h**，仅 22/tcp，SSH 213.192.2.75:40181，pod 上无凭据。起点 `exp125_XL/games_64000000.pt`（boot 闸门校验 games=64,000,000），21:56 PST 起续训，标志 `--rollout_values --stream_rollout --m46_one_forward --games_per_worker 512 --stream_chunk_games 128 --stream_queue 1 --stream_block_games 16384 --ckpt_every 6400`，lr 3e-5，seed 1351。本地 pull / watchdog / eval / latest_eval 循环已起；配置快照 `experiments/exp134_X/config.json`。
 - [2026-11-08 22:15 PST] **吞吐低于预估**：10 分钟稳定在 **115 局/s**，GPU 利用率 100%（GPU 受限）。预估的 150 局/s 有误——exp125 XL 的 184–195 局/s 是在 4090 上测的，3090 上只有约 0.6×。按 115 局/s 算，剩余 128M 局 ≈ 309 h ≈ **$155**，超过上限 $150 和 1.3× 预估时长 ⇒ 已报用户待决，pod 继续运行。
 
+- [2026-11-08 22:27 PST] **TRAIN_FAILED：CUDA OOM**，64,147,456 局（续训 21 min、约 15 万局）。崩在 PPO 更新的 `net.forward_with_value`（`train_dnn_ppo.py:1181`，batch 4096、amp_update 已开），GPU 24 GB 里 PyTorch 占 22.9 GB，未分配的预留只有 0.1 GB ⇒ 是真峰值，不是碎片。原因判断：流式模式下推理服务（actor 副本 + 推理缓冲）与学习器同驻一张卡，XL 11.4M 在 24 GB 上处于边缘，某次最后一个小批的动态形状（s77）把峰值推过了线。exp125 XL 0–64M 与 exp124 A（M）都是同步模式，没有这个问题。pull_loop 已拉回日志与 `latest.pt`（64.1M），发 PULLED_OK 后 pod 自毁，get-pod 404 已确认。花费约 $0.4。没有可用的新里程碑；重发需用户决定（预算问题本来也待决）。
+
 ## Results
 
 ## Conclusion
