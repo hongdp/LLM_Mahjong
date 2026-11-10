@@ -1,6 +1,6 @@
 # exp132：ConvFormer46 上的 oracle 策略引导（臂 O），从零到 32M（2026-11-08）
 
-- **Date**: 2026-11-08 14:40 PST  **Status**: running（2026-11-08 14:23 PST 起训）
+- **Date**: 2026-11-08 14:40 PST  **Status**: done（2026-11-08 14:23 PST 起训，2026-11-09 18:08 PST 完成，pod 已自毁）
 - **Git**: perf 分支 `claude/perf-rollout-overlap` bf43537（v3ro 编码器 / `convformer_m_v3ro_m46` / VecEnv `oracle_hide_p`）；运维 `experiments/exp132_ops/`（`repo.tgz` = perf bf43537 的 git archive，`riichi_rs` cp312 轮子由同一提交本机构建）
 - **Env**: RunPod Secure RTX 3090（或 A40，≤ $0.59/h），仅 22/tcp，pod 上无凭据；完成后自毁
 - **Approval**: 本会话用户 11-08"都开"（exp132 + exp133，合计约 $30）；论文会话转达其用户"跑"
@@ -33,8 +33,32 @@
 
 - [2026-11-09 11:30 PST] 24M 里程碑（md5 与 pod 一致）：2,000 牌山份额 0.4660 ± 0.0104，同牌山对 exp124 A 24M（0.4708）配对 **−0.47 ± 1.44 pp**，在轨读数。16M 的 +2.97 主要来自基线 16M 下凹，24M 已回到与基线持平；三点（−1.03 / +2.97 / −0.47）合起来看不出加速。判决在 32M。
 
+- [2026-11-09 18:35 PST] **32M 完成并判决**。18:08 心跳 `✅ DONE md5 verified`（games_final.pt 974b5730…，games_32000000.pt 1151a00e…），PULLED_OK 已发；18:30 `get-pod 1h3k7x0pz8e7r7` 返回 404（pod 已自毁）。本地 pull / eval 循环自行退出，孤儿 watchdog 按 PID 结束。墙钟 27 h 45 min × $0.50/h ≈ **$13.9**（上限 $20 内；按时长估算，未核对账单）。
+
 ## Results
+判决：T=0 单局复式 2v2 对 bc49，标准 10,500 去重判决牌山（101112000 段 10,000 + 101112500 段末 500），与 exp124 A 32M 逐牌山配对。
+
+| 指标 | 臂 O（oracle 引导） | 对照 exp124 A 32M | 配对差 | 预注册线 |
+|---|---|---|---|---|
+| 对 bc49 份额（32M） | 0.4682 ± 0.0046 | 0.4810 | **−1.28 ± 0.61 pp（z −2.1）** | ±1.5 pp |
+| 点差 / 牌山 | — | — | −151 ± 175 | — |
+
+在轨曲线（前 2,000 牌山，与 exp124 A 同点配对）：8M −1.03 ± 1.42、16M +2.97 ± 1.40（基线 16M 下凹）、24M −0.47 ± 1.44 pp。到达 0.48：臂 O 在 32M 内未到（最高 0.4682）；对照在 32M 到 0.4810。
+役种（训练 rollout 计数，0–32M，含 0–8M 有特权信息的阶段）：役满 6.25 / 万局，国士 3 次（exp133 同预算 5.27 / 万局、国士 1 次）；描述性，不作结论。
 
 ## Conclusion
+- **按预注册判读：H0**（−1.5 < Δ < +1.5 pp）。点估计为负（−1.28 pp，z −2.1），接近"有害"线但未过；**oracle 策略引导在 ConvFormer46 上不是加速器**。8M 全盲起点处已落后约 1 pp，24M 全盲尾段没有追回，说明带特权信息学到的东西没有迁移成对公开线索的更快学习。
+- 与 exp68（CNN、1M 预算，oracle guiding = 加速器但尾段抹平）合起来：更长的全盲尾段（24M）下优势不存在。
+- **范围戳**：架构 ConvFormer46（`convformer_m_v3ro_m46`，+8 特权平面）；信号源 = 纯血自对弈 PPO、单局点差目标；oracle 隐藏概率 0 → 1 线性退火于 0–8M、之后 24M 全盲；规模 0–32M；评测 T=0 单局复式对 bc49、10,500 牌山；**单种子**（判据不含种子方差）；对照 exp124 A 用 exp124 时的代码、本臂用 perf 分支。失效条件：其他退火计划（更长 / 不完全退火 / 评论家专用特权）、更大规模、半庄顺位目标均未测。
+- 纯血线下一步：这条杠杆在此范围关闭；主线仍看 Stage 2（256M 判决见 exp124 预注册）与 XL 续训（exp134，待用户定重发）。
 
 ## Artifacts
+| Path | Description |
+|---|---|
+| `experiments/exp132_O/games_{0,8000000,16000000,24000000,32000000}.pt`、`games_final.pt`、`milestones.md5`（主 checkout） | 里程碑检查点（各 ≈24 MB）与 md5；`games_final.pt` = 32M 终点 |
+| `experiments/exp132_O/config.json`、`train_log.json`、`yaku_counts.json`、`tensorboard/` | 配置快照、逐迭代日志、役种计数、TB（面板 `_tb_qlearning/exp132_O_oracle46_0-32M_LIVE`） |
+| `experiments/probes/pairdiff_exp132_O_n10000_games_32000000.pt_{101112000,101112500}.json` | 32M 判决逐牌山 share / diff |
+| `experiments/probes/pairdiff_exp132_O_n2000_games_{8,16,24}000000.pt_101112000.json` | 在轨读数逐牌山 |
+| `experiments/probes/pairdiff_exp124_A_n10000_games_32000000.pt_{101112000,101112500}.json` | 对照逐牌山 |
+| `experiments/exp132_pull_O/`（heartbeat / autoeval / train_O.log / exp.log / watchdog.log） | 运维日志 |
+| `experiments/exp132_ops/` | 发射与监控脚本 |

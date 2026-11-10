@@ -1,6 +1,6 @@
 # exp133：副本留一基线进入优势（配对牌山臂 P），从零到 32M（2026-11-08）
 
-- **Date**: 2026-11-08 14:00 PST  **Status**: running（2026-11-08 14:52 PST 起训；慢机 16:00 自行恢复）
+- **Date**: 2026-11-08 14:00 PST  **Status**: done（2026-11-08 14:52 PST 起训；慢机 16:00 自行恢复；2026-11-09 18:06 PST 完成，pod 已自毁）
 - **Git**: 代码 perf 分支 `claude/perf-rollout-overlap` 43c6a28（`--loo_in_delta`；`apply_group_baseline` 存 `loo_d`），运维 `experiments/exp133_ops/`（由 exp127_ops 派生，`repo.tgz` = perf 43c6a28 的 git archive）
 - **Env**: RunPod Secure RTX 3090（或 A40，≤ $0.59/h），仅 22/tcp，pod 上无凭据；完成后自毁
 - **Approval**: 本会话用户 11-08"都开"（exp132 + exp133，合计约 $30）；论文会话转达其用户"跑"
@@ -37,8 +37,30 @@
 
 - [2026-11-09 12:00 PST] 24M 里程碑（md5 与 pod 一致）：2,000 牌山份额 0.4800 ± 0.0104，同牌山对 exp124 A 24M（0.4708）配对 **+0.92 ± 1.43 pp**，在轨读数。三点 +0.25 / +2.45 / +0.92（16M 受基线下凹影响）；判决在 32M。
 
+- [2026-11-09 18:35 PST] **32M 完成并判决**。18:06 心跳 `✅ DONE md5 verified`（games_final.pt f0a0d0df…，games_32000000.pt 9b123fe7…），PULLED_OK 已发；18:30 `get-pod c30kwr09vn1ag2` 返回 404（pod 已自毁）。本地 pull / eval 循环自行退出，孤儿 watchdog 按 PID 结束。墙钟 27 h 14 min × $0.50/h ≈ **$13.6**（上限 $20 内；按时长估算，未核对账单）。
+
 ## Results
+判决：T=0 单局复式 2v2 对 bc49，标准 10,500 去重判决牌山，与 exp124 A 32M 逐牌山配对。
+
+| 指标 | 臂 P（LOO 进 δ） | 对照 exp124 A 32M | 配对差 | 预注册线 |
+|---|---|---|---|---|
+| 对 bc49 份额（32M） | 0.4840 ± 0.0045 | 0.4810 | **+0.31 ± 0.61 pp（z 0.5）** | ±1.5 pp |
+| 点差 / 牌山 | — | — | +186 ± 178 | — |
+
+在轨曲线（前 2,000 牌山，同点配对）：8M +0.25 ± 1.38、16M +2.45 ± 1.35（基线 16M 下凹）、24M +0.92 ± 1.43 pp。到达 0.48：臂 P 24M 读数 0.4800 ± 0.0104（2,000 牌山，恰在线上）、32M 0.4840；对照 24M 0.4708、32M 0.4810——在噪声内没有可分辨的提前。
 
 ## Conclusion
+- **按预注册判读：H0**。把副本留一基线放进 GAE δ（r − b/n）对 32M 强度没有可测影响（+0.31 ± 0.61 pp），与 exp131 阶段 0 的先验预期一致。
+- **范围戳**：架构 ConvFormer46（exp124 A 配方）；信号源 = 纯血自对弈 PPO、单局点差目标，唯一改动 `--loo_in_delta`；规模 0–32M；评测 T=0 单局复式对 bc49、10,500 牌山；**单种子**；对照 exp124 A 用 exp124 时的代码、本臂用 perf 分支；前 289 轮在慢机上（只影响墙钟）。失效条件：更大规模（方差缩减的收益可能随规模变化）、其他主干、半庄目标未测。
+- 纯血线下一步：降方差这一类在 ConvFormer46 0–32M 上再记一次 H0；主线看 Stage 2 与 XL 续训。
 
 ## Artifacts
+| Path | Description |
+|---|---|
+| `experiments/exp133_P/games_{0,8000000,16000000,24000000,32000000}.pt`、`games_final.pt`、`milestones.md5`（主 checkout） | 里程碑检查点（各 ≈24 MB）与 md5；`games_final.pt` = 32M 终点 |
+| `experiments/exp133_P/config.json`、`train_log.json`、`yaku_counts.json`、`tensorboard/` | 配置快照、逐迭代日志、役种计数、TB（面板 `_tb_qlearning/exp133_P_looindelta_0-32M_LIVE`） |
+| `experiments/probes/pairdiff_exp133_P_n10000_games_32000000.pt_{101112000,101112500}.json` | 32M 判决逐牌山 share / diff |
+| `experiments/probes/pairdiff_exp133_P_n2000_games_{8,16,24}000000.pt_101112000.json` | 在轨读数逐牌山 |
+| `experiments/probes/pairdiff_exp124_A_n10000_games_32000000.pt_{101112000,101112500}.json` | 对照逐牌山 |
+| `experiments/exp133_pull_P/`（heartbeat / autoeval / train_P.log / exp.log / watchdog.log） | 运维日志 |
+| `experiments/exp133_ops/` | 发射与监控脚本 |
