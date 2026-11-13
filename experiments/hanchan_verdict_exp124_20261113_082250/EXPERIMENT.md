@@ -1,6 +1,6 @@
 # 成对半庄裁决：exp124 192M / 224M / 256M / 288M 对 bc49
 
-- **Date**: 2026-11-13 08:22 PST  **Status**: running（判决段完成，衔接段在跑）
+- **Date**: 2026-11-13 08:22 PST  **Status**: done（2026-11-13 09:10 PST）
 - **Git**: 1d1de45（无未提交改动）；驱动 `hanchan_dup.py` 是 `share_to_uma_20261106_095032` 的原样拷贝，调用稳定入口 `scripts/run_elo_league.play_pair_vector(hanchan=True)`
 - **Env**: 本机 RTX 4080，rlhf_mahjong 环境；$0
 
@@ -30,6 +30,7 @@
 - [2026-11-13 08:22 PST] 预注册写定；冒烟（256M，16 场）0.1 min 正常。开跑。
 - [2026-11-13 08:29 PST] 入口下沉为 `scripts/hanchan_verdict.py`（冒烟 16 场与本 run 的前 16 场逐场相同）；规则、脚本、Stage 2 预注册修订提交 083bb4c。
 - [2026-11-13 09:02 PST] 判决段两段 × 4 检查点跑完（每段 3–7 分钟，与在轨评测共用 GPU）；衔接段在跑。
+- [2026-11-13 09:10 PST] 衔接段跑完（`run.log` 末行 ALL_DONE），12 段全部落盘。
 
 ## Results
 判决段（种子 202000000 + 202100000，各 1,500 场，合计 3,000 场；对 bc49，双方 T=0）：
@@ -47,7 +48,10 @@
 - 同牌山上不同检查点的逐场 uma 相关只有 0.10，所以半庄的"同场配对"几乎不降方差（配对 SE ≈ 270，不配对 ≈ 287）。
 - 族内换算（1 pp 单局份额 ≈ 511 uma，share_to_uma L3）外推：192M（+1.13 pp）预测 +577，实测 +681；256M（+2.30 pp）预测 +1,175，实测 +755（低 2 个 SE）。
 
-衔接段（种子 201000000，1,500 场，不进判决）：（待填）
+衔接段（种子 201000000，1,500 场，不进判决；与 share_to_uma 的 13 检查点曲线同一批半庄）：
+192M +711 ± 278、224M +862 ± 286、256M +342 ± 291、288M +815 ± 292（160M 在这批半庄上是 −169 ± 292）。
+三段合并 4,500 场（只描述）：192M +691 ± 163、224M +969 ± 166、256M +617 ± 167（z 3.7）、288M +1,337 ± 166；
+256M − 192M −74 ± 223，288M − 256M +720 ± 217。衔接段上 288M 的领先缩小（+473），方向不变；256M 仍是四点里最低的两个之一。
 
 ## Conclusion
 **范围戳**：`convformer_m_v3r_m46` 2.0M，纯自对弈 PPO（exp124 A + Stage 2 流式续训），单训练种子；评测 = 2v2 复式半庄对 bc49、双方 T=0、3,000 场、本项目引擎半庄规则；
@@ -67,5 +71,6 @@
 ## Artifacts
 | Path | Size | Description |
 |---|---|---|
-| `experiments/probes/hanchan_verdict_exp124/<tag>_<seed>.json` | — | 每检查点每段逐场 diff / score |
+| `experiments/probes/hanchan_verdict_exp124/<tag>_<seed>.json` | 12 × ≈0.6 MB | 每检查点每段逐场 diff / score（tag = a192 / s224 / s256 / s288；s320 / s384 由 Stage 2 自动补） |
+| `experiments/probes/hanchan_verdict_exp124/summary.json` | <10 KB | `analyze.py` 的汇总 |
 | 本目录 `run.sh`、`run.log`、`hanchan_dup.py`、`analyze.py` | — | 驱动、日志、分析 |
