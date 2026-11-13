@@ -20,9 +20,10 @@ English | [中文](README.zh.md)
 
 ## Highlights
 
-- **Self-play from scratch reaches the human-data flagship.** A ConvFormer trained only against itself
-  (exp124) wins **0.5113 ± 0.0032** of duplicate deals against bc49 after 192M games, the first significant
-  lead for the pure lineage. The 256M checkpoint reads **0.5230 ± 0.0033**, and the run continues to 384M.
+- **Self-play RL from scratch has passed the behaviour-cloning level.** A ConvFormer trained only against
+  itself (exp124) wins **0.5113 ± 0.0032** of duplicate deals against bc49, our human-data flagship, after
+  192M games, the first significant lead for the pure lineage. The 256M checkpoint reads **0.5230 ± 0.0033**
+  and is now a deployment champion alongside bc49; the run continues to 384M.
 - **Model class moved the plateau; size and scale did not.** The CNN line flattens near 0.45 from 112M games
   on. Swapping only the trunk is worth **+5.00 ± 0.45 pp** at 32M games (2×2 ablation, exp127). A 5.7× larger
   trunk of the same class adds +0.41 ± 0.60 pp at 64M (exp125).
@@ -43,10 +44,10 @@ English | [中文](README.zh.md)
 
 | Model | Training signal | Params | Self-play games | Share vs bc49 | Walls |
 |---|---|---|---|---|---|
-| **exp124 ConvFormer @ 256M** (interim) | self-play only | 2.0M | 256M | **0.5230 ± 0.0033** | 20,000 |
+| **exp124 ConvFormer @ 256M** (deployment champion, pure lineage; interim read) | self-play only | 2.0M | 256M | **0.5230 ± 0.0033** | 20,000 |
 | **exp124 ConvFormer @ 192M** | self-play only | 2.0M | 192M | **0.5113 ± 0.0032** | 20,500 |
 | Mortal 298k | external reference | ≈10.8M | — | 0.5039 ± 0.0041 | 10,500 |
-| **bc49** (deployment champion) | BC on 18.5k human games | 2.0M | — | 0.500 (reference) | — |
+| **bc49** (deployment champion, human-prior lineage) | BC on 18.5k human games | 2.0M | — | 0.500 (reference) | — |
 | akochan (default tactics) | external reference | — | — | 0.4680 ± 0.0105 | 2,000 |
 | exp101 CNN @ 192M | self-play only | 4.0M | 192M | 0.4493 ± 0.0046 | 10,500 |
 | Rule-based agent | — | — | — | 0.3242 | 10,500 |
@@ -71,18 +72,34 @@ Scope of these numbers: one training seed, the exp124 recipe, T=0, the current e
 | | Pure lineage (the goal) | Human-prior lineage (the yardstick) |
 |---|---|---|
 | Training signal | Self-play from random initialisation. No human data and no external model, ever. | Behaviour cloning on Tenhou Houou logs, optionally followed by RL on the prior. |
-| Role | Discover the whole skill stack unaided, AlphaZero-style. | Calibrate the scale, diagnose the pure line, and serve as the deployed model. |
-| Current best | exp124 ConvFormer (192M: 0.5113 vs bc49; 256M interim: 0.5230) | **bc49**, the deployment champion; ties Mortal |
+| Role | Discover the whole skill stack unaided, AlphaZero-style. | Calibrate the scale and diagnose the pure line; bc49 is the reference every model is read against. |
+| Current best | **exp124 ConvFormer @ 256M**, deployment champion (0.5230 vs bc49; 192M: 0.5113) | **bc49**, deployment champion of the BC line; ties Mortal |
 | Rules of the lineage | Human- and teacher-derived models are yardsticks only and never enter the champion line or the opponent pool. Situational curricula and rule variants are out. Leagues of the model's own frozen snapshots and EMA self-anchors count as pure. | Path so far: Houou BC (bc49) → RL on the prior (exp46) → hanchan placement training (exp55-D). RL on the prior ties bc49 and does not beat it. |
 
 ## Current status (2026-11-12)
 
-**Deployment champion: bc49** (human-prior lineage; ConvFormer × v3r encoder × 46-slot action head, 2.00M
-params, pure BC on 18.5k Tenhou Houou games, holdout accuracy 0.806). Always played greedy (T=0). On the hanchan
-all-greedy ladder (the cleanest scale; 13 anchors, 200 duplicate pairs each): Mortal 298k 1465 ± 12,
-exp46-I 1457 ± 11, **bc49 1443 ± 11**; head-to-head with Mortal over 1,200 hanchan 0.477 ± 0.014, a tie.
-Majsoul maka grade S+ twice. Configuration and checkpoint paths: [docs/champion_model.md](docs/champion_model.md);
-numbers: [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md).
+**Deployment champions: exp124 @ 256M and bc49.** One per lineage, on the same 2.0M-parameter architecture
+(ConvFormer × v3r encoder × 46-slot action head), both always played greedy (T=0).
+
+- **exp124 ConvFormer @ 256M** (pure lineage, self-play RL only) is the strongest model in our evaluation.
+  Head-to-head against bc49 on 20,000 duplicate walls it wins 0.5230 ± 0.0033 of the deals, 7 standard errors
+  above parity. It is listed in place of the 192M checkpoint (0.5113 ± 0.0032) because it reads
+  +1.09 ± 0.43 pp higher on the same walls. Checkpoint: `experiments/exp124s2_S2/games_256000000.pt`
+  (not in git).
+- **bc49** (human-prior lineage; pure BC on 18.5k Tenhou Houou games, holdout accuracy 0.806) is the BC
+  champion and the reference every other model is read against. On the hanchan all-greedy ladder (the
+  cleanest scale; 13 anchors, 200 duplicate pairs each): Mortal 298k 1465 ± 12, exp46-I 1457 ± 11,
+  **bc49 1443 ± 11**; head-to-head with Mortal over 1,200 hanchan 0.477 ± 0.014, a tie. Majsoul maka grade S+
+  twice. Configuration and checkpoint paths: [docs/champion_model.md](docs/champion_model.md), which currently
+  documents bc49 only; numbers: [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md).
+
+**RL has passed the BC level in our evaluation.** On duplicate single deals at T=0 the self-play model beats
+the behaviour-cloned flagship at both 192M games (20,500 walls, 3.5 standard errors above parity) and 256M
+games (20,000 walls, 7 standard errors). At the four-way hanchan table with Mortal the 192M checkpoint also
+finishes above bc49 (+2,039 against +726 uma per game). It is the first RL model in this project to read
+significantly above bc49: RL on top of the BC prior (exp46) only tied it. Scope: one training seed, our
+duplicate protocol and engine; the pairwise hanchan verdict (≥ 1,200 games) has not been run on these
+checkpoints.
 
 **Pure lineage: exp124 ConvFormer.** The same 2.0M architecture as bc49, trained from scratch by synchronous
 PPO self-play (≈$121 of rented single-GPU time to 192M games). Milestones against bc49, single deals, T=0:
@@ -96,10 +113,8 @@ PPO self-play (≈$121 of rented single-GPU time to 192M games). Milestones agai
 checkpoints within ±1 pp of bc49; 192M is the first to read significantly above it. Stage 2 is extending the run from 192M to 384M
 with judgment points at 320M and 384M; it stood at ≈298M games on 2026-11-12.
 
-The program's single-deal target (share ≥ 0.50 against bc49 on ≥ 20k walls) is met. The pairwise hanchan
-verdict (≥ 1,200 games) has not been run on these checkpoints; the four-way table above is the current
-hanchan reading. bc49 remains the deployed model until a crowning head-to-head is recorded in
-[docs/champion_model.md](docs/champion_model.md).
+The program's single-deal target (share ≥ 0.50 against bc49 on ≥ 20k walls) is met. The four-way table
+above is the current hanchan reading.
 
 What the pure line still lacks: yakuman are 0.6× as frequent as in human play, and Kokushi has never appeared
 at any checkpoint. Probes show no Kokushi intent at all, an exploration gap rather than a perception gap.
@@ -313,6 +328,7 @@ session log format, protocol pitfalls) · [tools/majsoul_bridge/WINDOWS.md](tool
   - 2026-09-06 → 10-02: the $200 pure-line program on CNNs; scaling plateaus near 0.46 against bc49.
   - 2026-10-31 → now: the model-class change (exp124). The pure line reaches bc49 at 112–133M games and passes
     it at 192M.
+  - 2026-11-12: exp124 @ 256M becomes a deployment champion alongside bc49.
 
 ## Third-party components and terms
 
