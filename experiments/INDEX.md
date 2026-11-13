@@ -4,6 +4,7 @@
 
 | 日期 | 实验目录 | 一句话目的 | 关键结果 | 结论 |
 |---|---|---|---|---|
+| 2026-11-12 | `exp124_convformer_scale_prereg`（加冕记录；训练仍 running → 384M） | exp124 @ 256M 列为部署冠军，与 bc49 并列（用户 11-12 决定） | 对 bc49 0.5230 ± 0.0033（T=0 单局复式，20,000 牌山，7 SE）；同牌山比 192M +1.09 ± 0.43 pp；权重已传 GCS `checkpoints/pure_lineage/exp124_convformer_m_v3r_m46_games_256000000.pt`（md5 c7d993be…） | 模型卡 §7 判据在单局刻度满足 ⇒ 并列部署冠军；范围戳 = `convformer_m_v3r_m46`、纯自对弈 PPO、256M 单种子、T=0 单局复式；成对半庄裁决与梯子评级未做，384M 判决后更新 |
 | 2026-11-08 | `exp134_xl_continuation_prereg`（failed：流式模式 XL 在 3090 24 GB 上 CUDA OOM，64.15M 处崩，pod 已自毁，≈$0.4；重发待用户定） | XL（11.4M）从 64M 流式续训到 192M，在 112/160/192M 与 M（exp124 A）同牌山配对，检验大模型是否在更多对局后交叉反超 | 待出 | 判据：192M XL − M ≥ +1.0 pp 交叉 / ≤ −1.0 pp 反向 / 其余 H0；160M ≤ −2 pp 提议早停 |
 | 2026-11-08 | `exp132_oracle_guiding46_prereg`（**done 11-09 18:08 PST**，pod 已自毁，≈$13.9；论文 RQ3；配置 `exp132_O/config.json`） | ConvFormer46 上的 oracle 策略引导：v3ro（+8 特权平面），隐藏概率 0→1 @ 0–8M、之后 24M 全盲，exp124 A 配方从零到 32M | 32M 0.4682 ± 0.0046，vs exp124 A 32M 配对 **−1.28 ± 0.61 pp**（10,500 牌山） | **H0**（点估计为负，未过 −1.5 pp 有害线）：oracle 引导不是加速器。范围：ConvFormer46、单局目标、0–8M 线性退火 + 24M 全盲、0–32M、T=0 对 bc49、单种子；其他退火计划 / 更大规模未测 |
 | 2026-11-08 | `exp133_loo_in_delta_prereg`（**done 11-09 18:06 PST**，pod 已自毁，≈$13.6；论文 RQ3；配置 `exp133_P/config.json`） | 副本留一基线进入 GAE δ（r − b/n），exp124 A 配方从零到 32M，唯一改动 `--loo_in_delta` | 32M 0.4840 ± 0.0045，vs exp124 A 32M 配对 **+0.31 ± 0.61 pp**（10,500 牌山） | **H0**：LOO 进 δ 对强度无可测影响，与 exp131 先验一致。范围：ConvFormer46、单局目标、0–32M、T=0 对 bc49、单种子；更大规模未测 |

@@ -74,11 +74,11 @@ Mortal +2,534 · exp124 @ 192M +2,039 · bc49 +726 · exp113-C CNN −5,299。ex
 
 - **exp124 ConvFormer @ 256M**（纯血谱系，只有自对弈 RL）是我们评测里最强的模型。对 bc49 头对头 20,000 副复式牌山，份额 0.5230 ± 0.0033，
   高出五五开 7 个标准误。列它而不列 192M 检查点（0.5113 ± 0.0032），是因为同牌山上它高 +1.09 ± 0.43 pp。
-  检查点：`experiments/exp124s2_S2/games_256000000.pt`（不在 git 里）。
+  检查点：`experiments/exp124s2_S2/games_256000000.pt`（不在 git 里；GCS 副本、跑法和训练配方见 [docs/champion_model.md](docs/champion_model.md)）。
 - **bc49**（人类先验谱系；纯 BC，凤凰卓 18.5k 局，holdout 精度 0.806）是 BC 线冠军，也是所有模型读数的参照。
   半庄全贪心梯子（最干净的刻度，13 锚，每对 200 复式）：Mortal 298k 1465 ± 12、exp46-I 1457 ± 11、**bc49 1443 ± 11**；
   对 Mortal 头对头 1,200 场 0.477 ± 0.014，打平。雀魂 maka 两轮 S+。
-  配置与 ckpt 路径见 [docs/champion_model.md](docs/champion_model.md)（目前只写了 bc49），数字见 [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md)。
+  配置与 ckpt 路径见 [docs/champion_model.md](docs/champion_model.md)，数字见 [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md)。
 
 **RL 在我们的评测里已经超过 BC 水平。** 复式单局、T=0 下，自对弈模型在 192M 局（20,500 副牌山，高出五五开 3.5 个标准误）和
 256M 局（20,000 副牌山，7 个标准误）都赢过行为克隆旗舰。与 Mortal 同桌的四方半庄里，192M 检查点也排在 bc49 前面
@@ -146,7 +146,7 @@ python -c "from scripts.run_elo_league import play_pair_vector as p; sc,_,_=p('C
 conda run -n rlhf_mahjong python tools/webui/server.py --port 8642   # 检视台
 ```
 
-权重不在 git 里。冠军模型卡写明了 bc49 检查点在哪里，以及怎样用公开的天凤牌谱在一张 RTX 4080 上约 3.5 小时复现。
+权重不在 git 里。冠军模型卡写明了两个冠军检查点在哪里、怎样用公开的天凤牌谱在一张 RTX 4080 上约 3.5 小时复现 bc49，以及 exp124 的三段自对弈配方。
 推理只需要 `torch`、`numpy`、`mahjong`，CPU 上每个决策 ≈4.6 ms。exp124 的发射命令在它的
 [预注册文件](experiments/exp124_convformer_scale_prereg/EXPERIMENT.md) Config 一节。
 

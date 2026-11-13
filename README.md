@@ -85,13 +85,14 @@ Scope of these numbers: one training seed, the exp124 recipe, T=0, the current e
   Head-to-head against bc49 on 20,000 duplicate walls it wins 0.5230 ± 0.0033 of the deals, 7 standard errors
   above parity. It is listed in place of the 192M checkpoint (0.5113 ± 0.0032) because it reads
   +1.09 ± 0.43 pp higher on the same walls. Checkpoint: `experiments/exp124s2_S2/games_256000000.pt`
-  (not in git).
+  (not in git; GCS copy, how to run it and the training recipe are in
+  [docs/champion_model.md](docs/champion_model.md)).
 - **bc49** (human-prior lineage; pure BC on 18.5k Tenhou Houou games, holdout accuracy 0.806) is the BC
   champion and the reference every other model is read against. On the hanchan all-greedy ladder (the
   cleanest scale; 13 anchors, 200 duplicate pairs each): Mortal 298k 1465 ± 12, exp46-I 1457 ± 11,
   **bc49 1443 ± 11**; head-to-head with Mortal over 1,200 hanchan 0.477 ± 0.014, a tie. Majsoul maka grade S+
-  twice. Configuration and checkpoint paths: [docs/champion_model.md](docs/champion_model.md), which currently
-  documents bc49 only; numbers: [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md).
+  twice. Configuration and checkpoint paths: [docs/champion_model.md](docs/champion_model.md); numbers:
+  [experiments/LEADERBOARD.md](experiments/LEADERBOARD.md).
 
 **RL has passed the BC level in our evaluation.** On duplicate single deals at T=0 the self-play model beats
 the behaviour-cloned flagship at both 192M games (20,500 walls, 3.5 standard errors above parity) and 256M
@@ -169,10 +170,11 @@ python -c "from scripts.run_elo_league import play_pair_vector as p; sc,_,_=p('C
 conda run -n rlhf_mahjong python tools/webui/server.py --port 8642   # inspector
 ```
 
-Weights are not in git. The champion card explains where the bc49 checkpoint lives and how to reproduce it
-from public Tenhou logs in about 3.5 hours on one RTX 4080. Inference needs only `torch`, `numpy` and
-`mahjong`, and runs on a CPU at ≈4.6 ms per decision. The exp124 launch command is in the Config section of
-its [preregistration](experiments/exp124_convformer_scale_prereg/EXPERIMENT.md).
+Weights are not in git. The champion card explains where both champion checkpoints live, how to reproduce bc49
+from public Tenhou logs in about 3.5 hours on one RTX 4080, and the three-stage self-play recipe behind
+exp124. Inference needs only `torch`, `numpy` and `mahjong`, and runs on a CPU at ≈4.6 ms per decision. The
+original exp124 launch command is in the Config section of its
+[preregistration](experiments/exp124_convformer_scale_prereg/EXPERIMENT.md).
 
 Every run needs an `EXPERIMENT.md` (purpose / method / success criteria) *before* launch, a heartbeat monitor and
 TensorBoard mirror once launched, and a row in `experiments/INDEX.md` when it ends — see CLAUDE.md.
