@@ -1,0 +1,7 @@
+BC − TT45M: +2556 ± 1038 (z +2.46)
+BC − TT133M: +1028 ± 1060 (z +0.97)
+BC − TT171M: +78 ± 1019 (z +0.08)
+BC − TT192M: -1313 ± 1060 (z -1.24)
+(BC−TT45M) − (BC−TT192M): +3868 ± 1341 (z +2.89)
+slope of BC−TT per log2(hands), 4 snapshots: -1558 ± 575 (z -2.71)
+slope of BC−TT per 100M hands, 4 snapshots: -2408 ± 842 (z -2.86)

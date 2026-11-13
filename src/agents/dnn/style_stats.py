@@ -14,6 +14,13 @@ Per-seat definitions (rates are per seat per hand):
   agari_rate, tsumo_share, houjuu_rate, riichi_rate, call_rate (any open
   meld / ankan proxy), draw_rate (table), win_turn / dealin_turn (mean 巡目
   = table discards / 4 at the moment the hand ended).
+
+Yaku census (user 2026-11-07): every win's yaku list is parsed from the
+settlement string (both engines print "玩家p 自摸|荣和(...) | H番F符 | yaku, ...")
+into flat "yk:<name>" counters (dora / aka / ura merged across counts), plus
+"yakuman" (hands with a yakuman yaku; double yakuman counted once, the
+multiple in "yakuman_units") and "kazoe" (>= 13 han without one). Flat keys
+so merge() and the trainer's cumulative counter just sum them.
 """
 import re
 from typing import Dict, Iterable, List, Optional
@@ -21,6 +28,16 @@ from typing import Dict, Iterable, List, Optional
 WIN_RE = re.compile(r"玩家(\d) (?:荣和|自摸|抢杠)")
 TSUMO_RE = re.compile(r"玩家(\d) 自摸")
 HOUJUU_RE = re.compile(r"放铳:玩家(\d)")
+WIN_SEG_RE = re.compile(r"玩家(\d) (?:荣和|自摸|抢杠)[^|]*\| (\d+)番\d+符 \| ([^|;]*)")
+YAKU_COUNT_RE = re.compile(r" \d+$")
+
+# names as printed by both engines (python `mahjong` lib str(), Rust score.rs name())
+YAKUMAN = frozenset({
+    "Tenhou", "Chiihou", "Renhou (yakuman)", "Daisangen", "Shousuushii", "Dai Suushii",
+    "Tsuu Iisou", "Ryuuiisou", "Chinroutou", "Suu Ankou", "Suu Ankou Tanki", "Suu Kantsu",
+    "Chuuren Poutou", "Daburu Chuuren Poutou", "Kokushi Musou", "Kokushi Musou Juusanmen Matchi"})
+DOUBLE_YAKUMAN = frozenset({"Suu Ankou Tanki", "Daburu Chuuren Poutou", "Kokushi Musou Juusanmen Matchi",
+                            "Dai Suushii"})
 
 STYLE_KEYS = ("agari_rate", "tsumo_share", "houjuu_rate", "riichi_rate", "call_rate",
               "draw_rate", "win_turn", "dealin_turn", "win_points")
@@ -67,6 +84,18 @@ def add_game(agg: Dict[str, float], result: str, riichi: Optional[List[bool]],
             agg["riichi"] += 1
         if n_melds and n_melds[p] > 0:
             agg["called"] += 1
+    for m in WIN_SEG_RE.finditer(r):
+        if int(m.group(1)) not in seats:
+            continue
+        names = [YAKU_COUNT_RE.sub("", y.strip()) for y in m.group(3).split(",") if y.strip()]
+        for y in names:
+            agg[f"yk:{y}"] = agg.get(f"yk:{y}", 0) + 1
+        ym = [y for y in names if y in YAKUMAN]
+        if ym:
+            agg["yakuman"] = agg.get("yakuman", 0) + 1
+            agg["yakuman_units"] = agg.get("yakuman_units", 0) + sum(2 if y in DOUBLE_YAKUMAN else 1 for y in ym)
+        elif int(m.group(2)) >= 13:
+            agg["kazoe"] = agg.get("kazoe", 0) + 1
 
 
 def merge(into: Dict[str, float], other: Dict[str, float]) -> None:
@@ -86,8 +115,18 @@ def summarize(agg: Dict[str, float]) -> Dict[str, float]:
         "win_turn": agg["win_turns"] / max(agg["win_n"], 1),
         "dealin_turn": agg["dealin_turns"] / max(agg["dealin_n"], 1),
         "win_points": agg.get("win_points_sum", 0.0) / max(agg["wins"], 1),
+        "yakuman_per_deal": agg.get("yakuman", 0) / max(agg["games"], 1),
+        "kazoe_per_deal": agg.get("kazoe", 0) / max(agg["games"], 1),
         "games": agg["games"],
     }
+
+
+def yaku_counts(agg: Dict[str, float]) -> Dict[str, int]:
+    """{yaku name: count} plus the yakuman / yakuman_units / kazoe totals."""
+    out = {k[3:]: int(v) for k, v in agg.items() if k.startswith("yk:")}
+    for k in ("yakuman", "yakuman_units", "kazoe"):
+        out[f"_{k}"] = int(agg.get(k, 0))
+    return out
 
 
 def style_vs_anchors(net, anchor_nets: List, games: int, seed0: int,

@@ -1,0 +1,33 @@
+A_192M           K=8   n=  1500 | kyuushu  99.3% of   136 legal | yao in first6  72.9% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   9.0% | Δpts    -745
+A_192M           K=9   n=  1500 | kyuushu  99.7% of  1458 legal | yao in first6  72.1% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   0.4% | Δpts      +1
+A_192M           K=≥10 n=   600 | kyuushu 100.0% of   588 legal | yao in first6  79.7% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   0.0% | Δpts     -27
+bc49             K=8   n=  1500 | kyuushu  99.3% of   136 legal | yao in first6  85.7% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win  11.6% | Δpts    -393
+bc49             K=9   n=  1500 | kyuushu  97.1% of  1469 legal | yao in first6  57.6% | kokushi tenpai   0.3% | kokushi win    3 (  0.2%) | win   0.9% | Δpts     +96
+bc49             K=≥10 n=   600 | kyuushu  80.6% of   589 legal | yao in first6  14.3% | kokushi tenpai   5.3% | kokushi win   16 (  2.7%) | win   3.0% | Δpts    +750
+A_192M_nokyu     K=8   n=  1500 | kyuushu    -  of     0 legal | yao in first6  72.2% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   9.6% | Δpts    -824
+A_192M_nokyu     K=9   n=  1500 | kyuushu    -  of     0 legal | yao in first6  71.6% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   9.3% | Δpts    -582
+A_192M_nokyu     K=≥10 n=   600 | kyuushu    -  of     0 legal | yao in first6  72.0% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   4.3% | Δpts   -1000
+bc49_nokyu       K=8   n=  1500 | kyuushu    -  of     0 legal | yao in first6  82.7% | kokushi tenpai   0.5% | kokushi win    5 (  0.3%) | win  12.6% | Δpts    -353
+bc49_nokyu       K=9   n=  1500 | kyuushu    -  of     0 legal | yao in first6  63.1% | kokushi tenpai   3.7% | kokushi win   21 (  1.4%) | win  10.1% | Δpts    -324
+bc49_nokyu       K=≥10 n=   600 | kyuushu    -  of     0 legal | yao in first6  21.4% | kokushi tenpai  17.7% | kokushi win   62 ( 10.3%) | win  12.8% | Δpts   +3147
+A_192M_T1        K=8   n=  1500 | kyuushu  91.4% of   139 legal | yao in first6  69.8% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   8.5% | Δpts    -715
+A_192M_T1        K=9   n=  1500 | kyuushu  89.7% of  1432 legal | yao in first6  70.9% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   1.0% | Δpts    -142
+A_192M_T1        K=≥10 n=   600 | kyuushu  90.8% of   586 legal | yao in first6  76.5% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   0.7% | Δpts     -87
+A_192M_T1_nokyu  K=8   n=  1500 | kyuushu    -  of     0 legal | yao in first6  69.1% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   7.4% | Δpts    -892
+A_192M_T1_nokyu  K=9   n=  1500 | kyuushu    -  of     0 legal | yao in first6  72.1% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   5.9% | Δpts   -1026
+A_192M_T1_nokyu  K=≥10 n=   600 | kyuushu    -  of     0 legal | yao in first6  75.5% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   4.0% | Δpts   -1134
+CNN_392M         K=8   n=  1500 | kyuushu  98.5% of   135 legal | yao in first6  79.3% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win  10.2% | Δpts    -522
+CNN_392M         K=9   n=  1500 | kyuushu  96.6% of  1425 legal | yao in first6  77.4% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   1.6% | Δpts      +5
+CNN_392M         K=≥10 n=   600 | kyuushu  98.8% of   585 legal | yao in first6  82.9% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   0.3% | Δpts      +3
+CNN_392M_nokyu   K=8   n=  1500 | kyuushu    -  of     0 legal | yao in first6  79.5% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win  10.6% | Δpts    -645
+CNN_392M_nokyu   K=9   n=  1500 | kyuushu    -  of     0 legal | yao in first6  82.7% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   8.0% | Δpts    -942
+CNN_392M_nokyu   K=≥10 n=   600 | kyuushu    -  of     0 legal | yao in first6  86.5% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   5.7% | Δpts   -1203
+A_32M            K=8   n=  1500 | kyuushu 100.0% of   137 legal | yao in first6  72.4% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win  10.0% | Δpts    -608
+A_32M            K=9   n=  1500 | kyuushu  99.8% of  1450 legal | yao in first6  65.2% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   0.5% | Δpts      +1
+A_32M            K=≥10 n=   600 | kyuushu  99.8% of   587 legal | yao in first6  73.7% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   0.0% | Δpts     -21
+A_96M            K=8   n=  1500 | kyuushu  99.3% of   140 legal | yao in first6  74.8% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   9.3% | Δpts    -667
+A_96M            K=9   n=  1500 | kyuushu  97.0% of  1453 legal | yao in first6  68.1% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   0.7% | Δpts     -11
+A_96M            K=≥10 n=   600 | kyuushu  99.7% of   589 legal | yao in first6  71.4% | kokushi tenpai   0.0% | kokushi win    0 (  0.0%) | win   0.2% | Δpts     +50
+human(Tenhou)    K=8   n= 52430 | kyuushu  88.2% of  8471 legal | yao in first6  73.2% | kokushi tenpai    -  | kokushi win   47 (  0.1%) | win   8.8%
+human(Tenhou)    K=9   n=  6583 | kyuushu  80.4% of  6541 legal | yao in first6  30.0% | kokushi tenpai    -  | kokushi win   53 (  0.8%) | win   2.0%
+human(Tenhou)    K=≥10 n=   475 | kyuushu  35.4% of   474 legal | yao in first6  12.1% | kokushi tenpai    -  | kokushi win   38 (  8.0%) | win   8.2%

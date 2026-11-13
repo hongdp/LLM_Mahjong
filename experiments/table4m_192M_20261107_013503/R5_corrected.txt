@@ -1,0 +1,18 @@
+1600 hanchan
+bc49           deals 17115 win 0.2243±0.0032 tsumo 0.0875 ron 0.1368 deal-in 0.1272±0.0025
+exp113C_384M   deals 17115 win 0.2039±0.0031 tsumo 0.0828 ron 0.1211 deal-in 0.1629±0.0028
+exp124A_192M   deals 17115 win 0.2222±0.0032 tsumo 0.0818 ron 0.1404 deal-in 0.1156±0.0024
+mortal         deals 17115 win 0.2228±0.0032 tsumo 0.0878 ron 0.1350 deal-in 0.1217±0.0025
+bc49           uma    +726 ±  669  avg place 2.45  1st 0.26 4th 0.23
+exp113C_384M   uma   -5299 ±  655  avg place 2.73  1st 0.21 4th 0.35
+exp124A_192M   uma   +2039 ±  630  avg place 2.45  1st 0.25 4th 0.21
+mortal         uma   +2534 ±  610  avg place 2.37  1st 0.28 4th 0.21
+   bc49 − exp113C_384M:  +6025 ± 1081
+   bc49 − exp124A_192M:  -1313 ± 1060
+   bc49 − mortal:  -1808 ± 1067
+   exp113C_384M − exp124A_192M:  -7338 ± 1072
+   exp113C_384M − mortal:  -7833 ± 1019
+   exp124A_192M − mortal:   -495 ±  978
+192M − 171M (same seed/rot, C table vs R5): +706 ± 843 uma/hanchan
+   (table R5) bc49 − 192M -1313 ± 1060
+   (table R5) mortal − 192M +495 ± 978

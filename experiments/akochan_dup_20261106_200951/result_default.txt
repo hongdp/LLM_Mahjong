@@ -1,0 +1,5 @@
+akochan(default) vs bc49, 2000 walls: share 0.4680 ± 0.0105  points/wall -1250 ± 303
+fallback 8 / 120503 = 0.0066%; shard0 0 / 17901
+Mortal: 0.5022 ± 0.0094 same walls; akochan − Mortal: -3.43 ± 1.35 pp (z -2.5), points -1420 ± 383
+exp124 192M: 0.5202 ± 0.0104 same walls; akochan − exp124 192M: -5.22 ± 1.43 pp (z -3.6), points -1662 ± 421
+fallback dumps 8 {('dahai', '5m', 'red-only', 'had_call'): 2, ('dahai', '5p', 'red-only', 'had_call'): 4, ('dahai', '5s', 'red-only', 'had_call'): 2}

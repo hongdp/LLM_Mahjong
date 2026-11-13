@@ -60,6 +60,15 @@ def effective_cpus() -> int:
             continue
     return max(1, n)
 
+def write_yaku_counts(exp_dir, games, since, cum):
+    """yaku_counts.json: cumulative yaku census of the rollout games played in (since, games]."""
+    from src.agents.dnn.style_stats import yaku_counts
+    tmp = f"{exp_dir}/yaku_counts.json.tmp"
+    with open(tmp, "w") as f:
+        json.dump({"games": games, "since": since, "counts": dict(sorted(yaku_counts(cum).items()))}, f, indent=1)
+    os.replace(tmp, f"{exp_dir}/yaku_counts.json")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--init", default=None)
@@ -535,6 +544,9 @@ def main():
     lr_mult = 1.0                  # exp113 --kl_lr_target controller state (saved in checkpoints)
     ent_alpha = args.entropy_coef      # live coefficient (schedule/auto laws)
     noise_sigma = args.param_noise_sigma0 if args.param_noise_kl > 0 else 0.0
+    # yaku census (user 2026-11-07): cumulative style_stats "yk:*" / yakuman / kazoe counters over
+    # every rollout game, carried in checkpoints so a resumed run keeps counting from its own state
+    yaku_cum, yaku_since = {}, 0
     if args.param_noise_kl > 0 and args.engine != "rust":
         raise SystemExit("--param_noise_kl needs --engine rust")
 
@@ -544,6 +556,7 @@ def main():
                     "arch": args.arch, "critic_feats": args.critic_feats,
                     "games": games, "iter": it, "entropy_alpha": ent_alpha, "lr_mult": lr_mult,
                     "param_noise_sigma": noise_sigma,
+                    "yaku_counts": dict(yaku_cum), "yaku_since": yaku_since,
                     "optimizer": opt.state_dict()}, f"{exp_dir}/{tag}.pt")
         if ocrit is not None:
             torch.save({"state_dict": {k: v.cpu() for k, v in ocrit.state_dict().items()},
@@ -610,6 +623,8 @@ def main():
                   + (" (frozen)" if args.posture_freeze else ""), flush=True)
         start_games = int(blob.get("games", 0))
         start_iter = int(blob.get("iter", 0))
+        yaku_cum = dict(blob.get("yaku_counts") or {})
+        yaku_since = int(blob.get("yaku_since", 0)) if "yaku_counts" in blob else start_games
         ent_alpha = float(blob.get("entropy_alpha", ent_alpha) or ent_alpha)
         if args.kl_lr_target > 0 and blob.get("lr_mult"):
             lr_mult = float(blob["lr_mult"])
@@ -1261,6 +1276,13 @@ def main():
             for k, v in _style_sum(_sty).items():
                 if k != "games":
                     writer.add_scalar(f"style/{k}", float(v), games)
+            for k, v in _sty.items():
+                if k.startswith("yk:") or k in ("yakuman", "yakuman_units", "kazoe"):
+                    yaku_cum[k] = yaku_cum.get(k, 0) + int(v)
+            writer.add_scalar("yaku/yakuman_cum", yaku_cum.get("yakuman", 0), games)
+            writer.add_scalar("yaku/kazoe_cum", yaku_cum.get("kazoe", 0), games)
+            write_yaku_counts(exp_dir, games, yaku_since, yaku_cum)   # every logged iteration (a few KB; an
+                                                                      # it-modulo gate can miss stream log phases)
         writer.add_scalar("games_per_sec",
                           (games - start_games) / max(el, 1e-9), games)
         writer.flush()
@@ -1287,6 +1309,7 @@ def main():
             next_ms += 1
 
     save("games_final", games, it)
+    write_yaku_counts(exp_dir, games, yaku_since, yaku_cum)
     json.dump(log, open(f"{exp_dir}/train_log.json", "w"), indent=1)
     writer.close()
     print(f"✅ {games} games in {(time.time()-t0)/60:.1f} min -> {exp_dir}")
