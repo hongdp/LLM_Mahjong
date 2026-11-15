@@ -36,7 +36,7 @@ def main():
             cb = torch.load(f, map_location="cuda")
             c = SeparateCritic("q", cb["channels"], cb["blocks"], blind=cb["blind"]).cuda(); c.load_state_dict(cb["state_dict"]); c.eval()
             crits[name] = (c, bool(cb.get("decomposed", False)))
-    from scripts.critic_stage0 import ron_cost_full
+    from src.agents.dnn.oracle_features import ron_cost_full
     rankers = ["policy"] + list(crits)
     gain = {r: [] for r in rankers}; pairs = {r: [] for r in rankers}; wpairs = {r: [] for r in rankers}; n_dec = 0
     with torch.no_grad():

@@ -20,20 +20,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.dnn.encoder import TILE_TYPES, TYPE_TO_ID
 from src.agents.dnn.oracle_critic import SeparateCritic, explained_variance
+from src.agents.dnn.oracle_features import ron_cost_full
 from src.agents.dnn.rust_rollout import collect_rust
 from scripts.run_elo_league import load_dnn
 
 D_TYPES = (TYPE_TO_ID["discard"], TYPE_TO_ID["discard0"])
-
-
-def ron_cost_full(ron68: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """[B,68] per-tile cost ([0:34] plain, [34:68] red) -> [B,374] per-action cost on the discard / discard0 slots."""
-    B = ron68.shape[0]
-    out = torch.zeros(B, mask.shape[1], device=ron68.device)
-    t0, t1 = TYPE_TO_ID["discard"], TYPE_TO_ID["discard0"]
-    out[:, t0 * TILE_TYPES:(t0 + 1) * TILE_TYPES] = ron68[:, :TILE_TYPES]
-    out[:, t1 * TILE_TYPES:(t1 + 1) * TILE_TYPES] = ron68[:, TILE_TYPES:]
-    return out * mask
 
 
 def diagnostics(net, crits, planes, scal, mask, cfe, ron68, acts, rets, dev):
