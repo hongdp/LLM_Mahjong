@@ -1,7 +1,7 @@
 # exp124 A 192M 对 Mortal 298k 的直接复式单局
 
-- **Date**: 2026-11-15 01:39 PST（预注册写定；192M 对 Mortal 的对局在本文件写定之后才发射）  **Status**: running
-- **Git**: d62dbc0（分支 `claude/rl-model-defense-learning-8fb5c0`；未提交改动：无，驱动 `mortal_vs_dnn.py` 是本目录新文件，gitignored）
+- **Date**: 2026-11-15 01:39 PST（预注册写定；192M 对 Mortal 的对局在本文件写定之后才发射）  **Status**: done 2026-11-15 02:58 PST
+- **Git**: d62dbc0（分支 `claude/rl-model-defense-learning-8fb5c0`；未提交改动：无，驱动 `dup_driver.py` 是本目录新文件，gitignored）
 - **Env**: 本机 RTX 4080，`rlhf_mahjong` 环境；Mortal 上游代码 `/home/hongdp/Workspace/mortal_upstream/mortal`（libriichi mjai Bot）；$0，不用云。
 - **检查点**：
   - A 方（被测）= exp124 A 192M `experiments/exp124_A_p2/games_192000000.pt`，md5 `b71ba61ae23d3f6880c4d52dd80d83ca`。
@@ -59,19 +59,47 @@
   改用原驱动副本 `dup_driver.py`（见 Method）。**对拍通过**：Mortal 对 bc49（T=0）组 1 前 40 副 40/40、组 2 前 20 副 20/20 逐副 diff 与存档完全一致，0 回退。
   192M 冒烟 8 副（组 1 walls 0–7）正常、434 决策 0 回退；这 8 副正式 run 里会重打，冒烟结果不计入。01:44:09 发射（组 1 12 片 → 组 2 8 片）：`run.sh` PID 980584，心跳 `heartbeat.sh` PID 989297（每 10 分钟，`logs/heartbeat.log`；
   第一版心跳的进程计数会把自己的启动 shell 算进去，01:45 按 PID 结束后改为只数 run.sh 的子进程重启）。按原 run 墙钟估计组 1 ≈ 40 分钟、组 2 ≈ 60 分钟。
+- [2026-11-15 01:50 PST] 论文写作会话独立对拍 192M 一侧（转述）：用本目录 `dup_driver.py` 以 192M 为 A 方、bc49 为默认 B 方重放组 1 walls 0–29，
+  逐副 diff 与 `probes/pairdiff_exp124_A_n10000_games_192000000.pt_101112000.json` 前 30 行 30/30 一致（输出在该会话 scratchpad）；
+  它在 01:46 记录 `probes/mortal_vs_a192/` 为空，可作"判据早于任何结果"的旁证。
+
+- [2026-11-15 03:02 PST] 全部完成：组 1 02:20:49（12 片各 36 分钟），组 2 02:58:34（8 片各 37 分钟），ALL_DONE 02:58:35；`analyze.py` 输出 `result.txt` 与 `probes/mortal_vs_a192/summary.json`。
+  Mortal 1,229,762 个决策 0 回退。
 
 ## Results
-（待填）
+192M（B 方，T=0）对 Mortal 298k（A 方，mjai 桥原生贪心），2v2 复式单局，SE 按牌山：
+
+| 牌山组 | n | 192M 份额 ± SE | z | 192M 点差 / 牌山 | Mortal ok / 回退 | 同牌山间接对照：Mortal 对 bc49 |
+|---|---|---|---|---|---|---|
+| 组 1（101112000，0–10,499） | 10,500 | 0.5050 ± 0.0045 | +1.11 | +207 ± 131 | 629,609 / 0 | 0.5039 |
+| 组 2（101152000，0–9,999） | 10,000 | 0.5016 ± 0.0047 | +0.33 | −91 ± 135 | 600,153 / 0 | 0.5071 |
+| **合并** | **20,500** | **0.5033 ± 0.0033** | **+1.03** | +62 ± 94 | 1,229,762 / 0 | — |
+
+- 合并 90% CI = [0.4980, 0.5087]。
+- 按预注册判读：|z| = 1.03 < 1.96 ⇒ 无显著差异；90% CI 完全落在 [0.49, 0.51] 内 ⇒ **等价（±1 pp）**。
+- 对照间接比较：各自对 bc49 的间接差是 +0.7 ± 0.4 pp（192M 0.5113，Mortal 0.5054）。直接读数 +0.33 ± 0.33 pp，方向相同、幅度约一半，两者差在 1 SE 内。
+  组 1 上 192M 对 bc49（前 10,000 副）是 0.5136，Mortal 对 bc49（10,500 副）是 0.5039。
+- 192M 非法动作：结构上为 0（见 Method）。
 
 ## Conclusion
-（待填）
+**范围戳**：ConvFormer-M46（`convformer_m_v3r_m46`）/ 纯自对弈 PPO / 192M 局（`exp124_A_p2/games_192000000.pt`，md5 b71ba61a…）/ T=0 单局复式 2v2，
+单检查点单训练种子，本项目引擎；Mortal 为公开 298k 权重、mjai 桥、上游原生贪心；20,500 副牌山（两组，复用 Mortal-vs-bc49 牌山）。
+失效条件：换检查点 / 换 Mortal 版本 / 换桌型（混桌）/ 半庄刻度不复现。
+
+1. **exp124 A 192M 与 Mortal 298k 在单局复式刻度上等价**：192M 份额 0.5033 ± 0.0033（z 1.0），90% CI [0.498, 0.509] 落在 ±1 pp 等价带内。
+   把论文里的"间接打平"换成了直接等价结论。
+2. 直接差（+0.33 pp）小于间接差（+0.7 pp），但在误差内一致；这一次间接比较没有误导方向。与 11-13 的教训（对 bc49 的半庄间接差没能传递）相比，单局刻度上的传递性这次成立。
+3. 本结果只覆盖 192M。现役冠军 256M 对 192M 同牌山 +1.09 ± 0.43 pp（对 bc49），但 256M 对 Mortal 没有直接对战，不能据此推出 256M 优于 Mortal。
 
 ## Next Steps
-（待填）
+- 论文写作会话从原始 rows 独立复算后写进论文（该会话自己负责 paper/）。
+- 如需"冠军 vs Mortal"的直接读数：同一驱动、同牌山跑 256M（本机约 75 分钟、$0），需用户另行批准；半庄刻度需要 Mortal 走半庄 mjai 桥（`scripts/run_hanchan_arena.py`），另议。
 
 ## Artifacts
 | Path | Size | Description |
 |---|---|---|
-| `experiments/probes/mortal_vs_a192/s1_shard{0..11}.json` | — | 组 1 逐牌山 rows（Mortal 一方的 share / diff）+ stats |
-| `experiments/probes/mortal_vs_a192/s2_shard{0..7}.json` | — | 组 2 同上 |
-| `mortal_vs_dnn.py`、`run.sh`、`heartbeat.sh`、`analyze.py`、`logs/`（本目录，gitignored） | — | 驱动、发射、心跳、汇总 |
+| `experiments/probes/mortal_vs_a192/s1_shard{0..11}.json`（主 checkout） | 12 × ≈55 KB | 组 1 逐牌山 rows（Mortal 一方的 share / diff）+ stats |
+| `experiments/probes/mortal_vs_a192/s2_shard{0..7}.json` | 8 × ≈78 KB | 组 2 同上 |
+| `experiments/probes/mortal_vs_a192/summary.json`、本目录 `result.txt` | <1 KB | 合并数字 |
+| 本目录 `logs/parity_s{1,2}_bc49.json`、`logs/smoke_a192.json` | — | 发射前对拍（Mortal 对 bc49）与 192M 冒烟，不计入结果 |
+| `dup_driver.py`、`run.sh`、`heartbeat.sh`、`analyze.py`、`logs/`（本目录，gitignored） | — | 驱动、发射、心跳、汇总 |
