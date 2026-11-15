@@ -20,20 +20,12 @@ import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# The class lives in src/ (library code loads W checkpoints); it is re-exported
+# here because src/tasks/mahjong/hanchan.py — content-fingerprinted, not
+# editable outside an epoch recalibration — imports it from this module.
+from src.agents.dnn.placement_value import PlacementValue              # noqa: E402,F401
+
 UMA = [15000.0, 5000.0, -5000.0, -15000.0]
-
-
-class PlacementValue(nn.Module):
-    def __init__(self, d_in=12, width=128):
-        super().__init__()
-        self.trunk = nn.Sequential(nn.Linear(d_in, width), nn.ReLU(),
-                                   nn.Linear(width, width), nn.ReLU())
-        self.place = nn.Linear(width, 4)
-        self.uma = nn.Linear(width, 1)
-
-    def forward(self, x):
-        h = self.trunk(x)
-        return self.place(h), self.uma(h).squeeze(-1)
 
 
 def rank_uma_baseline(X):

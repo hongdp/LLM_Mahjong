@@ -13,7 +13,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.agents.dnn.hanchan_credit import deal_features, rank_uma, W_DIM        # noqa: E402
-from scripts.train_placement_value import PlacementValue                       # noqa: E402
+from src.agents.dnn.placement_value import PlacementValue                      # noqa: E402
 
 
 def main():

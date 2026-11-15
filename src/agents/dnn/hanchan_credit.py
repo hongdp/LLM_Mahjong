@@ -46,7 +46,7 @@ class PureW:
         self.net = None
         self.device = device
         if path:
-            from scripts.train_placement_value import PlacementValue
+            from src.agents.dnn.placement_value import PlacementValue
             blob = torch.load(path, map_location=device)
             net = PlacementValue(d_in=blob["d_in"]); net.load_state_dict(blob["state_dict"]); net.eval()
             self.net = net.to(device)
