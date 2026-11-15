@@ -26,7 +26,7 @@ from src.agents.dnn.encoder import encode_state                       # noqa: E4
 from src.agents.dnn.mjai_bridge import MjaiDnnBot, load_policy         # noqa: E402
 from src.agents.dnn.mjai_export import play_game_mjai                  # noqa: E402
 from src.tasks.mahjong.table import ACTION_RE, PyMahjongTable          # noqa: E402
-from tests.test_mjai_bridge import _norm, reaction_to_action           # noqa: E402
+from src.agents.dnn.mjai_bridge import norm_actions as _norm, reaction_to_action   # noqa: E402
 
 
 def main():

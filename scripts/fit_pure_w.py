@@ -13,7 +13,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.agents.dnn.hanchan_credit import deal_features, rank_uma, W_DIM        # noqa: E402
-from scripts.train_placement_value import PlacementValue                       # noqa: E402
+from src.agents.dnn.placement_value import PlacementValue                      # noqa: E402
 
 
 def main():
@@ -31,7 +31,7 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     args = ap.parse_args()
     from src.agents.dnn.rust_rollout import collect_rust
-    from scripts.run_elo_league import load_dnn
+    from src.agents.dnn.checkpoint import load_dnn
     if args.from_npz:
         z = np.load(args.from_npz); X, Y, B, S = z["X"], z["y"], z["base"], z["seed"]
         print(f"loaded {len(Y)} rows from {args.from_npz}", flush=True)

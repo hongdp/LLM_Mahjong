@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def main():
     from src.agents.dnn.parallel_rollout import collect_parallel
     from src.agents.dnn.oracle_critic import SeparateCritic
-    from scripts.run_elo_league import load_dnn
+    from src.agents.dnn.checkpoint import load_dnn
     run, pol, n_games, workers, out = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
     blob = torch.load(pol, map_location="cpu"); net = load_dnn(pol, "cpu")
     cfg = dict(channels=blob.get("channels", 64), blocks=blob.get("blocks", 3), arch=blob.get("arch"), temperature=1.0, gamma=0.995,
@@ -36,7 +36,7 @@ def main():
             cb = torch.load(f, map_location="cuda")
             c = SeparateCritic("q", cb["channels"], cb["blocks"], blind=cb["blind"]).cuda(); c.load_state_dict(cb["state_dict"]); c.eval()
             crits[name] = (c, bool(cb.get("decomposed", False)))
-    from scripts.critic_stage0 import ron_cost_full
+    from src.agents.dnn.oracle_features import ron_cost_full
     rankers = ["policy"] + list(crits)
     gain = {r: [] for r in rankers}; pairs = {r: [] for r in rankers}; wpairs = {r: [] for r in rankers}; n_dec = 0
     with torch.no_grad():

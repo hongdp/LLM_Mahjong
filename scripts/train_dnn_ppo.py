@@ -856,7 +856,7 @@ def main():
         ocf = torch.from_numpy(cat("cfeats")).to(dev).float() if ocrit is not None else None
         ron_full = None
         if args.ron_term > 0:
-            from scripts.critic_stage0 import ron_cost_full as _rcf
+            from src.agents.dnn.oracle_features import ron_cost_full as _rcf
             ron_full = _rcf(torch.from_numpy(cat("ron_cost")).to(dev).float(), mask)      # [N,374] cost >= 0, return units
         if args.critic_feats == "hazard":
             # per-(game,seat) settled-fact label, broadcast over the episode

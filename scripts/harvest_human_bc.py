@@ -32,60 +32,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.dnn.encoder import action_to_index                     # noqa: E402
-from src.agents.dnn.mjai_bridge import MjaiDnnBot                      # noqa: E402
-from tests.test_mjai_bridge import _norm, reaction_to_action           # noqa: E402
+from src.agents.dnn.human_bc_data import Ambiguous, derive_reaction    # noqa: E402
+from src.agents.dnn.mjai_bridge import (MjaiDnnBot,                    # noqa: E402
+                                        norm_actions as _norm, reaction_to_action)
 from tools.tenhou.mjlog_to_mjai import mask_for_seat, parse_mjlog      # noqa: E402
-
-_SKIP_TURN = {"dora"}
-_SKIP_CLAIM = {"reach_accepted", "dora"}
-
-
-class Ambiguous(Exception):
-    """Another seat claimed the discard: our pass/claim intent unrecorded."""
-
-
-def derive_reaction(events, i, me, phase):
-    """Human's MJAI reaction for the decision the bridge raised at event i."""
-    if phase == "turn":
-        j = i + 1
-        while events[j]["type"] in _SKIP_TURN:
-            j += 1
-        ev = events[j]
-        if ev["type"] == "reach" and ev["actor"] == me:
-            k = j + 1
-            while events[k]["type"] in _SKIP_TURN:
-                k += 1
-            return {"type": "reach", "actor": me, "reach_dahai": events[k]}
-        if ev.get("actor") == me and ev["type"] in ("dahai", "ankan", "kakan"):
-            return ev
-        if ev["type"] == "hora" and ev["actor"] == me and ev["target"] == me:
-            return {"type": "hora", "actor": me, "target": me, "pai": ev["pai"]}
-        if ev["type"] == "ryukyoku" and ev.get("reason") == "yao9":
-            return {"type": "ryukyoku", "actor": me}
-        raise AssertionError(f"turn lookahead hit {ev}")
-
-    if phase in ("claim", "chankan"):
-        target = events[i]["actor"]
-        j = i + 1
-        while events[j]["type"] in _SKIP_CLAIM:
-            j += 1
-        # double ron: scan through consecutive hora events
-        while events[j]["type"] == "hora":
-            if events[j]["actor"] == me:
-                return {"type": "hora", "actor": me, "target": target,
-                        "pai": events[j]["pai"]}
-            j += 1
-        ev = events[j]
-        if phase == "claim" and ev.get("actor") == me and \
-                ev["type"] in ("chi", "pon", "daiminkan"):
-            return ev
-        if ev["type"] in ("chi", "pon", "daiminkan") and ev.get("actor") != me:
-            raise Ambiguous()          # someone else took the tile
-        if events[i + 1]["type"] == "hora" or events[j]["type"] == "hora":
-            raise Ambiguous()          # someone else's ron closed the window
-        return {"type": "none"}
-    raise AssertionError(phase)
-
 
 def harvest_game(path, out, stats):
     xml = open(path).read()

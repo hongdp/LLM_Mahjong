@@ -2,9 +2,9 @@
 Collect seat-0 own-discard rows with >=1 riichi opponent, tiles held in hand; fit logistic regression h_t -> genbutsu;
 report held-out AUC; save the probe direction u (normalized, rms-scaled like estimate_tile) for an oracle step."""
 import sys, os, numpy as np, torch
-sys.path.insert(0, "/home/hongdp/Workspace/LLM_Mahjong/.claude/worktrees/continue-task-3da2e7")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.es_posture_probe as E
-from scripts.run_elo_league import load_dnn
+from src.agents.dnn.checkpoint import load_dnn
 import riichi_rs
 ck, out = sys.argv[1], sys.argv[2]
 dev = "cuda"; net = load_dnn(ck, dev).eval(); variant = getattr(net, "encoder_variant", "v3r")

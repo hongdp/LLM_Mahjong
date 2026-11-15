@@ -105,7 +105,7 @@ def main():
     ap.add_argument("--batch", type=int, default=2048); ap.add_argument("--seed0", type=int, default=1_100_000)
     ap.add_argument("--conf", action="append", required=True); ap.add_argument("--out", required=True)
     a = ap.parse_args()
-    from scripts.run_elo_league import load_dnn
+    from src.agents.dnn.checkpoint import load_dnn
     dev = "cuda"
     net = load_dnn(a.ckpt, dev).eval()
     variant = getattr(net, "encoder_variant", "v3r")

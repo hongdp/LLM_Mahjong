@@ -806,6 +806,47 @@ def _event_to_action(ev: dict, me: int) -> Optional[str]:
     return None
 
 
+# MJAI reaction <-> engine action round trip. Used by the shadow-fidelity
+# test, the human-log replays (human_bc_data, harvest_human_bc) and the
+# Mortal arena seat; moved here from tests/test_mjai_bridge.py so library
+# code and scripts no longer import a test module.
+def reaction_to_action(reaction, bot):
+    """MJAI reaction -> engine action xml for the bot's seat."""
+    tb, t = bot.table, reaction["type"]
+    if t == "none":
+        return '<action type="skip" />'
+    if t == "hora":
+        return '<action type="tsumo" />' if reaction["target"] == bot.seat else '<action type="ron" />'
+    if t == "reach":          # a red five discards as '0x' (its own action)
+        return f'<action type="riichi" tile="{mjai_to_engine_spelled(reaction["reach_dahai"]["pai"])}" />'
+    if t == "dahai":
+        return f'<action type="discard" tile="{mjai_to_engine_spelled(reaction["pai"])}" />'
+    if t == "chi":
+        a, b = [mjai_to_engine(c) for c in reaction["consumed"]]
+        return f'<action type="chi" tile="{mjai_to_engine(reaction["pai"])}" with="{a} {b}" />'
+    if t == "pon":
+        return f'<action type="pon" tile="{mjai_to_engine(reaction["pai"])}" />'
+    if t == "daiminkan":
+        return f'<action type="kan" tile="{mjai_to_engine(reaction["pai"])}" />'
+    if t == "ankan":
+        return f'<action type="kan" tile="{mjai_to_engine(reaction["consumed"][0])}" />'
+    if t == "kakan":
+        return f'<action type="kan" tile="{mjai_to_engine(reaction["pai"])}" />'
+    if t == "ryukyoku":
+        return '<action type="kyuushu" />'
+    raise AssertionError(reaction)
+
+
+def norm_actions(actions):
+    """Engine action xmls -> comparable set of (type, tile, sorted `with` tiles)."""
+    out = set()
+    for a in actions:
+        m = ACTION_RE.search(a)
+        w = tuple(sorted((m.group(3) or "").split()))
+        out.add((m.group(1), m.group(2), w))
+    return out
+
+
 def _norm_action(xml: str):
     m = ACTION_RE.search(xml or "")
     if not m:

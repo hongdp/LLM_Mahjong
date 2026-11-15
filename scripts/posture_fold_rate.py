@@ -20,7 +20,7 @@ def main():
     ap.add_argument("ckpts", nargs="*")
     a = ap.parse_args()
     import riichi_rs
-    from scripts.run_elo_league import load_dnn
+    from src.agents.dnn.checkpoint import load_dnn
     from src.agents.dnn.arch_zoo import ZOO
     from src.agents.dnn.net import load_compatible
     from src.agents.dnn.encoder import TYPE_TO_ID, TILE_TYPES

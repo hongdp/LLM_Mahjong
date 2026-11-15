@@ -189,7 +189,7 @@ scripts/
 ├── run_elo_league.py   # 锚池 Elo（单局与 --hanchan，引擎指纹守卫）；稳定入口 play_pair_vector(...) 包装 src/eval/vec_arena
 ├── run_arena_dnn.py    # Python 引擎 batch-1 竞技场（规则覆盖诊断）；稳定入口 load_dnn(path, device)
 ├── rating.py           # 评分体系 v2（只追加账本、四实体同桌、pt 主榜）——纪元 7 待开
-├── probe_*.py / eval_style_profile.py         # 探针族：防守 IQ、牌效拆分、条件熵、风格
+├── probe_*.py / eval_style_profile.py         # 探针族：防守 IQ、立直、牌效拆分、一步前瞻价值、风格
 ├── serve_mjai_bot.py   # 雀魂桥接用 HTTP 代理服务
 └── phase2_dnn/         # 云发射脚本（GCP G4 flex；RunPod runbook 在 SKILLS.md）
 tools/webui/            # 检视台：训练曲线、自对弈看板（逐步概率/V）、复盘

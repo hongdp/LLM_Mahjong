@@ -25,7 +25,7 @@ from scripts.policy_diff_atlas import _DummyStep, _type, _tile, _base, bucket  #
 
 def collect(a):
     from src.agents.dnn.selfplay import play_game_gen, _choose
-    from scripts.run_elo_league import load_dnn
+    from src.agents.dnn.checkpoint import load_dnn
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     nets = {"bc": load_dnn(a.bc, dev).eval(), "rl": load_dnn(a.rl, dev).eval()}
 

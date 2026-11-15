@@ -79,7 +79,7 @@ def main():
     torch.save(out, a.out)
     print(f"{a.src} ({c_old}x{b_old}, {n_old/1e6:.1f}M) -> {a.arch} ({dst.stem.out_channels}x{len(dst.blocks)}, {n_new/1e6:.1f}M) -> {a.out}")
     if a.check:
-        from scripts.run_elo_league import load_dnn
+        from src.agents.dnn.checkpoint import load_dnn
         from src.agents.dnn.rust_rollout import collect_rust, widen_planes
         import numpy as np
         old_net = load_dnn(a.src, "cuda").eval(); new_net = load_dnn(a.out, "cuda").eval()
