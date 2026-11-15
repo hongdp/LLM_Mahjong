@@ -220,7 +220,7 @@ scripts/
 │                       #   play_pair_vector(...) wraps src/eval/vec_arena
 ├── run_arena_dnn.py    # batch-1 Python-engine arena (rule-override diagnostics); stable entry load_dnn(path, device)
 ├── rating.py           # rating system v2 (append-only ledger, four-entity tables, pt board) — epoch 7 pending
-├── probe_*.py / eval_style_profile.py         # probe family: defence IQ, decomposition, conditional entropy, style
+├── probe_*.py / eval_style_profile.py         # probe family: defence IQ, riichi, decomposition, 1-ply value, style
 ├── serve_mjai_bot.py   # HTTP agent service for the Majsoul bridge
 └── phase2_dnn/         # cloud launch scripts (GCP G4 flex; RunPod runbooks live in SKILLS.md)
 tools/webui/            # inspector: training curves, self-play viewer (per-step probabilities / V), replay
