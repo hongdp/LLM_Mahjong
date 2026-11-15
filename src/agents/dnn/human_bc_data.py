@@ -25,15 +25,60 @@ import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
 from src.agents.dnn.encoder import action_to_index, encode_state, legal_mask
-from src.agents.dnn.mjai_bridge import MjaiDnnBot
+from src.agents.dnn.mjai_bridge import MjaiDnnBot, norm_actions as _norm, reaction_to_action
 
 
-def _derive():
-    # scripts/ is not importable at module load in every entrypoint; the
-    # harvester owns the lookahead logic (single source of truth).
-    from scripts.harvest_human_bc import Ambiguous, derive_reaction
-    from tests.test_mjai_bridge import _norm, reaction_to_action
-    return Ambiguous, derive_reaction, _norm, reaction_to_action
+# Human-intent lookahead in the full-information stream (single source of
+# truth; scripts/harvest_human_bc.py imports it from here).
+_SKIP_TURN = {"dora"}
+_SKIP_CLAIM = {"reach_accepted", "dora"}
+
+
+class Ambiguous(Exception):
+    """Another seat claimed the discard: our pass/claim intent unrecorded."""
+
+
+def derive_reaction(events, i, me, phase):
+    """Human's MJAI reaction for the decision the bridge raised at event i."""
+    if phase == "turn":
+        j = i + 1
+        while events[j]["type"] in _SKIP_TURN:
+            j += 1
+        ev = events[j]
+        if ev["type"] == "reach" and ev["actor"] == me:
+            k = j + 1
+            while events[k]["type"] in _SKIP_TURN:
+                k += 1
+            return {"type": "reach", "actor": me, "reach_dahai": events[k]}
+        if ev.get("actor") == me and ev["type"] in ("dahai", "ankan", "kakan"):
+            return ev
+        if ev["type"] == "hora" and ev["actor"] == me and ev["target"] == me:
+            return {"type": "hora", "actor": me, "target": me, "pai": ev["pai"]}
+        if ev["type"] == "ryukyoku" and ev.get("reason") == "yao9":
+            return {"type": "ryukyoku", "actor": me}
+        raise AssertionError(f"turn lookahead hit {ev}")
+
+    if phase in ("claim", "chankan"):
+        target = events[i]["actor"]
+        j = i + 1
+        while events[j]["type"] in _SKIP_CLAIM:
+            j += 1
+        # double ron: scan through consecutive hora events
+        while events[j]["type"] == "hora":
+            if events[j]["actor"] == me:
+                return {"type": "hora", "actor": me, "target": target,
+                        "pai": events[j]["pai"]}
+            j += 1
+        ev = events[j]
+        if phase == "claim" and ev.get("actor") == me and \
+                ev["type"] in ("chi", "pon", "daiminkan"):
+            return ev
+        if ev["type"] in ("chi", "pon", "daiminkan") and ev.get("actor") != me:
+            raise Ambiguous()          # someone else took the tile
+        if events[i + 1]["type"] == "hora" or events[j]["type"] == "hora":
+            raise Ambiguous()          # someone else's ron closed the window
+        return {"type": "none"}
+    raise AssertionError(phase)
 
 
 def is_holdout(path: str, holdout_pct: int = 10) -> bool:
@@ -55,7 +100,6 @@ def game_decisions(path: str, seat: int, variant: str,
     observation tensors and only the mask changed — a second row picks the
     tile. Both rows are genuine training decisions, exactly as PPO sees.
     """
-    Ambiguous, derive_reaction, _norm, reaction_to_action = _derive()
     from tools.tenhou.mjlog_to_mjai import mask_for_seat, parse_mjlog
     from src.agents.dnn.action_space import get_space
     from src.agents.dnn.mortal_action import action_to_slot

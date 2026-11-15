@@ -40,7 +40,7 @@ from scripts.run_arena_dnn import load_dnn                             # noqa: E
 from scripts.run_elo_league import (LEAGUE_DIR, deal_scores,           # noqa: E402
                                     engine_fingerprint, fit_ratings,
                                     rating_se, residuals)
-from tests.test_mjai_bridge import _norm                               # noqa: E402
+from src.agents.dnn.mjai_bridge import norm_actions as _norm           # noqa: E402
 
 
 def build_mortal_engine(state_path: str, device: str):
