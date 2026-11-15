@@ -4,7 +4,7 @@ report held-out AUC; save the probe direction u (normalized, rms-scaled like est
 import sys, os, numpy as np, torch
 sys.path.insert(0, "/home/hongdp/Workspace/LLM_Mahjong/.claude/worktrees/continue-task-3da2e7")
 import scripts.es_posture_probe as E
-from scripts.run_elo_league import load_dnn
+from src.agents.dnn.checkpoint import load_dnn
 import riichi_rs
 ck, out = sys.argv[1], sys.argv[2]
 dev = "cuda"; net = load_dnn(ck, dev).eval(); variant = getattr(net, "encoder_variant", "v3r")

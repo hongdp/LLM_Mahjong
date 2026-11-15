@@ -44,7 +44,7 @@ def _cls(t):
 
 def collect(args):
     from src.agents.dnn.selfplay import play_game_gen, _choose
-    from scripts.run_elo_league import load_dnn
+    from src.agents.dnn.checkpoint import load_dnn
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     nets = {"bc": load_dnn(args.bc, dev).eval(), "rl": load_dnn(args.rl, dev).eval()}
     if args.fast and hasattr(nets["rl"], "blocks"):

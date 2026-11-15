@@ -405,7 +405,7 @@ def main():
     a = ap.parse_args()
     global GATE
     GATE = a.gate
-    from scripts.run_elo_league import load_dnn
+    from src.agents.dnn.checkpoint import load_dnn
     dev = "cuda"
     net = load_dnn(a.ckpt, dev).eval()
     variant = getattr(net, "encoder_variant", "v3r")

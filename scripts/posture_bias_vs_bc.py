@@ -25,7 +25,7 @@ def collect(a):
     from src.agents.dnn.action_space import get_space
     from src.agents.dnn.fold_option import genbutsu_34
     from src.agents.dnn.encoder import TYPE_TO_ID, TILE_TYPES
-    from scripts.run_elo_league import load_dnn
+    from src.agents.dnn.checkpoint import load_dnn
     dev = "cuda"
     bc = load_dnn(a.bc, dev).eval(); rl = load_dnn(a.rl, dev).eval()
     space = get_space(rl); variant = getattr(rl, "encoder_variant", "v3r")

@@ -15,7 +15,7 @@ def rank_order(points, start_dealer=0):
 
 def main():
     from src.agents.dnn.rust_rollout import collect_rust
-    from scripts.run_elo_league import load_dnn
+    from src.agents.dnn.checkpoint import load_dnn
     ck, run = sys.argv[1], sys.argv[2]; n = int(sys.argv[3]) if len(sys.argv) > 3 else 2000
     net = load_dnn(ck, "cuda").eval()
     cfg = {"temperature": 0.0, "gamma": 0.995, "games_per_worker": 256, "encoder_variant": getattr(net, "encoder_variant", "v3r"),

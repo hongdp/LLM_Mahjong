@@ -22,7 +22,7 @@ from src.agents.dnn.encoder import TILE_TYPES, TYPE_TO_ID
 from src.agents.dnn.oracle_critic import SeparateCritic, explained_variance
 from src.agents.dnn.oracle_features import ron_cost_full
 from src.agents.dnn.rust_rollout import collect_rust
-from scripts.run_elo_league import load_dnn
+from src.agents.dnn.checkpoint import load_dnn
 
 D_TYPES = (TYPE_TO_ID["discard"], TYPE_TO_ID["discard0"])
 
