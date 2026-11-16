@@ -21,10 +21,10 @@
 | 动作空间 | `mortal46`（46 槽：34 打牌 + 3 赤五 + 立直/吃×3/碰/杠/和/流局/pass） | 同左 |
 | 训练信号 | 纯自对弈 PPO，**2.56 亿局**，单种子；无人类牌谱、无外部模型 | 纯 BC（无 RL）：训练 **18,458 局**凤凰卓牌谱 + holdout 1,000 局（语料共 20.9k 局） |
 | **对 bc49 头对头**（T=0 单局复式） | **0.5230 ± 0.0033**（20,000 副牌山，高出五五开 7 个标准误）；同牌山比 192M 检查点高 +1.09 ± 0.43 pp | —（参照） |
-| **对 bc49 成对半庄**（T=0 2v2 复式） | **+755 ± 204 uma / 座位 / 半庄**（3,000 场，z 3.7，场胜率 0.526）；同口径 192M +681 ± 202、224M +1,023 ± 203、288M +1,599 ± 202、320M +1,428 ± 199 | —（参照） |
+| **对 bc49 成对半庄**（T=0 2v2 复式） | **+755 ± 204 uma / 座位 / 半庄**（3,000 场，z 3.7，场胜率 0.526）；同口径 192M +681 ± 202、224M +1,023 ± 203、288M +1,599 ± 202、320M +1,428 ± 199、384M +1,551 ± 202 | —（参照） |
 | BC 精度 | — | holdout **0.8059**（649,328 决策；打牌 0.771 / 副露 0.743 / 立直 0.795）；出货权重 = epoch 6 |
 | 部署刻度 Elo（纪元 6 梯子） | 未上梯子 | **1189.0 ± 7.9**（候选 T=0 vs 13 锚 T=1，n=200/锚，纪元 6 池） |
-| 外部参照（真 Mortal 298k） | 192M 检查点：同牌山上对 bc49 的份额比 Mortal 高 +0.75 ± 0.43 pp（2 万牌山）；四方半庄 uma 192M − Mortal −495 ± 978（同档）。256M 未对 Mortal 测 | Mortal 1199.6 ± 8.0（同协议）→ **北极星差距 ~10 ± 11** |
+| 外部参照（真 Mortal 298k） | 192M 检查点：**直接单局复式对 Mortal 0.5033 ± 0.0033（20,500 牌山，±1 pp 内等价；11-15）**；同牌山上对 bc49 的份额比 Mortal 高 +0.75 ± 0.43 pp（2 万牌山）；四方半庄 uma 192M − Mortal −495 ± 978（同档）。256M 未对 Mortal 测 | Mortal 1199.6 ± 8.0（同协议）→ **北极星差距 ~10 ± 11** |
 | 防守探针 | 144M 检查点：安慰剂配对弃和探针 0.171（bc49 0.165）；256M 未测 | `defense_iq` **0.184** |
 | 人类刻度 | 133M 检查点雀魂 maka 3 局 S / B- / S；256M 未测 | 雀魂 maka 两轮 **S+** |
 | **推理温度** | **T = 0（贪心）** | **T = 0（贪心）**——同一模型 T=1 采样实测弱 **484 ± 418 点/副**（exp25） |
@@ -34,8 +34,9 @@
 范围戳：单训练种子、本项目复式协议与引擎、对手只有 bc49；纪元 6 梯子评级没有在 exp124 检查点上跑过。
 半庄刻度上 256M 相对 192M 没有可分辨的提升（+73 ± 272），288M / 320M 两个后期检查点读数更高（比 256M 高 +844 ± 265 / +674 ± 268；单局刻度 320M 对 256M 是 −0.46 ± 0.41 pp，两个刻度排序不一致）；
 但对 256M 的直接头对头（11-13，半庄 3,000 场 + 单局 20,000 牌山）没有分出胜负：288M 半庄 +315 ± 201 uma、单局 0.4959 ± 0.0032；320M 半庄 +60 ± 205、单局 0.5018 ± 0.0032。
-冠军不变；384M 终点用同种子再做一次对 256M 的直接头对头。
-训练仍在继续（Stage 2 目标 384M 局），384M 判决出来后本卡随之更新。
+384M 终点（11-15）同种子再做一次：半庄 +82 ± 203 uma、单局 0.4976 ± 0.0032，仍未分出。三个后期检查点对 bc49 的半庄读数都在 +1,400–1,600，但对 256M 的直接对战都打平，
+单局刻度 256 → 320 → 384M 为 0.5230 → 0.5184 → 0.5180（256M 之后不再上升）。**冠军不变，仍为 256M。**
+Stage 2 训练于 2026-11-15 结束（384M 局，`experiments/exp124_convformer_scale_prereg/`）；384M 权重留在本地 `experiments/exp124s2_S2/games_384000000.pt`，未上传（未加冕）。
 
 **为什么不是 exp46-I**：exp46-I gen10 的梯子分 1198.0 名义更高，但两者**双 T=0 头对头 1000 局
 胜份 0.5005 ± 0.0158**（完全打平），且 I 是在 bc49 上继续 RL 的产物。按「打平不换冠军」规则，
@@ -214,8 +215,10 @@ encoder `v3r` = **56 planes × 34 tiles + 29 scalars**. **Always run either at t
 - **exp124 @ 256M** (pure lineage): self-play PPO from scratch, 256M games, no human data, one seed.
   Head-to-head against bc49 on 20,000 duplicate walls (single deals, both greedy): **0.5230 ± 0.0033**,
   7 standard errors above parity, and +1.09 ± 0.43 pp above the 192M checkpoint on the same walls.
-  Not rated on the epoch-6 ladder; the pairwise hanchan verdict has not been run. Checkpoint 24.2 MB
-  (optimizer state included). Training continues to 384M.
+  Paired hanchan against bc49: +755 ± 204 uma per seat per hanchan (3,000 matches). Not rated on the
+  epoch-6 ladder. Checkpoint 24.2 MB (optimizer state included). Training ended at 384M (2026-11-15);
+  the 288M / 320M / 384M checkpoints did not separate from 256M in direct head-to-heads on either scale,
+  so 256M remains the champion.
 - **bc49** (`bc49_convformer_m_v3r_m46_full`, human-prior lineage, crowned 2026-08-27): pure behaviour
   cloning on **18,458 Tenhou Houou games** (holdout 1,000), holdout accuracy **0.8059**, 8.05 MB fp32.
   Ratings: **1189.0 ± 7.9** deployment scale (candidate T=0 vs 13 anchors at T=1, n=200/anchor);
