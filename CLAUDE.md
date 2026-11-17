@@ -45,7 +45,10 @@
 - **每发射一个新实验，立即完成 TensorBoard 三件套**（不得等提醒）：①`experiments/_cloud_mirror/<run>/tensorboard` 建目录+首次 rsync；②心跳循环内挂周期 rsync；③重启 tensorboard 把 `<run>_LIVE` 加进 `--logdir_spec`（按 PID 隔离单命令 kill，等端口释放再起）。
 - **心跳分相报警**：发射相 15 分钟死线（GCS 无日志对象即 ALERT）、训练相 30 分钟 STALL、终止标记即时报；触发标记必须取被监控日志实际会出现的行。
 - 本地 GPU（RTX 4080 16GB）只做冒烟/debug/benchmark；小时级训练一律上云。LLM 验证仅 Qwen2.5-0.5B + QLoRA，Gemma 会 OOM。
-- 评测协议：终审一律 T=0 + 族外梯子 + 半庄 n≥300；T=1 族内曲线不得单独下结论。
+- 评测协议：终审一律 T=0 + 族外梯子 + 半庄；T=1 族内曲线不得单独下结论。
+- **关键节点自动跑成对半庄裁决，不等用户要求（用户 2026-11-13）**：预注册判决里程碑、加冕候选 / 冠军易主、run 终点，每个节点都在同一轮里同时给出**单局复式和半庄两个刻度**；只有单局读数的判决或加冕汇报算没做完。
+  口径：对 bc49（加冕时另加对现役冠军）2v2 复式、双方 T=0、两段新种子各 1,500 场合并、检查点间同种子按场配对（入口 `scripts/hanchan_verdict.py`，底层 `play_pair_vector(hanchan=True)`；本机每段 3–4 分钟、$0；首例 `experiments/hanchan_verdict_exp124_20261113_082250/`）。
+  写预注册时就把半庄判据写进成功标准；长 run 的在轨监控（心跳 / cron / 评测循环）里挂里程碑自动触发。
 - **冠军易主 / 纪元重校 / 部署形态变更 ⇒ 同一 PR 内更新 [docs/champion_model.md](docs/champion_model.md)**（§1 速览、§2 ckpt 路径、§5 配方、§8 历史）+ LEADERBOARD + README(.zh) 状态行 + 桥接 runbook 的 ckpt 行，并把新权重上传 `gs://llm-mahjong-experiments/checkpoints/<谱系>/`；加冕判据=双方 T=0 头对头显著为正，梯子分只排名不加冕（T=0 候选对 T=1 锚有系统性高估）。
 - 奖励逻辑必须模块化（registry + BaseRewardModel），不得硬编码进训练循环。注：`src/tasks/mahjong/rewards.py` 的 registry 是 LLM 文本接口；DNN 线的奖励塑形在 `src/agents/dnn/selfplay.potential` 与 Rust VecEnv 的 reward styles——新奖励加在那里并保持可注册。
 - kill 命令必须单独成调用且不含目标字符串明文（pkill 自匹配史）；生成代码后必须**独立**跑一次 ast/语法校验。
